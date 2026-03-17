@@ -1,0 +1,64 @@
+name: openclaw-mirosearch
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: apps/gradio-demo/Dockerfile
+    image: openclaw-mirosearch:latest
+    restart: unless-stopped
+    env_file:
+      - .env.compose
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8080
+      SEARXNG_BASE_URL: ${SEARXNG_BASE_URL:-http://searxng:8080}
+    ports:
+      - "${APP_PORT:-8080}:8080"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/gradio_api/info', timeout=5).read()"
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+
+  valkey:
+    image: valkey/valkey:8-alpine
+    restart: unless-stopped
+    command: ["valkey-server", "--save", "30", "1", "--loglevel", "warning"]
+    volumes:
+      - valkey-data:/data
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+  searxng:
+    image: searxng/searxng:latest
+    restart: unless-stopped
+    environment:
+      BIND_ADDRESS: 0.0.0.0:8080
+      SEARXNG_BASE_URL: ${SEARXNG_PUBLIC_BASE_URL:-http://localhost:${SEARXNG_HOST_PORT:-27080}/}
+      SEARXNG_REDIS_URL: redis://valkey:6379/0
+    ports:
+      - "${SEARXNG_HOST_PORT:-27080}:8080"
+    depends_on:
+      valkey:
+        condition: service_healthy
+    volumes:
+      - searxng-cache:/var/cache/searxng
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=5).read()"
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+
+volumes:
+  valkey-data:
+  searxng-cache:

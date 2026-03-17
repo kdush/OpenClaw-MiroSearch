@@ -167,6 +167,7 @@ curl -sS -H 'Content-Type: application/json' \
 ## 文档索引
 
 - 文档总览：[`docs/README.md`](docs/README.md)
+- Docker Compose 独立部署：[`docs/DEPLOY_DOCKER_COMPOSE.md`](docs/DEPLOY_DOCKER_COMPOSE.md)
 - Demo 说明：[`apps/gradio-demo/README.md`](apps/gradio-demo/README.md)
 - Agent 说明：[`apps/miroflow-agent/README.md`](apps/miroflow-agent/README.md)
 - 工具层说明：[`libs/miroflow-tools/README.md`](libs/miroflow-tools/README.md)

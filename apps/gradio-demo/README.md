@@ -47,6 +47,17 @@ uv run main.py
 
 默认监听：`http://127.0.0.1:8080`
 
+### Docker Compose 一键部署
+
+在仓库根目录执行：
+
+```bash
+cp .env.compose.example .env.compose
+docker compose --env-file .env.compose up -d --build
+```
+
+详细说明见：[`docs/DEPLOY_DOCKER_COMPOSE.md`](../../docs/DEPLOY_DOCKER_COMPOSE.md)
+
 ## 4. 页面可切换配置
 
 ### 检索模式（`mode`）
