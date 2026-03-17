@@ -36,6 +36,16 @@ def _env_flag(name: str, default_value: bool) -> bool:
     return raw_value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _env_int(name: str, default_value: int) -> int:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default_value
+    try:
+        return int(raw_value)
+    except ValueError:
+        return default_value
+
+
 def _load_logo_data_uri() -> str:
     """加载本地 Logo 并转换为 data URI，避免依赖外部静态资源服务。"""
     logo_path = Path(__file__).resolve().parents[2] / "assets" / "mirologo.png"
@@ -73,6 +83,15 @@ DEFAULT_LLM_MAX_TOKENS = 2048
 DEFAULT_BENCHMARK_NAME = "debug"
 DEFAULT_RESEARCH_MODE = os.getenv("DEFAULT_RESEARCH_MODE", "balanced")
 DEFAULT_SEARCH_PROFILE = os.getenv("DEFAULT_SEARCH_PROFILE", "searxng-first")
+SEARCH_RESULT_NUM_CHOICES = [10, 20, 30]
+DEFAULT_SEARCH_RESULT_NUM = _env_int(
+    "DEFAULT_SEARCH_RESULT_NUM", SEARCH_RESULT_NUM_CHOICES[0]
+)
+SEARCH_RESULT_DISPLAY_MAX = max(1, _env_int("SEARCH_RESULT_DISPLAY_MAX", 30))
+DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS = max(
+    1, _env_int("DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS", 3)
+)
+MAX_VERIFICATION_MIN_SEARCH_ROUNDS = 8
 DEFAULT_MODEL_NAME = os.getenv("DEFAULT_MODEL_NAME", "gpt-4o-mini")
 DEFAULT_MODEL_TOOL_NAME = os.getenv("MODEL_TOOL_NAME", DEFAULT_MODEL_NAME)
 DEFAULT_MODEL_FAST_NAME = os.getenv("MODEL_FAST_NAME", DEFAULT_MODEL_NAME)
@@ -284,8 +303,35 @@ def _normalize_search_profile(search_profile: Optional[str]) -> str:
     return normalized_profile
 
 
-def _compose_profile_cache_key(mode: str, search_profile: str) -> Tuple[str, str]:
-    return mode, search_profile
+def _normalize_search_result_num(result_num: Optional[int]) -> int:
+    if result_num is None:
+        result_num = DEFAULT_SEARCH_RESULT_NUM
+    try:
+        parsed = int(result_num)
+    except (TypeError, ValueError):
+        parsed = DEFAULT_SEARCH_RESULT_NUM
+    if parsed in SEARCH_RESULT_NUM_CHOICES:
+        return parsed
+    return SEARCH_RESULT_NUM_CHOICES[0]
+
+
+def _normalize_verification_min_search_rounds(min_rounds: Optional[int]) -> int:
+    if min_rounds is None:
+        min_rounds = DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS
+    try:
+        parsed = int(min_rounds)
+    except (TypeError, ValueError):
+        parsed = DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS
+    return max(1, min(MAX_VERIFICATION_MIN_SEARCH_ROUNDS, parsed))
+
+
+def _compose_profile_cache_key(
+    mode: str,
+    search_profile: str,
+    search_result_num: int,
+    verification_min_search_rounds: int,
+) -> Tuple[str, str, int, int]:
+    return mode, search_profile, search_result_num, verification_min_search_rounds
 
 
 @contextmanager
@@ -423,10 +469,21 @@ _preload_cache = {}
 _preload_lock = threading.Lock()
 
 
-def _ensure_preloaded(mode: str, search_profile: str):
+def _ensure_preloaded(
+    mode: str,
+    search_profile: str,
+    search_result_num: int,
+    verification_min_search_rounds: int,
+):
     """按检索模式与检索源策略懒加载 pipeline 组件。"""
     global _preload_cache
-    cache_key = _compose_profile_cache_key(mode, search_profile)
+    resolved_result_num = _normalize_search_result_num(search_result_num)
+    resolved_min_rounds = _normalize_verification_min_search_rounds(
+        verification_min_search_rounds
+    )
+    cache_key = _compose_profile_cache_key(
+        mode, search_profile, resolved_result_num, resolved_min_rounds
+    )
     if cache_key in _preload_cache:
         return
 
@@ -434,14 +491,23 @@ def _ensure_preloaded(mode: str, search_profile: str):
         if cache_key in _preload_cache:
             return
 
-        search_env = SEARCH_PROFILE_ENV_MAP.get(
-            search_profile, SEARCH_PROFILE_ENV_MAP["searxng-first"]
+        search_env = dict(
+            SEARCH_PROFILE_ENV_MAP.get(
+                search_profile, SEARCH_PROFILE_ENV_MAP["searxng-first"]
+            )
         )
-        mode_overrides = MODE_OVERRIDE_MAP.get(mode, MODE_OVERRIDE_MAP["balanced"])
+        search_env["SEARCH_RESULT_NUM"] = str(resolved_result_num)
+        mode_overrides = list(MODE_OVERRIDE_MAP.get(mode, MODE_OVERRIDE_MAP["balanced"]))
+        if mode == "verified":
+            mode_overrides.append(
+                f"agent.verification.min_search_rounds={resolved_min_rounds}"
+            )
         logger.info(
-            "Loading pipeline components | mode=%s | search_profile=%s | provider_order=%s | provider_mode=%s",
+            "Loading pipeline components | mode=%s | search_profile=%s | result_num=%s | min_rounds=%s | provider_order=%s | provider_mode=%s",
             mode,
             search_profile,
+            resolved_result_num,
+            resolved_min_rounds,
             search_env.get("SEARCH_PROVIDER_ORDER", ""),
             search_env.get("SEARCH_PROVIDER_MODE", ""),
         )
@@ -469,11 +535,15 @@ def _ensure_preloaded(mode: str, search_profile: str):
             "tool_definitions": tool_definitions,
             "sub_agent_tool_definitions": sub_agent_tool_definitions,
             "search_profile": search_profile,
+            "search_result_num": resolved_result_num,
+            "verification_min_search_rounds": resolved_min_rounds,
         }
         logger.info(
-            "Pipeline components loaded successfully | mode=%s | search_profile=%s",
+            "Pipeline components loaded successfully | mode=%s | search_profile=%s | result_num=%s | min_rounds=%s",
             mode,
             search_profile,
+            resolved_result_num,
+            resolved_min_rounds,
         )
 
 
@@ -523,6 +593,24 @@ def filter_google_search_organic(organic: List[dict]) -> List[dict]:
     return result
 
 
+def filter_google_search_payload(result_dict: dict) -> dict:
+    """过滤 google_search 结果，保留可视化需要的核心字段与链路元信息。"""
+    filtered_payload: Dict[str, object] = {
+        "organic": filter_google_search_organic(result_dict.get("organic", []))
+    }
+    for key in [
+        "provider",
+        "provider_fallback",
+        "route_trace",
+        "confidence",
+        "searchParameters",
+    ]:
+        value = result_dict.get(key)
+        if value is not None:
+            filtered_payload[key] = value
+    return filtered_payload
+
+
 def is_scrape_error(result: str) -> bool:
     """
     Check if the scrape result is an error
@@ -546,13 +634,14 @@ def filter_message(message: dict) -> dict:
             and isinstance(tool_input, dict)
             and "result" in tool_input
         ):
-            result_dict = json.loads(tool_input["result"])
-            if "organic" in result_dict:
-                new_result = {
-                    "organic": filter_google_search_organic(result_dict["organic"])
-                }
+            try:
+                result_dict = json.loads(tool_input["result"])
+            except (TypeError, json.JSONDecodeError):
+                result_dict = {}
+            if isinstance(result_dict, dict) and "organic" in result_dict:
+                filtered_result = filter_google_search_payload(result_dict)
                 message["data"]["tool_input"]["result"] = json.dumps(
-                    new_result, ensure_ascii=False
+                    filtered_result, ensure_ascii=False
                 )
         if (
             tool_name in ["scrape", "scrape_website"]
@@ -572,12 +661,18 @@ async def stream_events_optimized(
     query: str,
     mode: Optional[str] = None,
     search_profile: Optional[str] = None,
+    search_result_num: Optional[int] = None,
+    verification_min_search_rounds: Optional[int] = None,
     disconnect_check=None,
 ) -> AsyncGenerator[dict, None]:
     """Optimized event stream generator that directly outputs structured events, no longer wrapped as SSE strings."""
     workflow_id = task_id
     resolved_mode = _normalize_research_mode(mode)
     resolved_search_profile = _normalize_search_profile(search_profile)
+    resolved_search_result_num = _normalize_search_result_num(search_result_num)
+    resolved_verification_min_rounds = _normalize_verification_min_search_rounds(
+        verification_min_search_rounds
+    )
     last_send_time = time.time()
     last_heartbeat_time = time.time()
 
@@ -606,9 +701,17 @@ async def stream_events_optimized(
             wrapper_queue = ThreadQueueWrapper(stream_queue, cancel_event)
 
             # Ensure pipeline components are loaded (lazy loading)
-            _ensure_preloaded(resolved_mode, resolved_search_profile)
+            _ensure_preloaded(
+                resolved_mode,
+                resolved_search_profile,
+                resolved_search_result_num,
+                resolved_verification_min_rounds,
+            )
             cache_key = _compose_profile_cache_key(
-                resolved_mode, resolved_search_profile
+                resolved_mode,
+                resolved_search_profile,
+                resolved_search_result_num,
+                resolved_verification_min_rounds,
             )
             profile_cache = _preload_cache[cache_key]
 
@@ -789,6 +892,11 @@ def _format_search_results(tool_input: dict, tool_output: dict) -> str:
 
     # Parse results from output - handle multiple formats
     results = []
+    provider_mode = ""
+    providers_with_results: List[str] = []
+    route_trace: List[dict] = []
+    confidence_info: Dict[str, object] = {}
+    fallback_errors: List[str] = []
     if isinstance(tool_output, dict):
         # Case 1: output has "result" field containing JSON string
         result_str = tool_output.get("result", "")
@@ -797,6 +905,28 @@ def _format_search_results(tool_input: dict, tool_output: dict) -> str:
                 result_data = json.loads(result_str)
                 if isinstance(result_data, dict):
                     results = result_data.get("organic", [])
+                    search_params = result_data.get("searchParameters", {})
+                    if isinstance(search_params, dict):
+                        provider_mode = str(
+                            search_params.get("provider_mode", "")
+                        ).strip()
+                        providers_with_results = [
+                            str(item)
+                            for item in search_params.get("providers_with_results", [])
+                        ]
+                        raw_route_trace = result_data.get("route_trace") or search_params.get(
+                            "route_trace"
+                        )
+                        if isinstance(raw_route_trace, list):
+                            route_trace = [
+                                item for item in raw_route_trace if isinstance(item, dict)
+                            ]
+                    raw_confidence = result_data.get("confidence")
+                    if isinstance(raw_confidence, dict):
+                        confidence_info = raw_confidence
+                    raw_fallback = result_data.get("provider_fallback", [])
+                    if isinstance(raw_fallback, list):
+                        fallback_errors = [str(item) for item in raw_fallback if item]
             except json.JSONDecodeError:
                 pass
         elif isinstance(result_str, dict):
@@ -822,10 +952,44 @@ def _format_search_results(tool_input: dict, tool_output: dict) -> str:
     # Results count
     if results:
         lines.append(f'<div class="search-count">≡ Found {len(results)} results</div>')
+        if provider_mode:
+            lines.append(
+                f'<div class="search-count">检索模式: <strong>{provider_mode}</strong></div>'
+            )
+        if providers_with_results:
+            providers_text = ", ".join(providers_with_results)
+            lines.append(
+                f'<div class="search-count">命中搜索源: <strong>{providers_text}</strong></div>'
+            )
+        if confidence_info:
+            score = confidence_info.get("score")
+            threshold = confidence_info.get("threshold")
+            passed = confidence_info.get("passed")
+            lines.append(
+                f'<div class="search-count">置信度: <strong>{score}</strong> / 阈值 {threshold} / 通过={passed}</div>'
+            )
+        if route_trace:
+            route_items = []
+            for item in route_trace[:8]:
+                phase = item.get("phase", "")
+                provider = item.get("provider", "")
+                status = item.get("status", "")
+                count = item.get("result_count")
+                suffix = f"({count})" if count is not None else ""
+                route_items.append(f"{phase}:{provider}:{status}{suffix}")
+            if route_items:
+                lines.append(
+                    f'<div class="search-count">链路跟踪: {" | ".join(route_items)}</div>'
+                )
+        if fallback_errors:
+            lines.append(
+                f'<div class="search-count">补检异常: {"; ".join(fallback_errors[:3])}</div>'
+            )
 
         # Results list
         lines.append('<div class="search-results">')
-        for item in results[:10]:  # Limit to 10 results
+        display_limit = min(len(results), SEARCH_RESULT_DISPLAY_MAX)
+        for item in results[:display_limit]:
             title = item.get("title", "Untitled")
             link = item.get("link", "#")
 
@@ -834,6 +998,10 @@ def _format_search_results(tool_input: dict, tool_output: dict) -> str:
                 <span class="result-title">{title}</span>
             </a>""")
         lines.append("</div>")
+        if len(results) > display_limit:
+            lines.append(
+                f'<div class="search-count">仅展示前 {display_limit} 条，完整结果共 {len(results)} 条。</div>'
+            )
 
     lines.append("</div>")
 
@@ -1188,11 +1356,17 @@ async def gradio_run(
     query: str,
     mode: str,
     search_profile: str = DEFAULT_SEARCH_PROFILE,
+    search_result_num: int = DEFAULT_SEARCH_RESULT_NUM,
+    verification_min_search_rounds: int = DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS,
     ui_state: Optional[dict] = None,
 ):
     query = replace_chinese_punctuation(query or "")
     resolved_mode = _normalize_research_mode(mode)
     resolved_search_profile = _normalize_search_profile(search_profile)
+    resolved_search_result_num = _normalize_search_result_num(search_result_num)
+    resolved_verification_min_rounds = _normalize_verification_min_search_rounds(
+        verification_min_search_rounds
+    )
     task_id = str(uuid.uuid4())
     _reset_cancel_flag(task_id)
     if not ui_state:
@@ -1200,6 +1374,8 @@ async def gradio_run(
             "task_id": task_id,
             "mode": resolved_mode,
             "search_profile": resolved_search_profile,
+            "search_result_num": resolved_search_result_num,
+            "verification_min_search_rounds": resolved_verification_min_rounds,
         }
     else:
         ui_state = {
@@ -1207,6 +1383,8 @@ async def gradio_run(
             "task_id": task_id,
             "mode": resolved_mode,
             "search_profile": resolved_search_profile,
+            "search_result_num": resolved_search_result_num,
+            "verification_min_search_rounds": resolved_verification_min_rounds,
         }
     state = _init_render_state()
     # Initial: disable Run, enable Stop, and show spinner at bottom of text
@@ -1221,6 +1399,8 @@ async def gradio_run(
         query,
         resolved_mode,
         resolved_search_profile,
+        resolved_search_result_num,
+        resolved_verification_min_rounds,
         lambda: _disconnect_check_for_task(task_id),
     ):
         # Skip heartbeat events - they don't need UI update
@@ -1248,20 +1428,50 @@ async def gradio_run(
 
 
 async def run_research_once(
-    query: str, mode: str, search_profile: str = DEFAULT_SEARCH_PROFILE
+    query: str,
+    mode: str,
+    search_profile: str = DEFAULT_SEARCH_PROFILE,
+    search_result_num: int = DEFAULT_SEARCH_RESULT_NUM,
+    verification_min_search_rounds: int = DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS,
 ) -> str:
     """供外部智能体调用：输入问题+模式+检索源策略，返回最终 Markdown。"""
     query = replace_chinese_punctuation(query or "")
     resolved_mode = _normalize_research_mode(mode)
     resolved_search_profile = _normalize_search_profile(search_profile)
+    resolved_search_result_num = _normalize_search_result_num(search_result_num)
+    resolved_verification_min_rounds = _normalize_verification_min_search_rounds(
+        verification_min_search_rounds
+    )
     task_id = str(uuid.uuid4())
     _reset_cancel_flag(task_id)
     state = _init_render_state()
     async for message in stream_events_optimized(
-        task_id, query, resolved_mode, resolved_search_profile
+        task_id,
+        query,
+        resolved_mode,
+        resolved_search_profile,
+        resolved_search_result_num,
+        resolved_verification_min_rounds,
     ):
         state = _update_state_with_event(state, message)
     return _render_markdown(state)
+
+
+async def run_research_once_v2(
+    query: str,
+    mode: str,
+    search_profile: str = DEFAULT_SEARCH_PROFILE,
+    search_result_num: int = DEFAULT_SEARCH_RESULT_NUM,
+    verification_min_search_rounds: int = DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS,
+) -> str:
+    """扩展 API：支持按请求控制检索条数与最少检索轮次。"""
+    return await run_research_once(
+        query=query,
+        mode=mode,
+        search_profile=search_profile,
+        search_result_num=search_result_num,
+        verification_min_search_rounds=verification_min_search_rounds,
+    )
 
 
 def stop_current(ui_state: Optional[dict]):
@@ -1997,6 +2207,22 @@ def build_demo():
                 value=_normalize_search_profile(DEFAULT_SEARCH_PROFILE),
                 info="searxng-first=默认 / serp-first=Serp优先 / multi-route=串行聚合 / parallel=并发聚合 / parallel-trusted=并发+置信不足串行高信源补检 / searxng-only=仅SearXNG",
             )
+            search_result_num_selector = gr.Dropdown(
+                label="单轮检索条数",
+                choices=SEARCH_RESULT_NUM_CHOICES,
+                value=_normalize_search_result_num(DEFAULT_SEARCH_RESULT_NUM),
+                info="每次 google_search 聚合返回的结果上限，建议 20 或 30 用于交叉验证。",
+            )
+            verification_min_rounds_selector = gr.Slider(
+                minimum=1,
+                maximum=MAX_VERIFICATION_MIN_SEARCH_ROUNDS,
+                step=1,
+                label="最少检索轮次（verified 生效）",
+                value=_normalize_verification_min_search_rounds(
+                    DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS
+                ),
+                info="仅在 verified 模式下用于强制多轮检索门槛。",
+            )
             with gr.Row(elem_id="btn-row"):
                 stop_btn = gr.Button(
                     "⏹ 停止",
@@ -2024,13 +2250,26 @@ def build_demo():
                 "task_id": None,
                 "mode": _normalize_research_mode(DEFAULT_RESEARCH_MODE),
                 "search_profile": _normalize_search_profile(DEFAULT_SEARCH_PROFILE),
+                "search_result_num": _normalize_search_result_num(
+                    DEFAULT_SEARCH_RESULT_NUM
+                ),
+                "verification_min_search_rounds": _normalize_verification_min_search_rounds(
+                    DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS
+                ),
             }
         )
 
         # Event handlers
         run_btn.click(
             fn=gradio_run,
-            inputs=[inp, mode_selector, search_profile_selector, ui_state],
+            inputs=[
+                inp,
+                mode_selector,
+                search_profile_selector,
+                search_result_num_selector,
+                verification_min_rounds_selector,
+                ui_state,
+            ],
             outputs=[out_md, run_btn, stop_btn, ui_state],
             api_name="run_research_stream",
         )
@@ -2041,11 +2280,23 @@ def build_demo():
             outputs=[api_output],
             api_name="run_research_once",
         )
+        gr.Button(value="api-run-v2", visible=False).click(
+            fn=run_research_once_v2,
+            inputs=[
+                inp,
+                mode_selector,
+                search_profile_selector,
+                search_result_num_selector,
+                verification_min_rounds_selector,
+            ],
+            outputs=[api_output],
+            api_name="run_research_once_v2",
+        )
 
         # Footer
         gr.HTML("""
             <div class="app-footer">
-                由 MiroMind AI 生成，请对关键信息进行复核。
+                由 AI 生成，请对关键信息进行复核。
             </div>
         """)
 
