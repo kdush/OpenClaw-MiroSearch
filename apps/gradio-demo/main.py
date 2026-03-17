@@ -1,3 +1,4 @@
+import base64
 import asyncio
 import json
 import logging
@@ -35,6 +36,21 @@ def _env_flag(name: str, default_value: bool) -> bool:
     return raw_value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _load_logo_data_uri() -> str:
+    """加载本地 Logo 并转换为 data URI，避免依赖外部静态资源服务。"""
+    logo_path = Path(__file__).resolve().parents[2] / "assets" / "mirologo.png"
+    if not logo_path.exists():
+        logger.warning("未找到本地 logo 文件: %s", logo_path)
+        return ""
+    try:
+        logo_bytes = logo_path.read_bytes()
+    except OSError as exc:
+        logger.warning("读取本地 logo 失败: %s", exc)
+        return ""
+    encoded_logo = base64.b64encode(logo_bytes).decode("ascii")
+    return f"data:image/png;base64,{encoded_logo}"
+
+
 # 控制是否启用 demo prompt patch
 ENABLE_PROMPT_PATCH = _env_flag("ENABLE_PROMPT_PATCH", True)
 if ENABLE_PROMPT_PATCH:
@@ -57,6 +73,11 @@ DEFAULT_LLM_MAX_TOKENS = 2048
 DEFAULT_BENCHMARK_NAME = "debug"
 DEFAULT_RESEARCH_MODE = os.getenv("DEFAULT_RESEARCH_MODE", "balanced")
 DEFAULT_SEARCH_PROFILE = os.getenv("DEFAULT_SEARCH_PROFILE", "searxng-first")
+DEFAULT_MODEL_NAME = os.getenv("DEFAULT_MODEL_NAME", "gpt-4o-mini")
+DEFAULT_MODEL_TOOL_NAME = os.getenv("MODEL_TOOL_NAME", DEFAULT_MODEL_NAME)
+DEFAULT_MODEL_FAST_NAME = os.getenv("MODEL_FAST_NAME", DEFAULT_MODEL_NAME)
+DEFAULT_MODEL_THINKING_NAME = os.getenv("MODEL_THINKING_NAME", DEFAULT_MODEL_NAME)
+DEFAULT_MODEL_SUMMARY_NAME = os.getenv("MODEL_SUMMARY_NAME", DEFAULT_MODEL_FAST_NAME)
 
 RESEARCH_MODE_CHOICES = [
     "production-web",
@@ -71,6 +92,8 @@ SEARCH_PROFILE_CHOICES = [
     "searxng-first",
     "serp-first",
     "multi-route",
+    "parallel",
+    "parallel-trusted",
     "searxng-only",
 ]
 
@@ -87,6 +110,27 @@ SEARCH_PROFILE_ENV_MAP: Dict[str, Dict[str, str]] = {
         "SEARCH_PROVIDER_ORDER": "serpapi,searxng,serper",
         "SEARCH_PROVIDER_MODE": "merge",
     },
+    "parallel": {
+        "SEARCH_PROVIDER_ORDER": "serpapi,searxng,serper",
+        "SEARCH_PROVIDER_MODE": "parallel",
+        "SEARCH_PROVIDER_PARALLEL_MAX_WAIT_MS": "4500",
+        "SEARCH_PROVIDER_PARALLEL_MIN_SUCCESS": "1",
+    },
+    "parallel-trusted": {
+        "SEARCH_PROVIDER_ORDER": "serpapi,searxng,serper",
+        "SEARCH_PROVIDER_MODE": "parallel_conf_fallback",
+        "SEARCH_PROVIDER_TRUSTED_ORDER": "serpapi,searxng,serper",
+        "SEARCH_PROVIDER_PARALLEL_MAX_WAIT_MS": "4500",
+        "SEARCH_PROVIDER_PARALLEL_MIN_SUCCESS": "1",
+        "SEARCH_PROVIDER_FALLBACK_MAX_STEPS": "3",
+        "SEARCH_CONFIDENCE_ENABLED": "1",
+        "SEARCH_CONFIDENCE_SCORE_THRESHOLD": "0.62",
+        "SEARCH_CONFIDENCE_MIN_RESULTS": "8",
+        "SEARCH_CONFIDENCE_MIN_UNIQUE_DOMAINS": "5",
+        "SEARCH_CONFIDENCE_MIN_PROVIDER_COVERAGE": "2",
+        "SEARCH_CONFIDENCE_MIN_HIGH_CONF_HITS": "2",
+        "SEARCH_CONFIDENCE_HIGH_CONF_DOMAINS": "reuters.com,apnews.com,bbc.com,aljazeera.com,state.gov,un.org,iaea.org,who.int",
+    },
     "searxng-only": {
         "SEARCH_PROVIDER_ORDER": "searxng",
         "SEARCH_PROVIDER_MODE": "fallback",
@@ -100,11 +144,11 @@ MODE_OVERRIDE_MAP = {
         "agent.keep_tool_result=-1",
         "agent.context_compress_limit=0",
         "agent.retry_with_summary=false",
-        "llm.model_name=LongCat-Flash-Chat",
-        "+llm.model_tool_name=LongCat-Flash-Chat",
-        "+llm.model_fast_name=LongCat-Flash-Lite",
-        "+llm.model_thinking_name=LongCat-Flash-Thinking-2601",
-        "+llm.model_summary_name=LongCat-Flash-Lite",
+        f"llm.model_name={DEFAULT_MODEL_NAME}",
+        f"+llm.model_tool_name={DEFAULT_MODEL_TOOL_NAME}",
+        f"+llm.model_fast_name={DEFAULT_MODEL_FAST_NAME}",
+        f"+llm.model_thinking_name={DEFAULT_MODEL_THINKING_NAME}",
+        f"+llm.model_summary_name={DEFAULT_MODEL_SUMMARY_NAME}",
         "llm.max_tokens=2048",
         "+llm.max_retries=3",
         "+llm.retry_wait_seconds=3",
@@ -116,11 +160,11 @@ MODE_OVERRIDE_MAP = {
         "agent.keep_tool_result=2",
         "agent.context_compress_limit=2",
         "agent.retry_with_summary=false",
-        "llm.model_name=LongCat-Flash-Chat",
-        "+llm.model_tool_name=LongCat-Flash-Chat",
-        "+llm.model_fast_name=LongCat-Flash-Lite",
-        "+llm.model_thinking_name=LongCat-Flash-Thinking-2601",
-        "+llm.model_summary_name=LongCat-Flash-Lite",
+        f"llm.model_name={DEFAULT_MODEL_NAME}",
+        f"+llm.model_tool_name={DEFAULT_MODEL_TOOL_NAME}",
+        f"+llm.model_fast_name={DEFAULT_MODEL_FAST_NAME}",
+        f"+llm.model_thinking_name={DEFAULT_MODEL_THINKING_NAME}",
+        f"+llm.model_summary_name={DEFAULT_MODEL_SUMMARY_NAME}",
         "llm.max_tokens=2048",
         "+llm.max_retries=3",
         "+llm.retry_wait_seconds=3",
@@ -132,11 +176,11 @@ MODE_OVERRIDE_MAP = {
         "agent.keep_tool_result=2",
         "agent.context_compress_limit=2",
         "agent.retry_with_summary=false",
-        "llm.model_name=LongCat-Flash-Chat",
-        "+llm.model_tool_name=LongCat-Flash-Chat",
-        "+llm.model_fast_name=LongCat-Flash-Lite",
-        "+llm.model_thinking_name=LongCat-Flash-Thinking-2601",
-        "+llm.model_summary_name=LongCat-Flash-Lite",
+        f"llm.model_name={DEFAULT_MODEL_NAME}",
+        f"+llm.model_tool_name={DEFAULT_MODEL_TOOL_NAME}",
+        f"+llm.model_fast_name={DEFAULT_MODEL_FAST_NAME}",
+        f"+llm.model_thinking_name={DEFAULT_MODEL_THINKING_NAME}",
+        f"+llm.model_summary_name={DEFAULT_MODEL_SUMMARY_NAME}",
         "llm.max_tokens=2048",
         "+llm.max_retries=4",
         "+llm.retry_wait_seconds=6",
@@ -148,11 +192,11 @@ MODE_OVERRIDE_MAP = {
         "agent.keep_tool_result=1",
         "agent.context_compress_limit=1",
         "agent.retry_with_summary=false",
-        "llm.model_name=LongCat-Flash-Chat",
-        "+llm.model_tool_name=LongCat-Flash-Chat",
-        "+llm.model_fast_name=LongCat-Flash-Lite",
-        "+llm.model_thinking_name=LongCat-Flash-Thinking-2601",
-        "+llm.model_summary_name=LongCat-Flash-Lite",
+        f"llm.model_name={DEFAULT_MODEL_NAME}",
+        f"+llm.model_tool_name={DEFAULT_MODEL_TOOL_NAME}",
+        f"+llm.model_fast_name={DEFAULT_MODEL_FAST_NAME}",
+        f"+llm.model_thinking_name={DEFAULT_MODEL_THINKING_NAME}",
+        f"+llm.model_summary_name={DEFAULT_MODEL_SUMMARY_NAME}",
         "llm.max_tokens=1536",
         "+llm.max_retries=2",
         "+llm.retry_wait_seconds=2",
@@ -164,11 +208,11 @@ MODE_OVERRIDE_MAP = {
         "agent.keep_tool_result=1",
         "agent.context_compress_limit=1",
         "agent.retry_with_summary=false",
-        "llm.model_name=LongCat-Flash-Lite",
-        "+llm.model_tool_name=LongCat-Flash-Lite",
-        "+llm.model_fast_name=LongCat-Flash-Lite",
-        "+llm.model_thinking_name=LongCat-Flash-Thinking-2601",
-        "+llm.model_summary_name=LongCat-Flash-Lite",
+        f"llm.model_name={DEFAULT_MODEL_FAST_NAME}",
+        f"+llm.model_tool_name={DEFAULT_MODEL_FAST_NAME}",
+        f"+llm.model_fast_name={DEFAULT_MODEL_FAST_NAME}",
+        f"+llm.model_thinking_name={DEFAULT_MODEL_THINKING_NAME}",
+        f"+llm.model_summary_name={DEFAULT_MODEL_SUMMARY_NAME}",
         "llm.max_tokens=1536",
         "+llm.max_retries=2",
         "+llm.retry_wait_seconds=2",
@@ -180,11 +224,11 @@ MODE_OVERRIDE_MAP = {
         "agent.keep_tool_result=0",
         "agent.context_compress_limit=1",
         "agent.retry_with_summary=false",
-        "llm.model_name=LongCat-Flash-Thinking-2601",
-        "+llm.model_tool_name=LongCat-Flash-Chat",
-        "+llm.model_fast_name=LongCat-Flash-Lite",
-        "+llm.model_thinking_name=LongCat-Flash-Thinking-2601",
-        "+llm.model_summary_name=LongCat-Flash-Lite",
+        f"llm.model_name={DEFAULT_MODEL_THINKING_NAME}",
+        f"+llm.model_tool_name={DEFAULT_MODEL_TOOL_NAME}",
+        f"+llm.model_fast_name={DEFAULT_MODEL_FAST_NAME}",
+        f"+llm.model_thinking_name={DEFAULT_MODEL_THINKING_NAME}",
+        f"+llm.model_summary_name={DEFAULT_MODEL_SUMMARY_NAME}",
         "llm.max_tokens=2048",
         "+llm.max_retries=2",
         "+llm.retry_wait_seconds=2",
@@ -300,7 +344,7 @@ def load_miroflow_config(config_overrides: Optional[object] = None) -> DictConfi
         "DEFAULT_LLM_PROVIDER", "qwen"
     )  # debug.sh defaults to qwen
     model_name = os.getenv(
-        "DEFAULT_MODEL_NAME", "OpenClaw-MiroSearch"
+        "DEFAULT_MODEL_NAME", DEFAULT_MODEL_NAME
     )  # debug.sh default model
     agent_set = os.getenv("DEFAULT_AGENT_SET", "demo_search_only")
     base_url = os.getenv("BASE_URL", "http://localhost:11434")
@@ -1232,7 +1276,7 @@ def stop_current(ui_state: Optional[dict]):
 
 
 def build_demo():
-    # Use remote logo from dr.miromind.ai for faster page load
+    logo_data_uri = _load_logo_data_uri()
 
     custom_css = """
     /* ========== MiroThinker - Modern Clean Design ========== */
@@ -1274,11 +1318,19 @@ def build_demo():
         font-size: 1.1em;
         color: #18181b;
     }
-    
+
     .brand-logo {
-        width: 32px;
         height: 32px;
-        border-radius: 6px;
+        width: auto;
+        max-width: 120px;
+        object-fit: contain;
+        display: block;
+        flex-shrink: 0;
+    }
+
+    .nav-brand-text {
+        line-height: 1.2;
+        white-space: nowrap;
     }
     
     /* ===== Hero Section ===== */
@@ -1864,6 +1916,11 @@ def build_demo():
         .hero-title {
             font-size: 2em;
         }
+
+        .brand-logo {
+            height: 28px;
+            max-width: 96px;
+        }
         
         .hero-section {
             padding: 40px 16px 24px;
@@ -1879,8 +1936,16 @@ def build_demo():
     }
     """
 
-    # Favicon head content
-    favicon_head = '<link rel="icon" href="https://dr.miromind.ai/favicon.ico?v=2">'
+    # 统一使用本地 logo，避免外部资源依赖。
+    if logo_data_uri:
+        favicon_head = f'<link rel="icon" href="{logo_data_uri}">'
+        nav_logo_html = (
+            f'<img src="{logo_data_uri}" class="brand-logo" '
+            'alt="OpenClaw-MiroSearch logo" />'
+        )
+    else:
+        favicon_head = '<link rel="icon" href="https://dr.miromind.ai/favicon.ico?v=2">'
+        nav_logo_html = ""
 
     with gr.Blocks(
         css=custom_css,
@@ -1889,11 +1954,12 @@ def build_demo():
         head=favicon_head,
     ) as demo:
         # Top Navigation
-        gr.HTML("""
+        gr.HTML(f"""
             <nav class="top-nav">
                 <div class="nav-left">
                     <div class="nav-brand">
-                        OpenClaw-MiroSearch 深度研究
+                        {nav_logo_html}
+                        <span class="nav-brand-text">OpenClaw-MiroSearch 深度研究</span>
                     </div>
                 </div>
             </nav>
@@ -1929,7 +1995,7 @@ def build_demo():
                 label="检索源策略",
                 choices=SEARCH_PROFILE_CHOICES,
                 value=_normalize_search_profile(DEFAULT_SEARCH_PROFILE),
-                info="searxng-first=默认 / serp-first=Serp优先 / multi-route=多路聚合 / searxng-only=仅SearXNG",
+                info="searxng-first=默认 / serp-first=Serp优先 / multi-route=串行聚合 / parallel=并发聚合 / parallel-trusted=并发+置信不足串行高信源补检 / searxng-only=仅SearXNG",
             )
             with gr.Row(elem_id="btn-row"):
                 stop_btn = gr.Button(
