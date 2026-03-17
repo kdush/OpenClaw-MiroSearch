@@ -2,6 +2,8 @@
 
 This guide describes how to integrate the MiroThinker model with [LobeChat](https://github.com/lobehub/lobe-chat), an open-source, modern LLM UI framework supporting tool usage (function calling).
 
+> Note: This is a compatibility extension document. The core retrieval service flow of OpenClaw-MiroSearch does not depend on LobeChat.
+
 ## Before You Start
 
 MiroThinker is a reasoning model. When generating responses, it first outputs its reasoning process inside `<think>...</think>` tags, then provides the final answer. For agentic tasks (multi-step tool use), the model performs better when it can see its previous reasoning in the conversation history.

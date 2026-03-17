@@ -1,111 +1,74 @@
-# MiroFlow Agent
+# OpenClaw-MiroSearch Agent Core
 
-> For comprehensive documentation, installation guide, and tool configuration, see the [main README](../../README.md).
+本目录是核心 Agent 运行层。
 
-## Prerequisites
+如果你主要用 Web 页面与 API，请优先看：
 
-Before running the agent, ensure you have:
+- [apps/gradio-demo/README.md](../gradio-demo/README.md)
 
-1. **Installed dependencies**: Run `uv sync` in this directory
-1. **Configured environment variables**: Copy `.env.example` to `.env` and fill in your API keys
-   ```bash
-   cp .env.example .env
-   # Edit .env with your actual API keys (SERPER_API_KEY, JINA_API_KEY, E2B_API_KEY, etc.)
-   ```
-1. **Started your model server** (for MiroThinker models): See the [Serve the MiroThinker Model](../../README.md#serve-the-mirothinker-model) section
-
-## Quick Start
-
-### Run a Single Task
-
-The simplest way to test the agent is running `main.py` directly. It will execute a default task: *"What is the title of today's arxiv paper in computer science?"*
+## 1. 安装
 
 ```bash
-# Using MiroThinker models (requires your own model server)
-uv run python main.py llm=qwen-3 agent=mirothinker_v1.5_keep5_max200 llm.base_url=http://localhost:61002/v1
-
-# Using Claude (requires ANTHROPIC_API_KEY in .env)
-uv run python main.py llm=claude-3-7 agent=single_agent_keep5
-
-# Using GPT-5 (requires OPENAI_API_KEY in .env)
-uv run python main.py llm=gpt-5 agent=single_agent_keep5
+cd apps/miroflow-agent
+uv sync
 ```
 
-### Customize Your Task
-
-To ask a different question, edit `main.py` line 32:
-
-```python
-task_description = "Your custom question here"
-```
-
-Then run the agent again. It will search the web, execute code, and provide an answer.
-
-### Run Benchmark Evaluation
-
-For systematic evaluation on standard benchmarks, add the `benchmark=` parameter:
+## 2. 环境变量
 
 ```bash
-# Run on debug benchmark (quick test)
-uv run python main.py llm=qwen-3 agent=mirothinker_v1.5_keep5_max200 benchmark=debug llm.base_url=http://localhost:61002/v1
-
-# Run on specific benchmarks
-uv run python main.py llm=qwen-3 agent=mirothinker_v1.5_keep5_max200 benchmark=gaia-validation-text-103 llm.base_url=http://localhost:61002/v1
+cp .env.example .env
 ```
 
-## Available Configurations
+至少保证：
 
-### LLM Models
+- LLM 网关可用（`BASE_URL` / `API_KEY`）
+- 至少一个搜索源可用（`SEARXNG_BASE_URL` / `SERPAPI_API_KEY` / `SERPER_API_KEY`）
 
-| Model | Config Name | Requirements |
-|-------|-------------|--------------|
-| MiroThinker (self-hosted) | `qwen-3` | Model server + `llm.base_url` |
-| Claude 3.7 Sonnet | `claude-3-7` | `ANTHROPIC_API_KEY` in .env |
-| GPT-5 | `gpt-5` | `OPENAI_API_KEY` in .env |
+## 3. 直接运行（命令行）
 
-### Agent Configurations
+```bash
+# 通用检索（推荐）
+uv run python main.py llm=qwen-3 agent=demo_search_only llm.base_url=http://localhost:61002/v1
 
-**MiroThinker v1.5:**
+# 强校验检索
+uv run python main.py llm=qwen-3 agent=demo_verified_search llm.base_url=http://localhost:61002/v1
 
-- `mirothinker_v1.5_keep5_max200` ⭐ (recommended) - context management, up to 200 turns
-- `mirothinker_v1.5_keep5_max400` - context management, up to 400 turns (for BrowseComp)
-- `mirothinker_v1.5` - no context management, up to 600 turns
+# 纯思考（不走工具）
+uv run python main.py llm=qwen-3 agent=demo_no_tools llm.base_url=http://localhost:61002/v1
+```
 
-**MiroThinker v1.0:**
+说明：
 
-- `mirothinker_v1.0_keep5` (recommended) - context management, up to 600 turns
-- `mirothinker_v1.0` - no context management, up to 600 turns
+- `demo_search_only` / `demo_verified_search` / `demo_no_tools` 对应 Demo 的 `mode` 预设。
+- 若通过 Gradio 启动，通常不需要手工执行这些命令。
 
-**General (for closed-source models like Claude, GPT-5):**
+## 4. 检索路由配置
 
-- `single_agent_keep5` (recommended) - single agent with context management
-- `single_agent` - single agent without context management
+`search_and_scrape_webpage` 支持如下环境变量（本目录 `.env` 生效）：
 
-**Multi-Agent (Legacy for v0.1/v0.2):**
+- `SEARCH_PROVIDER_ORDER`
+- `SEARCH_PROVIDER_MODE`：`fallback | merge | parallel | parallel_conf_fallback`
+- `SEARCH_PROVIDER_TRUSTED_ORDER`
+- `SEARCH_PROVIDER_PARALLEL_MAX_WAIT_MS`
+- `SEARCH_PROVIDER_PARALLEL_MIN_SUCCESS`
+- `SEARCH_PROVIDER_FALLBACK_MAX_STEPS`
+- `SEARCH_CONFIDENCE_ENABLED`
+- `SEARCH_CONFIDENCE_SCORE_THRESHOLD`
+- `SEARCH_CONFIDENCE_MIN_RESULTS`
+- `SEARCH_CONFIDENCE_MIN_UNIQUE_DOMAINS`
+- `SEARCH_CONFIDENCE_MIN_PROVIDER_COVERAGE`
+- `SEARCH_CONFIDENCE_MIN_HIGH_CONF_HITS`
+- `SEARCH_CONFIDENCE_HIGH_CONF_DOMAINS`
 
-- `multi_agent` - multi-agent with commercial tools
-- `multi_agent_os` - multi-agent with open-source tools
+## 5. 测试
 
-### Benchmark Configs
+```bash
+cd apps/miroflow-agent
+uv run pytest
+```
 
-`debug`, `browsecomp`, `browsecomp_zh`, `hle`, `hle-text-2158`, `hle-text-500`, `gaia-validation-text-103`, `gaia-validation`, `frames`, `xbench_deepsearch`, `futurex`, `seal-0`, `aime2025`, `deepsearchqa`, `webwalkerqa`
+## 6. 相关目录
 
-## Output
-
-The agent will:
-
-1. Execute the task using available tools (search, code execution, etc.)
-1. Generate a final summary and boxed answer
-1. Save detailed logs to `../../logs/` directory
-1. Display the results in the terminal
-
-## Troubleshooting
-
-| Problem | Solution |
-|---------|----------|
-| API key errors | Check `.env` file has correct keys |
-| Model connection failed | Verify `llm.base_url` is accessible |
-| Tool execution errors | Check E2B/Serper/Jina API keys and quotas |
-| Out of memory | Use `mirothinker_v1.5_keep5_max200` config |
-
-For detailed logs, check the `logs/` directory.
+- Agent 配置：`apps/miroflow-agent/conf/agent/`
+- 核心配置加载：`apps/miroflow-agent/src/config/settings.py`
+- 检索实现：`libs/miroflow-tools/src/miroflow_tools/dev_mcp_servers/search_and_scrape_webpage.py`

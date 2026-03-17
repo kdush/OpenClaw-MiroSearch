@@ -1,6 +1,6 @@
-# 🛠️ MiroFlow Tools
+# 🛠️ MiroFlow Tools (OpenClaw-MiroSearch)
 
-> A comprehensive tool management system and MCP (Model Context Protocol) server collection for MiroFlow, providing a unified interface to various AI capabilities including code execution, vision processing, audio transcription, web searching, reasoning, and document reading.
+> A comprehensive tool management system and MCP (Model Context Protocol) server collection for OpenClaw-MiroSearch, providing a unified interface to various AI capabilities including code execution, vision processing, audio transcription, web searching, reasoning, and document reading.
 
 ## ✨ Features
 
@@ -25,9 +25,9 @@ uv sync
 
 Quick reference tables of all available MCP servers and their tools. Click on "Details" to jump to the full documentation.
 
-### 📊 Tools Used in MiroThinker v1.0 and v1.5
+### 📊 Tools Used in Current Default Retrieval Flow
 
-The following tools were used in the MiroThinker v1.0 and v1.5 evaluation:
+The following tools are used in the current default retrieval flow:
 
 | Category                   | Server Name                 | Tools                                                                                                                | Key Environment Variables                                                                 | Link                                     |
 |----------------------------|-----------------------------|----------------------------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------|------------------------------------------|
@@ -38,7 +38,7 @@ The following tools were used in the MiroThinker v1.0 and v1.5 evaluation:
 
 ### 🔧 Additional Available Tools
 
-The following tools are implemented but were not used in the MiroThinker v1.0/v1.5 evaluation:
+The following tools are implemented and can be enabled based on your deployment requirements:
 
 | Category                    | Server Name          | Tools                                             | Key Environment Variables                                           | Link                           |
 |-----------------------------|----------------------|---------------------------------------------------|---------------------------------------------------------------------|--------------------------------|
@@ -644,7 +644,7 @@ if __name__ == "__main__":
 
 ### Server: search_and_scrape_webpage
 
-Google search via Serper API. Used in MiroThinker v1.0/v1.5 evaluation.
+Google/Meta search gateway with multi-provider routing support (Serper / SerpAPI / SearXNG).
 
 **Tools**:
 
@@ -702,7 +702,7 @@ if __name__ == "__main__":
 
 ### Server: jina_scrape_llm_summary
 
-Scrape content from URLs and extract meaningful information using an LLM. Used in MiroThinker v1.0/v1.5 evaluation.
+Scrape content from URLs and extract meaningful information using an LLM.
 
 **Tools**:
 
@@ -842,7 +842,7 @@ if __name__ == "__main__":
 
 ### Server: tool-sogou-search
 
-Sogou search (optimized for Chinese) with website scraping capabilities. *Optional: Not used in the MiroThinker v1.0/v1.5 evaluation*
+Sogou search (optimized for Chinese) with website scraping capabilities. *Optional capability*
 
 **Tools**:
 

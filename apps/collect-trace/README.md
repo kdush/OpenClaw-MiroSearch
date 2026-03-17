@@ -1,6 +1,8 @@
 # Collect Trace
 
 > TL;DR: Treat an RLVR-format dataset (Question + verifiable answer) as a benchmark. Run the evaluation pipeline; use LLM-as-a-Judge to verify correctness; then harvest the correct interaction traces as training data (for SFT / DPO).
+>
+> 注：该目录主要用于上游训练数据采集流程，属于 OpenClaw-MiroSearch 的扩展能力，不是当前检索服务主链路必需组件。
 
 ## 📝 Overview
 

@@ -1,5 +1,7 @@
 # MiroFlow QA Documentation
 
+> Note: This document is historical evaluation/QA material inherited from upstream workflows. It is not part of the current OpenClaw-MiroSearch online retrieval main path.
+
 ## Q1: Can I extract GAIA-Text-103 results from existing GAIA-Validation evaluations?
 
 **Answer:** Yes! If you have completed GAIA-Validation evaluations, you can extract and re-grade the GAIA-Text-103 subset using our specialized tools.
