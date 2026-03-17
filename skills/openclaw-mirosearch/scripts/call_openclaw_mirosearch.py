@@ -8,6 +8,10 @@ from urllib import error, parse, request
 
 DEFAULT_BASE_URL = os.getenv("MIRO_SEARCH_BASE_URL", "http://127.0.0.1:8080")
 DEFAULT_API_NAME = "run_research_once"
+DEFAULT_SEARCH_RESULT_NUM = int(os.getenv("MIRO_SEARCH_RESULT_NUM", "20"))
+DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS = int(
+    os.getenv("MIRO_VERIFICATION_MIN_SEARCH_ROUNDS", "3")
+)
 VALID_MODES = (
     "production-web",
     "verified",
@@ -94,6 +98,8 @@ def run_research_once(
     query: str,
     mode: str,
     search_profile: str,
+    search_result_num: int,
+    verification_min_search_rounds: int,
     api_name: str,
     timeout: int,
 ) -> str:
@@ -104,18 +110,35 @@ def run_research_once(
     try:
         start_resp = _http_post_json(
             start_url,
-            {"data": [query, mode, search_profile]},
+            {
+                "data": [
+                    query,
+                    mode,
+                    search_profile,
+                    search_result_num,
+                    verification_min_search_rounds,
+                ]
+            },
             timeout=timeout,
         )
     except RuntimeError as exc:
-        # 兼容旧版本接口（只接收 query + mode）
+        # 兼容旧版本接口（不支持新增参数）
         if "HTTP 422" not in str(exc):
             raise
-        start_resp = _http_post_json(
-            start_url,
-            {"data": [query, mode]},
-            timeout=timeout,
-        )
+        try:
+            start_resp = _http_post_json(
+                start_url,
+                {"data": [query, mode, search_profile]},
+                timeout=timeout,
+            )
+        except RuntimeError as exc_v1:
+            if "HTTP 422" not in str(exc_v1):
+                raise
+            start_resp = _http_post_json(
+                start_url,
+                {"data": [query, mode]},
+                timeout=timeout,
+            )
 
     event_id = start_resp.get("event_id")
     if not event_id:
@@ -156,6 +179,19 @@ def main() -> int:
         choices=VALID_SEARCH_PROFILES,
         help="检索源策略",
     )
+    parser.add_argument(
+        "--search-result-num",
+        type=int,
+        default=DEFAULT_SEARCH_RESULT_NUM,
+        choices=(10, 20, 30),
+        help="单轮检索条数（建议 20 或 30）",
+    )
+    parser.add_argument(
+        "--verification-min-search-rounds",
+        type=int,
+        default=DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS,
+        help="最少检索轮次（verified 模式生效）",
+    )
     parser.add_argument("--api-name", default=DEFAULT_API_NAME, help="API 名称")
     parser.add_argument("--timeout", type=int, default=240, help="总超时秒数")
     args = parser.parse_args()
@@ -166,6 +202,8 @@ def main() -> int:
             query=args.query,
             mode=args.mode,
             search_profile=args.search_profile,
+            search_result_num=args.search_result_num,
+            verification_min_search_rounds=args.verification_min_search_rounds,
             api_name=args.api_name,
             timeout=args.timeout,
         )

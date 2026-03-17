@@ -84,6 +84,11 @@ docker compose --env-file .env.compose up -d --build
 - 强校验：`verified + parallel-trusted`
 - 省额度：`quota + searxng-only`
 
+### 新增控制项
+
+- `search_result_num`：单轮检索条数（10/20/30）
+- `verification_min_search_rounds`：最少检索轮次（verified 模式生效）
+
 ## 5. API 调用
 
 ### 5.1 单次研究（最终 Markdown）
@@ -102,6 +107,16 @@ curl -sS -H 'Content-Type: application/json' \
 
 ```bash
 curl -sS "http://127.0.0.1:8080/gradio_api/call/run_research_once/<event_id>"
+```
+
+### 5.1.1 扩展接口（可控检索深度）
+
+`run_research_once_v2` 支持传入 `search_result_num` 与 `verification_min_search_rounds`：
+
+```bash
+curl -sS -H 'Content-Type: application/json' \
+  -d '{"data":["中国大陆有哪些厂商推出了 OpenClaw 变体？","verified","parallel-trusted",30,4]}' \
+  'http://127.0.0.1:8080/gradio_api/call/run_research_once_v2'
 ```
 
 ### 5.2 停止当前任务

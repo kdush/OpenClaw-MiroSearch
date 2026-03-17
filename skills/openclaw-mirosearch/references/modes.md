@@ -24,6 +24,16 @@
 - 敏感事实核查：`verified + parallel-trusted`
 - 成本压缩：`quota + searxng-only`
 
+## 检索深度参数
+
+- `search_result_num`：单轮检索条数（10/20/30）
+- `verification_min_search_rounds`：最少检索轮次（仅 `verified` 生效）
+
+推荐：
+
+- 常规：`search_result_num=20`、`verification_min_search_rounds=3`
+- 严格核查：`search_result_num=30`、`verification_min_search_rounds=4`
+
 ## 什么时候升级到 `verified`
 
 出现以下任一情况：

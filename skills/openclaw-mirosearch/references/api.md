@@ -4,7 +4,7 @@
 
 ## 1. 单次研究接口
 
-### 1) 发起任务
+### 1) 发起任务（兼容接口）
 
 `POST /gradio_api/call/run_research_once`
 
@@ -13,6 +13,19 @@
 ```json
 {"data": ["<query>", "<mode>", "<search_profile>"]}
 ```
+
+扩展接口（推荐）：
+
+`POST /gradio_api/call/run_research_once_v2`
+
+```json
+{"data": ["<query>", "<mode>", "<search_profile>", 30, 4]}
+```
+
+其中：
+
+- 第 4 项：`search_result_num`（10/20/30）
+- 第 5 项：`verification_min_search_rounds`（verified 模式生效）
 
 返回：
 
@@ -23,6 +36,10 @@
 ### 2) 轮询结果
 
 `GET /gradio_api/call/run_research_once/{event_id}`
+
+扩展接口轮询：
+
+`GET /gradio_api/call/run_research_once_v2/{event_id}`
 
 返回 SSE 文本；读取 `event: complete` 对应 `data`，第一项即最终 Markdown。
 
@@ -64,5 +81,19 @@ python3 scripts/call_openclaw_mirosearch.py \
   --base-url "http://127.0.0.1:8080" \
   --query "中国大陆有哪些厂商推出了 OpenClaw 变体？" \
   --mode balanced \
-  --search-profile parallel-trusted
+  --search-profile parallel-trusted \
+  --search-result-num 30 \
+  --verification-min-search-rounds 4 \
+  --api-name run_research_once_v2
 ```
+
+## 6. 可观测性检查（是否真的多路）
+
+如果结果仍像单路，可在最终 Markdown 中重点检查是否出现：
+
+- `provider_mode`
+- `providers_with_results`
+- `route_trace`
+- `confidence`
+
+若 `providers_with_results` 只有 1，说明当前有效搜索源仍只有一路。

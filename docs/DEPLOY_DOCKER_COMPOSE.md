@@ -27,6 +27,12 @@ cp .env.compose.example .env.compose
 - `SERPAPI_API_KEY`
 - `SERPER_API_KEY`
 
+建议同时设置（提升交叉验证体感）：
+
+- `DEFAULT_SEARCH_PROFILE=parallel-trusted`
+- `DEFAULT_SEARCH_RESULT_NUM=20`（或 30）
+- `DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS=3`（核查型问题可提到 4）
+
 ## 2. 启动服务
 
 ```bash

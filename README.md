@@ -59,6 +59,7 @@ OpenClaw-MiroSearch 是一个面向智能体场景的开源联网检索工程，
 ### 对外接口
 
 - `POST /gradio_api/call/run_research_once`
+- `POST /gradio_api/call/run_research_once_v2`
 - `GET /gradio_api/call/run_research_once/{event_id}`
 - `POST /gradio_api/run/stop_current`
 - `GET /gradio_api/info`
@@ -119,6 +120,8 @@ curl -sS 'http://127.0.0.1:8080/gradio_api/info'
 
 ## API 调用示例
 
+兼容接口（v1，三参数）：
+
 ```bash
 BASE_URL="http://127.0.0.1:8080"
 QUERY="中国大陆有哪些厂商推出了 OpenClaw 变体？"
@@ -130,6 +133,23 @@ EVENT_ID=$(curl -sS -H 'Content-Type: application/json' \
   "$BASE_URL/gradio_api/call/run_research_once" | python3 -c 'import sys,json;print(json.load(sys.stdin)["event_id"])')
 
 curl -sS "$BASE_URL/gradio_api/call/run_research_once/$EVENT_ID"
+```
+
+扩展接口（v2，推荐）：
+
+```bash
+BASE_URL="http://127.0.0.1:8080"
+QUERY="中国大陆有哪些厂商推出了 OpenClaw 变体？"
+MODE="verified"
+PROFILE="parallel-trusted"
+RESULT_NUM=30
+MIN_ROUNDS=4
+
+EVENT_ID=$(curl -sS -H 'Content-Type: application/json' \
+  -d "{\"data\":[\"$QUERY\",\"$MODE\",\"$PROFILE\",$RESULT_NUM,$MIN_ROUNDS]}" \
+  "$BASE_URL/gradio_api/call/run_research_once_v2" | python3 -c 'import sys,json;print(json.load(sys.stdin)["event_id"])')
+
+curl -sS "$BASE_URL/gradio_api/call/run_research_once_v2/$EVENT_ID"
 ```
 
 终止当前任务：
@@ -150,6 +170,7 @@ curl -sS -H 'Content-Type: application/json' \
 - `SEARCH_PROVIDER_PARALLEL_MAX_WAIT_MS`
 - `SEARCH_PROVIDER_PARALLEL_MIN_SUCCESS`
 - `SEARCH_PROVIDER_FALLBACK_MAX_STEPS`
+- `SEARCH_RESULT_NUM`
 - `SEARCH_CONFIDENCE_ENABLED`
 - `SEARCH_CONFIDENCE_SCORE_THRESHOLD`
 - `SEARCH_CONFIDENCE_MIN_RESULTS`
@@ -163,6 +184,7 @@ curl -sS -H 'Content-Type: application/json' \
 - 默认生产基线：`mode=balanced` + `search_profile=parallel-trusted`
 - 高风险事实核查：`mode=verified` + `search_profile=parallel-trusted`
 - 额度优先场景：`mode=quota` + `search_profile=searxng-only`
+- 核查深度建议：`search_result_num=30` + `verification_min_search_rounds=4`
 
 ## 文档索引
 
