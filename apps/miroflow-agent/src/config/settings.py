@@ -306,6 +306,40 @@ def create_mcp_server_parameters(cfg: DictConfig, agent_cfg: DictConfig):
         dynamic_search_provider_mode = os.environ.get(
             "SEARCH_PROVIDER_MODE", "fallback"
         )
+        dynamic_search_provider_trusted_order = os.environ.get(
+            "SEARCH_PROVIDER_TRUSTED_ORDER", "serpapi,searxng,serper"
+        )
+        dynamic_search_provider_parallel_max_wait_ms = os.environ.get(
+            "SEARCH_PROVIDER_PARALLEL_MAX_WAIT_MS", "4500"
+        )
+        dynamic_search_provider_parallel_min_success = os.environ.get(
+            "SEARCH_PROVIDER_PARALLEL_MIN_SUCCESS", "1"
+        )
+        dynamic_search_provider_fallback_max_steps = os.environ.get(
+            "SEARCH_PROVIDER_FALLBACK_MAX_STEPS", "3"
+        )
+        dynamic_search_confidence_enabled = os.environ.get(
+            "SEARCH_CONFIDENCE_ENABLED", "1"
+        )
+        dynamic_search_confidence_score_threshold = os.environ.get(
+            "SEARCH_CONFIDENCE_SCORE_THRESHOLD", "0.62"
+        )
+        dynamic_search_confidence_min_results = os.environ.get(
+            "SEARCH_CONFIDENCE_MIN_RESULTS", "8"
+        )
+        dynamic_search_confidence_min_unique_domains = os.environ.get(
+            "SEARCH_CONFIDENCE_MIN_UNIQUE_DOMAINS", "5"
+        )
+        dynamic_search_confidence_min_provider_coverage = os.environ.get(
+            "SEARCH_CONFIDENCE_MIN_PROVIDER_COVERAGE", "2"
+        )
+        dynamic_search_confidence_min_high_conf_hits = os.environ.get(
+            "SEARCH_CONFIDENCE_MIN_HIGH_CONF_HITS", "2"
+        )
+        dynamic_search_confidence_high_conf_domains = os.environ.get(
+            "SEARCH_CONFIDENCE_HIGH_CONF_DOMAINS",
+            "reuters.com,apnews.com,bbc.com,aljazeera.com,state.gov,un.org,iaea.org,who.int",
+        )
         configs.append(
             {
                 "name": "search_and_scrape_webpage",
@@ -322,6 +356,17 @@ def create_mcp_server_parameters(cfg: DictConfig, agent_cfg: DictConfig):
                         "SEARXNG_BASE_URL": dynamic_searxng_base_url or "",
                         "SEARCH_PROVIDER_ORDER": dynamic_search_provider_order,
                         "SEARCH_PROVIDER_MODE": dynamic_search_provider_mode,
+                        "SEARCH_PROVIDER_TRUSTED_ORDER": dynamic_search_provider_trusted_order,
+                        "SEARCH_PROVIDER_PARALLEL_MAX_WAIT_MS": dynamic_search_provider_parallel_max_wait_ms,
+                        "SEARCH_PROVIDER_PARALLEL_MIN_SUCCESS": dynamic_search_provider_parallel_min_success,
+                        "SEARCH_PROVIDER_FALLBACK_MAX_STEPS": dynamic_search_provider_fallback_max_steps,
+                        "SEARCH_CONFIDENCE_ENABLED": dynamic_search_confidence_enabled,
+                        "SEARCH_CONFIDENCE_SCORE_THRESHOLD": dynamic_search_confidence_score_threshold,
+                        "SEARCH_CONFIDENCE_MIN_RESULTS": dynamic_search_confidence_min_results,
+                        "SEARCH_CONFIDENCE_MIN_UNIQUE_DOMAINS": dynamic_search_confidence_min_unique_domains,
+                        "SEARCH_CONFIDENCE_MIN_PROVIDER_COVERAGE": dynamic_search_confidence_min_provider_coverage,
+                        "SEARCH_CONFIDENCE_MIN_HIGH_CONF_HITS": dynamic_search_confidence_min_high_conf_hits,
+                        "SEARCH_CONFIDENCE_HIGH_CONF_DOMAINS": dynamic_search_confidence_high_conf_domains,
                         "TENCENTCLOUD_SECRET_ID": TENCENTCLOUD_SECRET_ID,
                         "TENCENTCLOUD_SECRET_KEY": TENCENTCLOUD_SECRET_KEY,
                     },
