@@ -54,6 +54,8 @@ SEARCH_PROVIDER_TRUSTED_ORDER = os.getenv(
 DEFAULT_SEARCH_PROVIDER_PARALLEL_MAX_WAIT_MS = 4500
 DEFAULT_SEARCH_PROVIDER_PARALLEL_MIN_SUCCESS = 1
 DEFAULT_SEARCH_PROVIDER_FALLBACK_MAX_STEPS = 3
+DEFAULT_SEARCH_RESULT_NUM = 10
+DEFAULT_SEARCH_RESULT_NUM_MAX = 50
 
 DEFAULT_SEARCH_CONFIDENCE_ENABLED = True
 DEFAULT_SEARCH_CONFIDENCE_SCORE_THRESHOLD = 0.62
@@ -112,6 +114,16 @@ SEARCH_PROVIDER_PARALLEL_MIN_SUCCESS = _read_env_int(
 SEARCH_PROVIDER_FALLBACK_MAX_STEPS = _read_env_int(
     "SEARCH_PROVIDER_FALLBACK_MAX_STEPS",
     DEFAULT_SEARCH_PROVIDER_FALLBACK_MAX_STEPS,
+    min_value=1,
+)
+SEARCH_RESULT_NUM = _read_env_int(
+    "SEARCH_RESULT_NUM",
+    DEFAULT_SEARCH_RESULT_NUM,
+    min_value=1,
+)
+SEARCH_RESULT_NUM_MAX = _read_env_int(
+    "SEARCH_RESULT_NUM_MAX",
+    DEFAULT_SEARCH_RESULT_NUM_MAX,
     min_value=1,
 )
 
@@ -544,7 +556,15 @@ async def google_search(
                     "No search provider configured. Set SERPER_API_KEY or SERPAPI_API_KEY or SEARXNG_BASE_URL."
                 )
 
-            result_num = num if num is not None else 10
+            requested_result_num = num if num is not None else SEARCH_RESULT_NUM
+            try:
+                requested_result_num = int(requested_result_num)
+            except (TypeError, ValueError):
+                requested_result_num = SEARCH_RESULT_NUM
+            result_num = min(
+                SEARCH_RESULT_NUM_MAX,
+                max(1, int(requested_result_num)),
+            )
             result_page = page if page is not None else 1
             provider_errors: list[str] = []
             route_trace: list[dict[str, Any]] = []

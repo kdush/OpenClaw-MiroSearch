@@ -1039,11 +1039,11 @@ class Orchestrator:
                 if boxed_content:
                     self.intermediate_boxed_answers.append(boxed_content)
 
-                if should_break:
+                if should_break and tool_calls:
                     self.task_log.log_step(
                         "info",
                         f"Main Agent | Turn: {turn_count} | LLM Call",
-                        "should break is True, breaking the loop",
+                        "should break is True 且存在工具调用，直接结束循环。",
                     )
                     break
             else:
@@ -1088,6 +1088,14 @@ class Orchestrator:
                             },
                         )
                         continue
+
+                if should_break:
+                    self.task_log.log_step(
+                        "info",
+                        f"Main Agent | Turn: {turn_count} | LLM Call",
+                        "should break is True，且已通过/跳过交叉校验门槛，结束循环。",
+                    )
+                    break
 
                 (
                     should_continue,

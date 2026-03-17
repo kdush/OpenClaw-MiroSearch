@@ -318,6 +318,7 @@ def create_mcp_server_parameters(cfg: DictConfig, agent_cfg: DictConfig):
         dynamic_search_provider_fallback_max_steps = os.environ.get(
             "SEARCH_PROVIDER_FALLBACK_MAX_STEPS", "3"
         )
+        dynamic_search_result_num = os.environ.get("SEARCH_RESULT_NUM", "10")
         dynamic_search_confidence_enabled = os.environ.get(
             "SEARCH_CONFIDENCE_ENABLED", "1"
         )
@@ -360,6 +361,7 @@ def create_mcp_server_parameters(cfg: DictConfig, agent_cfg: DictConfig):
                         "SEARCH_PROVIDER_PARALLEL_MAX_WAIT_MS": dynamic_search_provider_parallel_max_wait_ms,
                         "SEARCH_PROVIDER_PARALLEL_MIN_SUCCESS": dynamic_search_provider_parallel_min_success,
                         "SEARCH_PROVIDER_FALLBACK_MAX_STEPS": dynamic_search_provider_fallback_max_steps,
+                        "SEARCH_RESULT_NUM": dynamic_search_result_num,
                         "SEARCH_CONFIDENCE_ENABLED": dynamic_search_confidence_enabled,
                         "SEARCH_CONFIDENCE_SCORE_THRESHOLD": dynamic_search_confidence_score_threshold,
                         "SEARCH_CONFIDENCE_MIN_RESULTS": dynamic_search_confidence_min_results,
