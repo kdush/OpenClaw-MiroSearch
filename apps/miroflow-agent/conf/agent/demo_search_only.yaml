@@ -1,0 +1,17 @@
+# conf/agent/demo_search_only.yaml
+defaults:
+  - default
+  - _self_
+
+main_agent:
+  tools:
+    - search_and_scrape_webpage
+  tool_blacklist:
+    - ["search_and_scrape_webpage", "sogou_search"]
+  max_turns: 12
+
+sub_agents:
+
+keep_tool_result: 2
+context_compress_limit: 2
+retry_with_summary: false

@@ -1,0 +1,39 @@
+# conf/agent/demo_verified_search.yaml
+# 数字事实问题的多轮检索+交叉校验配置
+
+defaults:
+  - default
+  - _self_
+
+main_agent:
+  tools:
+    - search_and_scrape_webpage
+  tool_blacklist:
+    - ["search_and_scrape_webpage", "sogou_search"]
+  max_turns: 14
+
+sub_agents:
+
+keep_tool_result: 2
+context_compress_limit: 2
+retry_with_summary: false
+
+verification:
+  enabled: true
+  min_search_rounds: 3
+  min_high_conf_sources: 2
+  max_guidance_attempts: 3
+  use_high_model_for_verification: true
+  high_conf_domains:
+    - reuters.com
+    - apnews.com
+    - bbc.com
+    - aljazeera.com
+    - un.org
+    - iaea.org
+    - defense.gov
+    - mod.gov.il
+    - state.gov
+    - who.int
+    - imf.org
+    - worldbank.org

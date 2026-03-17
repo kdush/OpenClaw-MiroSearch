@@ -1,0 +1,9 @@
+# conf/llm/claude-3-7.yaml
+defaults:
+  - default
+  - _self_
+
+provider: "anthropic"
+model_name: "claude-3-7-sonnet-20250219"
+base_url: https://api.anthropic.com
+max_context_length: 65536

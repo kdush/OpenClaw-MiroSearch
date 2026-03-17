@@ -1,0 +1,73 @@
+# LobeChat Integration Guide
+
+This guide describes how to integrate the MiroThinker model with [LobeChat](https://github.com/lobehub/lobe-chat), an open-source, modern LLM UI framework supporting tool usage (function calling).
+
+## Before You Start
+
+MiroThinker is a reasoning model. When generating responses, it first outputs its reasoning process inside `<think>...</think>` tags, then provides the final answer. For agentic tasks (multi-step tool use), the model performs better when it can see its previous reasoning in the conversation history.
+
+However, LobeChat does not preserve reasoning content in conversation history. When sending messages back to the API, LobeChat strips the `<think>...</think>` content from previous assistant messages. This means the model cannot see its prior reasoning steps.
+
+- For general chat: This works fine.
+- For agentic workflows: Performance may be degraded since the model cannot reference its previous reasoning.
+
+If you need full reasoning preservation for agentic use cases, consider modifying LobeChat's source code to return `reasoning_content` in conversation history.
+
+## 1. Start the Inference Service
+
+First, launch the MiroThinker model using vLLM with the OpenAI-compatible API adapter. We use vLLM because it supports loading custom tool parsers from external Python files, while SGLang does not. Ensure you include the tool parser plugin.
+
+```bash
+# Configuration
+PORT=61002
+MODEL_PATH=miromind-ai/MiroThinker-v1.5-30B
+
+# Start vLLM server
+vllm serve $MODEL_PATH \
+    --served-model-name mirothinker \
+    --port $PORT \
+    --trust-remote-code \
+    --chat-template chat_template.jinja \
+    --tool-parser-plugin MiroThinkerToolParser.py \
+    --tool-call-parser mirothinker \
+    --enable-auto-tool-choice
+```
+
+## 2. Configure LobeChat
+
+You can use either the self-hosted version or the [web application](https://lobechat.com/chat).
+
+### Step 1: Access Settings
+
+Navigate to **Settings** -> **AI Service Provider** to add a custom AI service provider.
+
+![Settings Navigation](img/settings.png)
+
+### Step 2: Add Custom AI Provider
+
+Click the `+` button to add a new provider and configure it as follows:
+
+![Add AI Provider](img/AI-provider.png)
+
+| Field | Value | Description |
+| :--- | :--- | :--- |
+| **Provider ID** | `miromind` | Or any identifier you prefer. |
+| **Request Format** | `OPENAI` |  |
+| **API Key** | `your-api-key` | Use any string if auth is disabled. |
+| **API Proxy Address** | `http://localhost:61002/v1` | Replace with your actual service address. |
+
+### Step 3: Configure the Model
+
+After adding the provider, add the models you deploy to the service provider's model list.:
+
+1. Add a new model with the ID `mirothinker` (must match `--served-model-name`).
+1. **Crucial**: Enable the **Function Calling** capability toggle.
+1. Click "Check" to verify connectivity.
+
+![Model Configuration](img/model.png)
+
+## 3. Usage Demo
+
+Once configured, you can use MiroThinker in LobeChat with full tool-calling capabilities.
+
+![Presentation Demo](img/presentation.gif)

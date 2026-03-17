@@ -1,0 +1,15 @@
+# conf/agent/demo_no_tools.yaml
+defaults:
+  - default
+  - _self_
+
+main_agent:
+  tools: []
+  tool_blacklist: []
+  max_turns: 6
+
+sub_agents:
+
+keep_tool_result: 0
+context_compress_limit: 1
+retry_with_summary: false

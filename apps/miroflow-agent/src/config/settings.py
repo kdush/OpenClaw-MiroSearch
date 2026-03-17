@@ -1,0 +1,503 @@
+# Copyright (c) 2025 MiroMind
+# This source code is licensed under the Apache 2.0 License.
+
+"""
+Configuration settings and MCP server parameter management.
+
+This module handles:
+- Loading environment variables for API keys and service URLs
+- Creating MCP server configurations for different tools
+- Exposing sub-agents as callable tools
+- Collecting environment information for logging
+"""
+
+import os
+import sys
+
+from dotenv import load_dotenv
+from mcp import StdioServerParameters
+from omegaconf import DictConfig
+
+# Load environment variables from .env file
+load_dotenv()
+
+# API for Google Search
+SERPER_API_KEY = os.environ.get("SERPER_API_KEY")
+SERPER_BASE_URL = os.environ.get("SERPER_BASE_URL", "https://google.serper.dev")
+SERPAPI_API_KEY = os.environ.get("SERPAPI_API_KEY")
+SEARXNG_BASE_URL = os.environ.get("SEARXNG_BASE_URL")
+
+# API for Web Scraping
+JINA_API_KEY = os.environ.get("JINA_API_KEY")
+JINA_BASE_URL = os.environ.get("JINA_BASE_URL", "https://r.jina.ai")
+
+# API for Linux Sandbox
+E2B_API_KEY = os.environ.get("E2B_API_KEY")
+
+# API for Open-Source Audio Transcription Tool
+WHISPER_BASE_URL = os.environ.get("WHISPER_BASE_URL")
+WHISPER_API_KEY = os.environ.get("WHISPER_API_KEY")
+WHISPER_MODEL_NAME = os.environ.get("WHISPER_MODEL_NAME")
+
+# API for Open-Source VQA Tool
+VISION_API_KEY = os.environ.get("VISION_API_KEY")
+VISION_BASE_URL = os.environ.get("VISION_BASE_URL")
+VISION_MODEL_NAME = os.environ.get("VISION_MODEL_NAME")
+
+# API for Open-Source Reasoning Tool
+REASONING_API_KEY = os.environ.get("REASONING_API_KEY")
+REASONING_BASE_URL = os.environ.get("REASONING_BASE_URL")
+REASONING_MODEL_NAME = os.environ.get("REASONING_MODEL_NAME")
+
+# API for Claude Sonnet 3.7 as Commercial Tools
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
+ANTHROPIC_BASE_URL = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
+
+# API Keys for Commercial Tools
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+
+# API for Sogou Search
+TENCENTCLOUD_SECRET_ID = os.environ.get("TENCENTCLOUD_SECRET_ID")
+TENCENTCLOUD_SECRET_KEY = os.environ.get("TENCENTCLOUD_SECRET_KEY")
+
+# API for Summary LLM
+SUMMARY_LLM_API_KEY = os.environ.get("SUMMARY_LLM_API_KEY")
+SUMMARY_LLM_BASE_URL = os.environ.get("SUMMARY_LLM_BASE_URL")
+SUMMARY_LLM_MODEL_NAME = os.environ.get("SUMMARY_LLM_MODEL_NAME")
+
+
+# MCP server configuration generation function
+def create_mcp_server_parameters(cfg: DictConfig, agent_cfg: DictConfig):
+    """
+    Create MCP server configurations based on agent configuration.
+
+    Dynamically generates StdioServerParameters for each tool specified in the
+    agent configuration. Each tool type (search, python, vqa, etc.) has its own
+    MCP server with appropriate environment variables.
+
+    Args:
+        cfg: Global Hydra configuration object
+        agent_cfg: Agent-specific configuration containing 'tools' and 'tool_blacklist'
+
+    Returns:
+        Tuple of (configs, blacklist) where:
+        - configs: List of dicts with 'name' and 'params' (StdioServerParameters)
+        - blacklist: Set of (server_name, tool_name) tuples to exclude
+    """
+    configs = []
+
+    if (
+        agent_cfg.get("tools", None) is not None
+        and "tool-google-search" in agent_cfg["tools"]
+    ):
+        if not SERPER_API_KEY:
+            raise ValueError(
+                "SERPER_API_KEY not set, tool-google-search will be unavailable."
+            )
+
+        configs.append(
+            {
+                "name": "tool-google-search",
+                "params": StdioServerParameters(
+                    command=sys.executable,
+                    args=[
+                        "-m",
+                        "miroflow_tools.mcp_servers.searching_google_mcp_server",
+                    ],
+                    env={
+                        "SERPER_API_KEY": SERPER_API_KEY,
+                        "SERPER_BASE_URL": SERPER_BASE_URL,
+                        "JINA_API_KEY": JINA_API_KEY,
+                        "JINA_BASE_URL": JINA_BASE_URL,
+                    },
+                ),
+            }
+        )
+
+    if (
+        agent_cfg.get("tools", None) is not None
+        and "tool-sogou-search" in agent_cfg["tools"]
+    ):
+        configs.append(
+            {
+                "name": "tool-sogou-search",
+                "params": StdioServerParameters(
+                    command=sys.executable,
+                    args=[
+                        "-m",
+                        "miroflow_tools.mcp_servers.searching_sogou_mcp_server",
+                    ],
+                    env={
+                        "TENCENTCLOUD_SECRET_ID": TENCENTCLOUD_SECRET_ID,
+                        "TENCENTCLOUD_SECRET_KEY": TENCENTCLOUD_SECRET_KEY,
+                        "JINA_API_KEY": JINA_API_KEY,
+                        "JINA_BASE_URL": JINA_BASE_URL,
+                    },
+                ),
+            }
+        )
+
+    if agent_cfg.get("tools", None) is not None and "tool-python" in agent_cfg["tools"]:
+        configs.append(
+            {
+                "name": "tool-python",
+                "params": StdioServerParameters(
+                    command=sys.executable,
+                    args=["-m", "miroflow_tools.mcp_servers.python_mcp_server"],
+                    env={"E2B_API_KEY": E2B_API_KEY},
+                ),
+            }
+        )
+
+    if agent_cfg.get("tools", None) is not None and "tool-vqa" in agent_cfg["tools"]:
+        configs.append(
+            {
+                "name": "tool-vqa",
+                "params": StdioServerParameters(
+                    command=sys.executable,
+                    args=["-m", "miroflow_tools.mcp_servers.vision_mcp_server"],
+                    env={
+                        "OPENAI_API_KEY": OPENAI_API_KEY,
+                        "OPENAI_BASE_URL": OPENAI_BASE_URL,
+                    },
+                ),
+            }
+        )
+
+    if agent_cfg.get("tools", None) is not None and "tool-vqa-os" in agent_cfg["tools"]:
+        configs.append(
+            {
+                "name": "tool-vqa-os",
+                "params": StdioServerParameters(
+                    command=sys.executable,
+                    args=["-m", "miroflow_tools.mcp_servers.vision_mcp_server_os"],
+                    env={
+                        "VISION_API_KEY": VISION_API_KEY,
+                        "VISION_BASE_URL": VISION_BASE_URL,
+                        "VISION_MODEL_NAME": VISION_MODEL_NAME,
+                    },
+                ),
+            }
+        )
+
+    if (
+        agent_cfg.get("tools", None) is not None
+        and "tool-transcribe" in agent_cfg["tools"]
+    ):
+        configs.append(
+            {
+                "name": "tool-transcribe",
+                "params": StdioServerParameters(
+                    command=sys.executable,
+                    args=["-m", "miroflow_tools.mcp_servers.audio_mcp_server"],
+                    env={
+                        "OPENAI_API_KEY": OPENAI_API_KEY,
+                        "OPENAI_BASE_URL": OPENAI_BASE_URL,
+                    },
+                ),
+            }
+        )
+
+    if (
+        agent_cfg.get("tools", None) is not None
+        and "tool-transcribe-os" in agent_cfg["tools"]
+    ):
+        configs.append(
+            {
+                "name": "tool-transcribe-os",
+                "params": StdioServerParameters(
+                    command=sys.executable,
+                    args=["-m", "miroflow_tools.mcp_servers.audio_mcp_server_os"],
+                    env={
+                        "WHISPER_BASE_URL": WHISPER_BASE_URL,
+                        "WHISPER_API_KEY": WHISPER_API_KEY,
+                        "WHISPER_MODEL_NAME": WHISPER_MODEL_NAME,
+                    },
+                ),
+            }
+        )
+
+    if (
+        agent_cfg.get("tools", None) is not None
+        and "tool-reasoning" in agent_cfg["tools"]
+    ):
+        configs.append(
+            {
+                "name": "tool-reasoning",
+                "params": StdioServerParameters(
+                    command=sys.executable,
+                    args=[
+                        "-m",
+                        "miroflow_tools.mcp_servers.reasoning_mcp_server",
+                    ],
+                    env={
+                        "ANTHROPIC_API_KEY": ANTHROPIC_API_KEY,
+                        "ANTHROPIC_BASE_URL": ANTHROPIC_BASE_URL,
+                    },
+                ),
+            }
+        )
+
+    if (
+        agent_cfg.get("tools", None) is not None
+        and "tool-reasoning-os" in agent_cfg["tools"]
+    ):
+        configs.append(
+            {
+                "name": "tool-reasoning-os",
+                "params": StdioServerParameters(
+                    command=sys.executable,
+                    args=[
+                        "-m",
+                        "miroflow_tools.mcp_servers.reasoning_mcp_server_os",
+                    ],
+                    env={
+                        "REASONING_API_KEY": REASONING_API_KEY,
+                        "REASONING_BASE_URL": REASONING_BASE_URL,
+                        "REASONING_MODEL_NAME": REASONING_MODEL_NAME,
+                    },
+                ),
+            }
+        )
+
+    # reader
+    if agent_cfg.get("tools", None) is not None and "tool-reader" in agent_cfg["tools"]:
+        configs.append(
+            {
+                "name": "tool-reader",
+                "params": StdioServerParameters(
+                    command=sys.executable,
+                    args=["-m", "markitdown_mcp"],
+                ),
+            }
+        )
+
+    if (
+        agent_cfg.get("tools", None) is not None
+        and "tool-reading" in agent_cfg["tools"]
+    ):
+        configs.append(
+            {
+                "name": "tool-reading",
+                "params": StdioServerParameters(
+                    command=sys.executable,
+                    args=["-m", "miroflow_tools.mcp_servers.reading_mcp_server"],
+                ),
+            }
+        )
+
+    if (
+        agent_cfg.get("tools", None) is not None
+        and "search_and_scrape_webpage" in agent_cfg["tools"]
+    ):
+        # 每次创建参数时实时读取检索路由配置，支持按请求策略切换。
+        dynamic_serper_api_key = os.environ.get("SERPER_API_KEY", SERPER_API_KEY)
+        dynamic_serper_base_url = os.environ.get(
+            "SERPER_BASE_URL", SERPER_BASE_URL
+        )
+        dynamic_serpapi_api_key = os.environ.get("SERPAPI_API_KEY", SERPAPI_API_KEY)
+        dynamic_searxng_base_url = os.environ.get(
+            "SEARXNG_BASE_URL", SEARXNG_BASE_URL
+        )
+        dynamic_search_provider_order = os.environ.get(
+            "SEARCH_PROVIDER_ORDER", "searxng,serpapi,serper"
+        )
+        dynamic_search_provider_mode = os.environ.get(
+            "SEARCH_PROVIDER_MODE", "fallback"
+        )
+        configs.append(
+            {
+                "name": "search_and_scrape_webpage",
+                "params": StdioServerParameters(
+                    command=sys.executable,
+                    args=[
+                        "-m",
+                        "miroflow_tools.dev_mcp_servers.search_and_scrape_webpage",
+                    ],
+                    env={
+                        "SERPER_API_KEY": dynamic_serper_api_key or "",
+                        "SERPER_BASE_URL": dynamic_serper_base_url or "",
+                        "SERPAPI_API_KEY": dynamic_serpapi_api_key or "",
+                        "SEARXNG_BASE_URL": dynamic_searxng_base_url or "",
+                        "SEARCH_PROVIDER_ORDER": dynamic_search_provider_order,
+                        "SEARCH_PROVIDER_MODE": dynamic_search_provider_mode,
+                        "TENCENTCLOUD_SECRET_ID": TENCENTCLOUD_SECRET_ID,
+                        "TENCENTCLOUD_SECRET_KEY": TENCENTCLOUD_SECRET_KEY,
+                    },
+                ),
+            }
+        )
+
+    if (
+        agent_cfg.get("tools", None) is not None
+        and "jina_scrape_llm_summary" in agent_cfg["tools"]
+    ):
+        configs.append(
+            {
+                "name": "jina_scrape_llm_summary",
+                "params": StdioServerParameters(
+                    command=sys.executable,
+                    args=[
+                        "-m",
+                        "miroflow_tools.dev_mcp_servers.jina_scrape_llm_summary",
+                    ],
+                    env={
+                        "JINA_API_KEY": JINA_API_KEY,
+                        "JINA_BASE_URL": JINA_BASE_URL,
+                        "SUMMARY_LLM_BASE_URL": SUMMARY_LLM_BASE_URL,
+                        "SUMMARY_LLM_MODEL_NAME": SUMMARY_LLM_MODEL_NAME,
+                        "SUMMARY_LLM_API_KEY": SUMMARY_LLM_API_KEY,
+                    },
+                ),
+            }
+        )
+
+    if (
+        agent_cfg.get("tools", None) is not None
+        and "stateless_python" in agent_cfg["tools"]
+    ):
+        configs.append(
+            {
+                "name": "stateless_python",
+                "params": StdioServerParameters(
+                    command=sys.executable,
+                    args=[
+                        "-m",
+                        "miroflow_tools.dev_mcp_servers.stateless_python_server",
+                    ],
+                    env={"E2B_API_KEY": E2B_API_KEY},
+                ),
+            }
+        )
+
+    if (
+        agent_cfg.get("tools", None) is not None
+        and "task_planner" in agent_cfg["tools"]
+    ):
+        # Generate a random UUID for each MCP server instance to ensure isolation
+        # Each time create_mcp_server_parameters is called, a new UUID is generated
+        # This automatically isolates todo lists for concurrent tasks
+        import uuid
+
+        todo_task_id = str(uuid.uuid4())
+        configs.append(
+            {
+                "name": "task_planner",
+                "params": StdioServerParameters(
+                    command=sys.executable,
+                    args=[
+                        "-m",
+                        "miroflow_tools.dev_mcp_servers.task_planner",
+                    ],
+                    env={"TASK_ID": todo_task_id},
+                ),
+            }
+        )
+
+    blacklist = set()
+    for black_list_item in agent_cfg.get("tool_blacklist", []):
+        blacklist.add((black_list_item[0], black_list_item[1]))
+    return configs, blacklist
+
+
+def expose_sub_agents_as_tools(sub_agents_cfg: DictConfig):
+    """
+    Convert sub-agent configurations into tool definitions for the main agent.
+
+    This allows the main agent to invoke sub-agents (like the browsing agent)
+    as if they were regular MCP tools, enabling a hierarchical agent architecture.
+
+    Args:
+        sub_agents_cfg: Configuration containing sub-agent definitions
+
+    Returns:
+        List of server parameter dicts, each with 'name' and 'tools' keys.
+        Each tool includes 'name', 'description', and 'schema' for the sub-agent.
+    """
+    sub_agents_server_params = []
+    for sub_agent in sub_agents_cfg.keys():
+        if "agent-browsing" in sub_agent:
+            sub_agents_server_params.append(
+                dict(
+                    name="agent-browsing",
+                    tools=[
+                        dict(
+                            name="search_and_browse",
+                            description="This tool is an agent that performs the subtask of searching and browsing the web for specific missing information and generating the desired answer. The subtask should be clearly defined, include relevant background, and focus on factual gaps. It does not perform vague or speculative subtasks. \nArgs: \n\tsubtask: the subtask to be performed. \nReturns: \n\tthe result of the subtask. ",
+                            schema={
+                                "type": "object",
+                                "properties": {
+                                    "subtask": {"title": "Subtask", "type": "string"}
+                                },
+                                "required": ["subtask"],
+                                "title": "search_and_browseArguments",
+                            },
+                        )
+                    ],
+                )
+            )
+    return sub_agents_server_params
+
+
+def get_env_info(cfg: DictConfig) -> dict:
+    """
+    Collect current configuration and environment information for logging.
+
+    Gathers LLM settings, agent configuration, API key availability (masked),
+    and base URLs. Used for debugging and task log enrichment.
+
+    Args:
+        cfg: Hydra configuration object
+
+    Returns:
+        Dictionary containing:
+        - LLM configuration (provider, model, temperature, etc.)
+        - Agent configuration (max turns for main/sub agents)
+        - API key availability flags (boolean, not actual keys)
+        - Service base URLs
+    """
+    return {
+        # LLM Configuration
+        "llm_provider": cfg.llm.provider,
+        "llm_base_url": cfg.llm.base_url,
+        "llm_model_name": cfg.llm.model_name,
+        "llm_temperature": cfg.llm.temperature,
+        "llm_top_p": cfg.llm.top_p,
+        "llm_min_p": cfg.llm.min_p,
+        "llm_top_k": cfg.llm.top_k,
+        "llm_max_tokens": cfg.llm.max_tokens,
+        "llm_repetition_penalty": cfg.llm.repetition_penalty,
+        "llm_async_client": cfg.llm.async_client,
+        "keep_tool_result": cfg.agent.keep_tool_result,
+        # Agent Configuration
+        "main_agent_max_turns": cfg.agent.main_agent.max_turns,
+        **(
+            {
+                f"sub_{sub_agent}_max_turns": cfg.agent.sub_agents[sub_agent].max_turns
+                for sub_agent in cfg.agent.sub_agents
+            }
+            if cfg.agent.sub_agents is not None
+            else {}
+        ),
+        # API Keys (masked for security)
+        "has_serper_api_key": bool(SERPER_API_KEY),
+        "has_serpapi_api_key": bool(SERPAPI_API_KEY),
+        "has_jina_api_key": bool(JINA_API_KEY),
+        "has_anthropic_api_key": bool(ANTHROPIC_API_KEY),
+        "has_openai_api_key": bool(OPENAI_API_KEY),
+        "has_e2b_api_key": bool(E2B_API_KEY),
+        "has_tencent_secret_id": bool(TENCENTCLOUD_SECRET_ID),
+        "has_tencent_secret_key": bool(TENCENTCLOUD_SECRET_KEY),
+        "has_summary_llm_api_key": bool(SUMMARY_LLM_API_KEY),
+        # Base URLs
+        "openai_base_url": OPENAI_BASE_URL,
+        "anthropic_base_url": ANTHROPIC_BASE_URL,
+        "jina_base_url": JINA_BASE_URL,
+        "serper_base_url": SERPER_BASE_URL,
+        "searxng_base_url": SEARXNG_BASE_URL,
+        "whisper_base_url": WHISPER_BASE_URL,
+        "vision_base_url": VISION_BASE_URL,
+        "reasoning_base_url": REASONING_BASE_URL,
+        "summary_llm_base_url": SUMMARY_LLM_BASE_URL,
+    }

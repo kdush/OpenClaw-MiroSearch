@@ -1,0 +1,15 @@
+[project]
+name = "collect-trace"
+version = "0.1.0"
+description = "Executes a user-defined agent loop for capturing multi-turn interaction traces"
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [{ name = "MiroMind Team", email = "service@miromind.ai" }]
+dependencies = [
+    "miroflow-tools>=0.1.0",
+    "dotenv>=0.9.9",
+    "openai>=1.90.0",
+]
+
+[tool.uv.sources]
+miroflow-tools = { path = "../../libs/miroflow-tools", editable = true }

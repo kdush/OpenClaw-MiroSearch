@@ -1,0 +1,24 @@
+# conf/agent/default.yaml
+# The name of tools and sub-agents defined in: apps/miroflow-agent/src/config/settings.py
+# Each sub-agent prompt is written in: apps/miroflow-agent/src/utils/prompt_utils.py
+main_agent:
+  tools:
+    - tool-python
+    - tool-vqa
+    - tool-transcribe
+    - tool-reasoning
+    - tool-reader
+  max_turns: 20  # Maximum number of turns for main agent execution
+
+sub_agents:
+  agent-browsing:
+    tools:
+      - tool-google-search
+      - tool-vqa
+      - tool-reader
+      - tool-python
+    max_turns: 20
+
+# Settings for context management
+keep_tool_result: -1
+context_compress_limit: 0  # Enable context compression (>0 = enabled, 0 = disabled).

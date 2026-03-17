@@ -1,0 +1,325 @@
+# Copyright (c) 2025 MiroMind
+# This source code is licensed under the Apache 2.0 License.
+
+"""
+Prompt templates and utilities for agent system prompts.
+
+This module provides:
+- System prompt generation for MCP tool usage
+- Agent-specific prompt generation (main agent, browsing agent)
+- Summary prompt templates for final answer generation
+- Failure experience templates for retry mechanisms
+"""
+
+# ============================================================================
+# Format Error Messages
+# ============================================================================
+
+FORMAT_ERROR_MESSAGE = "No \\boxed{} content found in the final answer."
+
+# ============================================================================
+# Failure Experience Templates (for format error retry)
+# ============================================================================
+
+# Header that appears once before all failure experiences
+FAILURE_EXPERIENCE_HEADER = """
+
+=== Previous Attempts Analysis ===
+The following summarizes what was tried before and why it didn't work. Use this to guide a NEW approach.
+
+"""
+
+# Template for each individual failure experience (used multiple times)
+FAILURE_EXPERIENCE_ITEM = """[Attempt {attempt_number}]
+{failure_summary}
+
+"""
+
+# Footer that appears once after all failure experiences
+FAILURE_EXPERIENCE_FOOTER = """=== End of Analysis ===
+
+Based on the above, you should try a different strategy this time.
+"""
+
+FAILURE_SUMMARY_PROMPT = """The task was not completed successfully. Do NOT call any tools. Provide a summary:
+
+Failure type: [incomplete / blocked / misdirected / format_missed]
+  - incomplete: ran out of turns before finishing
+  - blocked: got stuck due to tool failure or missing information
+  - misdirected: went down the wrong path
+  - format_missed: found the answer but forgot to use \\boxed{}
+What happened: [describe the approach taken and why a final answer was not reached]
+Useful findings: [list any facts, intermediate results, or conclusions discovered that should be reused]"""
+
+# Assistant prefix for failure summary generation (guides model to follow structured format)
+FAILURE_SUMMARY_THINK_CONTENT = """We need to write a structured post-mortem style summary **without calling any tools**, explaining why the task was not completed, using these required sections:
+
+* **Failure type**: pick one from **incomplete / blocked / misdirected / format_missed**
+* **What happened**: describe the approach taken and why it didn't reach a final answer
+* **Useful findings**: list any facts, intermediate results, or conclusions that can be reused"""
+
+FAILURE_SUMMARY_ASSISTANT_PREFIX = (
+    f"<think>\n{FAILURE_SUMMARY_THINK_CONTENT}\n</think>\n\n"
+)
+
+# ============================================================================
+# MCP Tags for Parsing
+# ============================================================================
+
+mcp_tags = [
+    "<use_mcp_tool>",
+    "</use_mcp_tool>",
+    "<server_name>",
+    "</server_name>",
+    "<arguments>",
+    "</arguments>",
+]
+
+refusal_keywords = [
+    "time constraint",
+    "I’m sorry, but I can’t",
+    "I'm sorry, I cannot solve",
+]
+
+
+def generate_mcp_system_prompt(date, mcp_servers):
+    """
+    Generate the MCP (Model Context Protocol) system prompt for LLM.
+
+    Creates a structured prompt that instructs the LLM on how to use available
+    MCP tools. Includes tool definitions, XML formatting instructions, and
+    general task-solving guidelines.
+
+    Args:
+        date: Current date object for timestamp inclusion
+        mcp_servers: List of server definitions, each containing 'name' and 'tools'
+
+    Returns:
+        Complete system prompt string with tool definitions and usage instructions
+    """
+    formatted_date = date.strftime("%Y-%m-%d")
+
+    # Start building the template, now follows https://docs.anthropic.com/en/docs/build-with-claude/tool-use/overview#tool-use-system-prompt
+    template = f"""In this environment you have access to a set of tools you can use to answer the user's question. 
+
+You only have access to the tools provided below. You can only use one tool per message, and will receive the result of that tool in the user's next response. You use tools step-by-step to accomplish a given task, with each tool-use informed by the result of the previous tool-use. Today is: {formatted_date}
+
+# Tool-Use Formatting Instructions 
+
+Tool-use is formatted using XML-style tags. The tool-use is enclosed in <use_mcp_tool></use_mcp_tool> and each parameter is similarly enclosed within its own set of tags.
+
+The Model Context Protocol (MCP) connects to servers that provide additional tools and resources to extend your capabilities. You can use the server's tools via the `use_mcp_tool`.
+
+Description: 
+Request to use a tool provided by a MCP server. Each MCP server can provide multiple tools with different capabilities. Tools have defined input schemas that specify required and optional parameters.
+
+Parameters:
+- server_name: (required) The name of the MCP server providing the tool
+- tool_name: (required) The name of the tool to execute
+- arguments: (required) A JSON object containing the tool's input parameters, following the tool's input schema, quotes within string must be properly escaped, ensure it's valid JSON
+
+Usage:
+<use_mcp_tool>
+<server_name>server name here</server_name>
+<tool_name>tool name here</tool_name>
+<arguments>
+{{
+"param1": "value1",
+"param2": "value2 \\"escaped string\\""
+}}
+</arguments>
+</use_mcp_tool>
+
+Important Notes:
+- Tool-use must be placed **at the end** of your response, **top-level**, and not nested within other tags.
+- Always adhere to this format for the tool use to ensure proper parsing and execution.
+
+String and scalar parameters should be specified as is, while lists and objects should use JSON format. Note that spaces for string values are not stripped. The output is not expected to be valid XML and is parsed with regular expressions.
+Here are the functions available in JSONSchema format:
+
+"""
+
+    # Add MCP servers section
+    if mcp_servers and len(mcp_servers) > 0:
+        for server in mcp_servers:
+            template += f"\n## Server name: {server['name']}\n"
+
+            if "tools" in server and len(server["tools"]) > 0:
+                for tool in server["tools"]:
+                    # Skip tools that failed to load (they only have 'error' key)
+                    if "error" in tool and "name" not in tool:
+                        continue
+                    template += f"### Tool name: {tool['name']}\n"
+                    template += f"Description: {tool['description']}\n"
+                    template += f"Input JSON schema: {tool['schema']}\n"
+
+    # Add the full objective system prompt
+    template += """
+# General Objective
+
+You accomplish a given task iteratively, breaking it down into clear steps and working through them methodically.
+
+"""
+
+    return template
+
+
+def generate_no_mcp_system_prompt(date):
+    """
+    Generate a minimal system prompt without MCP tool definitions.
+
+    Used when no tools are available or when running in tool-less mode.
+
+    Args:
+        date: Current date object for timestamp inclusion
+
+    Returns:
+        Basic system prompt string without tool definitions
+    """
+    formatted_date = date.strftime("%Y-%m-%d")
+
+    # Start building the template, now follows https://docs.anthropic.com/en/docs/build-with-claude/tool-use/overview#tool-use-system-prompt
+    template = """In this environment you have access to a set of tools you can use to answer the user's question. """
+
+    template += f" Today is: {formatted_date}\n"
+
+    template += """
+Important Notes:
+- Tool-use must be placed **at the end** of your response, **top-level**, and not nested within other tags.
+- Always adhere to this format for the tool use to ensure proper parsing and execution.
+
+String and scalar parameters should be specified as is, while lists and objects should use JSON format. Note that spaces for string values are not stripped. The output is not expected to be valid XML and is parsed with regular expressions.
+"""
+
+    # Add the full objective system prompt
+    template += """
+# General Objective
+
+You accomplish a given task iteratively, breaking it down into clear steps and working through them methodically.
+
+"""
+    return template
+
+
+def generate_agent_specific_system_prompt(agent_type=""):
+    """
+    Generate agent-specific objective prompts based on agent type.
+
+    Different agent types have different objectives:
+    - main: Task-solving agent that uses tools to answer questions
+    - agent-browsing: Web search and browsing agent for information retrieval
+
+    Args:
+        agent_type: Type of agent ("main", "agent-browsing", or "browsing-agent")
+
+    Returns:
+        Agent-specific objective prompt string
+    """
+    if agent_type == "main":
+        system_prompt = """\n
+# Agent Specific Objective
+
+You are a task-solving agent that uses tools step-by-step to answer the user's question. Your goal is to provide complete, accurate and well-reasoned answers using additional tools.
+
+"""
+    elif agent_type == "agent-browsing" or agent_type == "browsing-agent":
+        system_prompt = """# Agent Specific Objective
+
+You are an agent that performs the task of searching and browsing the web for specific information and generating the desired answer. Your task is to retrieve reliable, factual, and verifiable information that fills in knowledge gaps.
+Do not infer, speculate, summarize broadly, or attempt to fill in missing parts yourself. Only return factual content.
+"""
+    else:
+        raise ValueError(f"Unknown agent type: {agent_type}")
+    return system_prompt.strip()
+
+
+def generate_agent_summarize_prompt(task_description, agent_type=""):
+    """
+    Generate the final summarization prompt for an agent.
+
+    Creates prompts that instruct agents to summarize their work and provide
+    final answers. Different agent types have different summarization formats:
+    - main: Must wrap answer in \\boxed{} with strict formatting rules
+    - agent-browsing: Provides structured report of findings
+
+    Args:
+        task_description: The original task/question to reference in the summary
+        agent_type: Type of agent ("main" or "agent-browsing")
+
+    Returns:
+        Summarization prompt string with formatting instructions
+    """
+    if agent_type == "main":
+        summarize_prompt = (
+            "Summarize the above conversation, and output the FINAL ANSWER to the original question.\n\n"
+            "If a clear answer has already been provided earlier in the conversation, do not rethink or recalculate it — "
+            "simply extract that answer and reformat it to match the required format below.\n"
+            "If a definitive answer could not be determined, make a well-informed educated guess based on the conversation.\n\n"
+            "The original question is repeated here for reference:\n\n"
+            f'"{task_description}"\n\n'
+            "Wrap your final answer in \\boxed{}.\n"
+            "Your final answer should be:\n"
+            "- a number, OR\n"
+            "- as few words as possible, OR\n"
+            "- a comma-separated list of numbers and/or strings.\n\n"
+            "ADDITIONALLY, your final answer MUST strictly follow any formatting instructions in the original question — "
+            "such as alphabetization, sequencing, units, rounding, decimal places, etc.\n"
+            "If you are asked for a number, express it numerically (i.e., with digits rather than words), don't use commas, and DO NOT INCLUDE UNITS such as $ or USD or percent signs unless specified otherwise.\n"
+            "If you are asked for a string, don't use articles or abbreviations (e.g. for cities), unless specified otherwise. Don't output any final sentence punctuation such as '.', '!', or '?'.\n"
+            "If you are asked for a comma-separated list, apply the above rules depending on whether the elements are numbers or strings.\n"
+            "Do NOT include any punctuation such as '.', '!', or '?' at the end of the answer.\n"
+            "Do NOT include any invisible or non-printable characters in the answer output.\n\n"
+            "You must absolutely not perform any MCP tool call, tool invocation, search, scrape, code execution, or similar actions.\n"
+            "You can only answer the original question based on the information already retrieved and your own internal knowledge.\n"
+            "If you attempt to call any tool, it will be considered a mistake."
+        )
+    elif agent_type == "agent-browsing":
+        summarize_prompt = (
+            "This is a direct instruction to you (the assistant), not the result of a tool call.\n\n"
+            "We are now ending this session, and your conversation history will be deleted. "
+            "You must NOT initiate any further tool use. This is your final opportunity to report "
+            "*all* of the information gathered during the session.\n\n"
+            "The original task is repeated here for reference:\n\n"
+            f'"{task_description}"\n\n'
+            "Summarize the above search and browsing history. Output the FINAL RESPONSE and detailed supporting information of the task given to you.\n\n"
+            "If you found any useful facts, data, quotes, or answers directly relevant to the original task, include them clearly and completely.\n"
+            "If you reached a conclusion or answer, include it as part of the response.\n"
+            "If the task could not be fully answered, do NOT make up any content. Instead, return all partially relevant findings, "
+            "Search results, quotes, and observations that might help a downstream agent solve the problem.\n"
+            "If partial, conflicting, or inconclusive information was found, clearly indicate this in your response.\n\n"
+            "Your final response should be a clear, complete, and structured report.\n"
+            "Organize the content into logical sections with appropriate headings.\n"
+            "Do NOT include any tool call instructions, speculative filler, or vague summaries.\n"
+            "Focus on factual, specific, and well-organized information."
+        )
+    else:
+        raise ValueError(f"Unknown agent type: {agent_type}")
+
+    return summarize_prompt.strip()
+
+
+def generate_cross_verification_prompt(
+    task_description: str,
+    min_search_rounds: int,
+    min_high_conf_sources: int,
+    high_conf_domains: list[str],
+) -> str:
+    """
+    生成“联网事实交叉校验”提示词，要求模型在不调用工具的情况下先做口径统一与冲突检查。
+    """
+    domains_text = ", ".join(high_conf_domains[:12]) if high_conf_domains else "N/A"
+    return (
+        "在输出最终答案前，先执行一次“事实交叉校验反思”。\n\n"
+        "严格要求：\n"
+        "1. 不允许调用任何工具，只能基于当前会话中已获取的信息。\n"
+        "2. 明确写出时间锚点（使用绝对时间，而非“今天/昨日”）。\n"
+        "3. 明确统计口径（例如：仅导弹 / 导弹+无人机+火箭弹 / 按波次还是按弹体数）。\n"
+        "4. 明确统计对象定义（例如：是否把“美以”合并统计）。\n"
+        "5. 对关键数字做冲突对照：若来源不一致，给出区间与冲突原因，不要伪造单值。\n"
+        "6. 标注高置信来源是否充分，至少给出来源类型与代表域名。\n\n"
+        f"本次任务原问题：\"{task_description}\"\n"
+        f"期望检索轮次下限：{min_search_rounds}\n"
+        f"期望高置信来源下限：{min_high_conf_sources}\n"
+        f"高置信来源参考域名：{domains_text}\n\n"
+        "请先输出“交叉校验报告”，再进入最终答案阶段。"
+    )

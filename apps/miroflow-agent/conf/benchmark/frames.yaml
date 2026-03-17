@@ -1,0 +1,14 @@
+# conf/benchmark/frames.yaml
+defaults:
+  - default
+  - _self_
+
+name: "frames"
+
+data:
+  data_dir: "../../data/frames"
+
+execution:
+  max_tasks: null  # null means no limit
+  max_concurrent: 5
+  pass_at_k: 1

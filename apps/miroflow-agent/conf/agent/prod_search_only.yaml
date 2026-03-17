@@ -1,0 +1,17 @@
+# conf/agent/prod_search_only.yaml
+defaults:
+  - default
+  - _self_
+
+main_agent:
+  tools:
+    - search_and_scrape_webpage
+  tool_blacklist:
+    - ["search_and_scrape_webpage", "sogou_search"]
+  max_turns: 20
+
+sub_agents:
+
+keep_tool_result: -1
+context_compress_limit: 0
+retry_with_summary: false
