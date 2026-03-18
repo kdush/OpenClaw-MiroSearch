@@ -8,6 +8,7 @@
 
 - 确认目标分支与里程碑一致
 - 确认文档已更新（README / 子模块 README / API 规格）
+- 确认 `docs/ROADMAP.md` 与 `docs/CHANGELOG.md` 已对应目标版本
 
 1. 质量校验
 
@@ -27,6 +28,19 @@ cd ../miroflow-agent && uv run pytest
 
 - 打标签：`v0.x.y`
 - 推送标签并创建 GitHub Release
+
+## `v0.1.0` 建议发布口径
+
+- 版本类型：`MINOR`（首个可用基线）
+- 发布范围：
+  - API 与调用文档定版
+  - 多模式与多路路由可用
+  - `parallel-trusted` 交叉校验链路可用
+  - Compose 独立部署可用
+- 已知不纳入：
+  - 多 Key 轮转
+  - 模型级 failback
+  - 完整观测面板
 
 ## 版本升级建议
 
