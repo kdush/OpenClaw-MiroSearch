@@ -12,6 +12,7 @@ The pipeline orchestrates the interaction between LLM clients, tool managers,
 and the orchestrator to execute complex multi-turn agent tasks.
 """
 
+import asyncio
 import traceback
 import uuid
 from typing import Any, Dict, List, Optional
@@ -141,6 +142,22 @@ async def execute_task_pipeline(
             failure_experience_summary,
         )
 
+    except asyncio.CancelledError:
+        cancel_message = (
+            f"Task {task_id} was cancelled during execution.\n"
+            f"Description: {task_description}\n"
+            f"File: {task_file_name}"
+        )
+        task_log.log_step(
+            "warning",
+            "task_cancelled",
+            cancel_message,
+        )
+        task_log.status = "cancelled"
+        task_log.error = cancel_message
+        log_file_path = task_log.save()
+        return cancel_message, "", log_file_path, None
+
     except Exception as e:
         error_details = traceback.format_exc()
         task_log.log_step(
@@ -166,6 +183,20 @@ async def execute_task_pipeline(
         return error_message, "", log_file_path, None
 
     finally:
+        # 保证状态机总是落到终态，避免出现 status=running 导致前端一直等待。
+        if task_log.status == "running":
+            task_log.status = "failed"
+            if not task_log.error:
+                task_log.error = (
+                    "Task exited pipeline without terminal status; "
+                    "marked as failed to avoid hanging state."
+                )
+            task_log.log_step(
+                "warning",
+                "task_status_guard",
+                "Detected non-terminal task status 'running' at pipeline end; force set to 'failed'.",
+            )
+
         task_log.end_time = get_utc_plus_8_time()
 
         # Record task summary to structured log

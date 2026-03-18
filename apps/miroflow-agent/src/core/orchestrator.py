@@ -53,6 +53,8 @@ DEFAULT_MAX_CONSECUTIVE_ROLLBACKS = 5
 
 # Additional attempts beyond max_turns for total loop protection
 EXTRA_ATTEMPTS_BUFFER = 200
+DEFAULT_MAX_CONSECUTIVE_LLM_FAILURES = 6
+DEFAULT_LLM_FAILURE_SLEEP_SECONDS = 2
 
 DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS = 3
 DEFAULT_VERIFICATION_MIN_HIGH_CONF_SOURCES = 2
@@ -165,6 +167,24 @@ class Orchestrator:
 
         # Retry loop protection limits
         self.MAX_CONSECUTIVE_ROLLBACKS = DEFAULT_MAX_CONSECUTIVE_ROLLBACKS
+        self.max_consecutive_llm_failures = max(
+            1,
+            int(
+                cfg.agent.get(
+                    "max_consecutive_llm_failures",
+                    DEFAULT_MAX_CONSECUTIVE_LLM_FAILURES,
+                )
+            ),
+        )
+        self.llm_failure_sleep_seconds = max(
+            0,
+            int(
+                cfg.agent.get(
+                    "llm_failure_sleep_seconds",
+                    DEFAULT_LLM_FAILURE_SLEEP_SECONDS,
+                )
+            ),
+        )
 
         # Context management settings
         self.context_compress_limit = cfg.agent.get("context_compress_limit", 0)
@@ -574,6 +594,7 @@ class Orchestrator:
         total_attempts = 0
         max_attempts = max_turns + EXTRA_ATTEMPTS_BUFFER
         consecutive_rollbacks = 0
+        consecutive_llm_failures = 0
 
         while turn_count < max_turns and total_attempts < max_attempts:
             turn_count += 1
@@ -619,16 +640,35 @@ class Orchestrator:
                 break
 
             if assistant_response_text:
+                if consecutive_llm_failures > 0:
+                    self.task_log.log_step(
+                        "info",
+                        f"{sub_agent_name} | Turn: {turn_count} | LLM Recovery",
+                        f"Recovered after {consecutive_llm_failures} consecutive empty/failed LLM responses.",
+                    )
+                consecutive_llm_failures = 0
                 text_response = extract_llm_response_text(assistant_response_text)
                 if text_response:
                     await self.stream.tool_call("show_text", {"text": text_response})
             else:
+                consecutive_llm_failures += 1
                 self.task_log.log_step(
-                    "info",
+                    "warning",
                     f"{sub_agent_name} | Turn: {turn_count} | LLM Call",
-                    "LLM call failed",
+                    "LLM call failed or empty response, retrying.",
+                    metadata={
+                        "consecutive_llm_failures": consecutive_llm_failures,
+                        "max_consecutive_llm_failures": self.max_consecutive_llm_failures,
+                    },
                 )
-                await asyncio.sleep(5)
+                if consecutive_llm_failures >= self.max_consecutive_llm_failures:
+                    self.task_log.log_step(
+                        "error",
+                        f"{sub_agent_name} | LLM Failure Guard",
+                        f"Exceeded max consecutive LLM failures ({self.max_consecutive_llm_failures}), stopping sub-agent loop.",
+                    )
+                    break
+                await asyncio.sleep(self.llm_failure_sleep_seconds)
                 continue
 
             # Handle no tool calls case
@@ -993,6 +1033,7 @@ class Orchestrator:
         total_attempts = 0
         max_attempts = max_turns + EXTRA_ATTEMPTS_BUFFER
         consecutive_rollbacks = 0
+        consecutive_llm_failures = 0
 
         self.current_agent_id = await self.stream.start_agent("main")
         await self.stream.start_llm("main")
@@ -1028,6 +1069,13 @@ class Orchestrator:
 
             # Process LLM response
             if assistant_response_text:
+                if consecutive_llm_failures > 0:
+                    self.task_log.log_step(
+                        "info",
+                        f"Main Agent | Turn: {turn_count} | LLM Recovery",
+                        f"Recovered after {consecutive_llm_failures} consecutive empty/failed LLM responses.",
+                    )
+                consecutive_llm_failures = 0
                 text_response = extract_llm_response_text(assistant_response_text)
                 if text_response:
                     await self.stream.tool_call("show_text", {"text": text_response})
@@ -1047,13 +1095,24 @@ class Orchestrator:
                     )
                     break
             else:
-                turn_count -= 1
+                consecutive_llm_failures += 1
                 self.task_log.log_step(
                     "warning",
                     f"Main Agent | Turn: {turn_count} | LLM Call",
-                    "No valid response from LLM, retrying",
+                    "No valid response from LLM, retrying.",
+                    metadata={
+                        "consecutive_llm_failures": consecutive_llm_failures,
+                        "max_consecutive_llm_failures": self.max_consecutive_llm_failures,
+                    },
                 )
-                await asyncio.sleep(5)
+                if consecutive_llm_failures >= self.max_consecutive_llm_failures:
+                    self.task_log.log_step(
+                        "error",
+                        "Main Agent | LLM Failure Guard",
+                        f"Exceeded max consecutive LLM failures ({self.max_consecutive_llm_failures}), ending main loop.",
+                    )
+                    break
+                await asyncio.sleep(self.llm_failure_sleep_seconds)
                 continue
 
             # Handle no tool calls case
