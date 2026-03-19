@@ -319,7 +319,7 @@ class AnswerGenerator:
             tool_definitions,
             turn_count + 10,  # Use a different step id
             "Main Agent | Failure Experience Summary",
-            agent_type="final_summary",
+            agent_type="failure_summary",
         )
 
         # Prepend the assistant prefix to the response for complete output

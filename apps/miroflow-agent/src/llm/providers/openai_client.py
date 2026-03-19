@@ -35,8 +35,9 @@ DEFAULT_OPENAI_HTTP_TIMEOUT_SECONDS = 90.0
 DEFAULT_TOOL_RESULT_MAX_CHARS = 4000
 DEFAULT_SUMMARY_MAX_TOKENS = 3072
 DEFAULT_VERIFICATION_MAX_TOKENS = 2048
-SUMMARY_AGENT_TYPES = {"final_summary"}
+SUMMARY_AGENT_TYPES = {"final_summary", "failure_summary"}
 VERIFICATION_AGENT_TYPES = {"verification"}
+FAST_AGENT_TYPES = {"failure_summary"}
 
 
 @dataclasses.dataclass
@@ -119,6 +120,8 @@ class OpenAIClient(BaseClient):
     def _resolve_model_name(self, tools_definitions, agent_type: str) -> str:
         if agent_type in VERIFICATION_AGENT_TYPES:
             return self.model_thinking_name
+        if agent_type in FAST_AGENT_TYPES:
+            return self.model_fast_name
         if agent_type in SUMMARY_AGENT_TYPES:
             return self.model_summary_name
         if tools_definitions:
@@ -295,6 +298,12 @@ class OpenAIClient(BaseClient):
                     response = self.client.chat.completions.create(**params)
                 # Update token count
                 self._update_token_usage(getattr(response, "usage", None))
+                response_model_name = getattr(response, "model", "N/A")
+                self.task_log.log_step(
+                    "info",
+                    "LLM | Model Route",
+                    f"agent_type={agent_type}, requested={request_model_name}, responded={response_model_name}",
+                )
                 self.task_log.log_step(
                     "info",
                     "LLM | Response Status",
