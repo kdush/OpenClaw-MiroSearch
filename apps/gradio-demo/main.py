@@ -116,6 +116,14 @@ SEARCH_PROFILE_CHOICES = [
     "searxng-only",
 ]
 
+SEARCH_HISTORY_STORAGE_KEY = os.getenv(
+    "SEARCH_HISTORY_STORAGE_KEY", "mirothinker.demo.search_history"
+)
+SEARCH_HISTORY_MAX_ITEMS = max(1, _env_int("SEARCH_HISTORY_MAX_ITEMS", 8))
+SEARCH_HISTORY_TITLE = "最近搜索"
+SEARCH_HISTORY_HINT = "仅保存在当前浏览器，点击可回填，删除不影响当前结果。"
+SEARCH_HISTORY_EMPTY_TEXT = "还没有搜索历史，开始一次研究后会显示在这里。"
+
 SEARCH_PROFILE_ENV_MAP: Dict[str, Dict[str, str]] = {
     "searxng-first": {
         "SEARCH_PROVIDER_ORDER": "searxng,serpapi,serper",
@@ -1610,6 +1618,136 @@ def build_demo():
     #question-input textarea::placeholder {
         color: #9ca3af !important;
     }
+
+    #search-history-shell {
+        padding: 0 24px 12px !important;
+    }
+
+    .search-history-card {
+        border: 1px solid #e8ecef;
+        border-radius: 14px;
+        background: linear-gradient(180deg, #fcfffd 0%, #f7fbfa 100%);
+        padding: 14px 16px;
+    }
+
+    .search-history-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 10px;
+    }
+
+    .search-history-title {
+        font-size: 0.92em;
+        font-weight: 600;
+        color: #1f2937;
+        margin: 0;
+    }
+
+    .search-history-hint {
+        font-size: 0.78em;
+        color: #6b7280;
+        line-height: 1.5;
+        margin-top: 4px;
+    }
+
+    .search-history-clear {
+        border: 1px solid #dbe3e8;
+        background: #ffffff;
+        color: #4b5563;
+        border-radius: 999px;
+        font-size: 0.78em;
+        font-weight: 500;
+        padding: 6px 12px;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        white-space: nowrap;
+    }
+
+    .search-history-clear:hover {
+        border-color: #c7d2da;
+        background: #f8fafc;
+        color: #111827;
+    }
+
+    .search-history-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        max-height: 184px;
+        overflow-y: auto;
+        padding-right: 2px;
+    }
+
+    .search-history-item {
+        display: flex;
+        align-items: stretch;
+        gap: 8px;
+    }
+
+    .search-history-entry {
+        flex: 1;
+        min-width: 0;
+        border: 1px solid #e5eaee;
+        background: #ffffff;
+        border-radius: 12px;
+        padding: 10px 12px;
+        text-align: left;
+        cursor: pointer;
+        transition: all 0.2s ease;
+    }
+
+    .search-history-entry:hover {
+        border-color: #b9e3d4;
+        background: #f9fffc;
+        transform: translateY(-1px);
+    }
+
+    .search-history-query {
+        color: #111827;
+        font-size: 0.9em;
+        line-height: 1.5;
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+        word-break: break-word;
+    }
+
+    .search-history-meta {
+        color: #6b7280;
+        font-size: 0.76em;
+        margin-top: 6px;
+    }
+
+    .search-history-delete {
+        width: 38px;
+        flex-shrink: 0;
+        border: 1px solid #e5e7eb;
+        background: #ffffff;
+        color: #9ca3af;
+        border-radius: 12px;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        font-size: 1.05em;
+    }
+
+    .search-history-delete:hover {
+        border-color: #fecaca;
+        background: #fff5f5;
+        color: #dc2626;
+    }
+
+    .search-history-empty {
+        border: 1px dashed #d8e2e8;
+        border-radius: 12px;
+        padding: 14px 12px;
+        color: #6b7280;
+        font-size: 0.82em;
+        text-align: center;
+        background: rgba(255, 255, 255, 0.72);
+    }
     
     #btn-row {
         padding: 16px 24px !important;
@@ -2139,6 +2277,18 @@ def build_demo():
         .input-wrapper, .output-wrapper {
             padding: 0 16px;
         }
+
+        #search-history-shell {
+            padding: 0 16px 12px !important;
+        }
+
+        .search-history-head {
+            flex-direction: column;
+        }
+
+        .search-history-clear {
+            width: 100%;
+        }
         
         #log-view {
             max-height: 50vh;
@@ -2157,11 +2307,268 @@ def build_demo():
         favicon_head = '<link rel="icon" href="https://dr.miromind.ai/favicon.ico?v=2">'
         nav_logo_html = ""
 
+    history_panel_html = f"""
+        <div id="search-history-wrapper" class="search-history-card">
+            <div class="search-history-head">
+                <div>
+                    <div class="search-history-title">{SEARCH_HISTORY_TITLE}</div>
+                    <div class="search-history-hint">{SEARCH_HISTORY_HINT}</div>
+                </div>
+                <button
+                    id="search-history-clear"
+                    class="search-history-clear"
+                    type="button"
+                    hidden
+                >
+                    清空历史
+                </button>
+            </div>
+            <div id="search-history-panel" class="search-history-list"></div>
+        </div>
+    """
+
+    history_script = f"""
+    <script>
+    (() => {{
+        const STORAGE_KEY = {json.dumps(SEARCH_HISTORY_STORAGE_KEY, ensure_ascii=False)};
+        const MAX_ITEMS = {SEARCH_HISTORY_MAX_ITEMS};
+        const EMPTY_TEXT = {json.dumps(SEARCH_HISTORY_EMPTY_TEXT, ensure_ascii=False)};
+        const SELECTORS = {{
+            textarea: "#question-input textarea",
+            runButton: "#run-btn",
+            historyPanel: "#search-history-panel",
+            clearButton: "#search-history-clear",
+            historyWrapper: "#search-history-wrapper",
+        }};
+
+        const escapeHtml = (value) => String(value)
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#39;");
+
+        const loadHistory = () => {{
+            try {{
+                const rawValue = window.localStorage.getItem(STORAGE_KEY);
+                if (!rawValue) {{
+                    return [];
+                }}
+                const parsedValue = JSON.parse(rawValue);
+                if (!Array.isArray(parsedValue)) {{
+                    return [];
+                }}
+                return parsedValue.filter((item) => item && typeof item.query === "string");
+            }} catch (error) {{
+                console.warn("读取搜索历史失败", error);
+                return [];
+            }}
+        }};
+
+        const saveHistory = (historyItems) => {{
+            try {{
+                window.localStorage.setItem(
+                    STORAGE_KEY,
+                    JSON.stringify(historyItems.slice(0, MAX_ITEMS))
+                );
+            }} catch (error) {{
+                console.warn("保存搜索历史失败", error);
+            }}
+        }};
+
+        const formatTime = (isoTime) => {{
+            if (!isoTime) {{
+                return "刚刚";
+            }}
+            const dateValue = new Date(isoTime);
+            if (Number.isNaN(dateValue.getTime())) {{
+                return "刚刚";
+            }}
+            return dateValue.toLocaleString("zh-CN", {{
+                month: "2-digit",
+                day: "2-digit",
+                hour: "2-digit",
+                minute: "2-digit",
+            }});
+        }};
+
+        const renderHistory = () => {{
+            const panelElement = document.querySelector(SELECTORS.historyPanel);
+            const clearButtonElement = document.querySelector(SELECTORS.clearButton);
+            if (!panelElement || !clearButtonElement) {{
+                return false;
+            }}
+
+            const historyItems = loadHistory();
+            clearButtonElement.hidden = historyItems.length === 0;
+
+            if (historyItems.length === 0) {{
+                panelElement.innerHTML = `<div class="search-history-empty">${{escapeHtml(EMPTY_TEXT)}}</div>`;
+                return true;
+            }}
+
+            panelElement.innerHTML = historyItems
+                .map((item) => {{
+                    const query = escapeHtml(item.query);
+                    const itemId = escapeHtml(item.id || item.saved_at || item.query);
+                    const savedAt = escapeHtml(formatTime(item.saved_at));
+                    return `
+                        <div class="search-history-item">
+                            <button
+                                type="button"
+                                class="search-history-entry"
+                                data-history-action="restore"
+                                data-history-id="${{itemId}}"
+                            >
+                                <div class="search-history-query">${{query}}</div>
+                                <div class="search-history-meta">上次搜索：${{savedAt}}</div>
+                            </button>
+                            <button
+                                type="button"
+                                class="search-history-delete"
+                                data-history-action="delete"
+                                data-history-id="${{itemId}}"
+                                aria-label="删除这条搜索历史"
+                                title="删除这条搜索历史"
+                            >
+                                ×
+                            </button>
+                        </div>
+                    `;
+                }})
+                .join("");
+            return true;
+        }};
+
+        const getCurrentQuery = () => {{
+            const textareaElement = document.querySelector(SELECTORS.textarea);
+            if (!textareaElement) {{
+                return "";
+            }}
+            return textareaElement.value.trim();
+        }};
+
+        const setCurrentQuery = (query) => {{
+            const textareaElement = document.querySelector(SELECTORS.textarea);
+            if (!textareaElement) {{
+                return;
+            }}
+
+            const descriptor = Object.getOwnPropertyDescriptor(
+                window.HTMLTextAreaElement.prototype,
+                "value"
+            );
+            if (descriptor && descriptor.set) {{
+                descriptor.set.call(textareaElement, query);
+            }} else {{
+                textareaElement.value = query;
+            }}
+            textareaElement.dispatchEvent(new Event("input", {{ bubbles: true }}));
+            textareaElement.dispatchEvent(new Event("change", {{ bubbles: true }}));
+            textareaElement.focus();
+            textareaElement.setSelectionRange(query.length, query.length);
+        }};
+
+        const addHistoryItem = (query) => {{
+            const normalizedQuery = query.trim();
+            if (!normalizedQuery) {{
+                return;
+            }}
+
+            const nextItem = {{
+                id: `${{Date.now()}}-${{Math.random().toString(36).slice(2, 8)}}`,
+                query: normalizedQuery,
+                saved_at: new Date().toISOString(),
+            }};
+            const nextHistory = [
+                nextItem,
+                ...loadHistory().filter((item) => item.query !== normalizedQuery),
+            ];
+            saveHistory(nextHistory);
+            renderHistory();
+        }};
+
+        const deleteHistoryItem = (historyId) => {{
+            const nextHistory = loadHistory().filter(
+                (item) => String(item.id || item.saved_at || item.query) !== historyId
+            );
+            saveHistory(nextHistory);
+            renderHistory();
+        }};
+
+        const clearHistory = () => {{
+            window.localStorage.removeItem(STORAGE_KEY);
+            renderHistory();
+        }};
+
+        const restoreHistoryItem = (historyId) => {{
+            const historyItem = loadHistory().find(
+                (item) => String(item.id || item.saved_at || item.query) === historyId
+            );
+            if (!historyItem) {{
+                return;
+            }}
+            setCurrentQuery(historyItem.query);
+        }};
+
+        const handleDocumentClick = (event) => {{
+            const actionElement = event.target.closest("[data-history-action]");
+            if (actionElement && actionElement.closest(SELECTORS.historyWrapper)) {{
+                const actionName = actionElement.dataset.historyAction;
+                const historyId = actionElement.dataset.historyId || "";
+                if (actionName === "restore") {{
+                    event.preventDefault();
+                    restoreHistoryItem(historyId);
+                }}
+                if (actionName === "delete") {{
+                    event.preventDefault();
+                    deleteHistoryItem(historyId);
+                }}
+                return;
+            }}
+
+            const clearButtonElement = event.target.closest(SELECTORS.clearButton);
+            if (clearButtonElement) {{
+                event.preventDefault();
+                clearHistory();
+                return;
+            }}
+
+            const runButtonElement = event.target.closest(SELECTORS.runButton);
+            if (runButtonElement) {{
+                const currentQuery = getCurrentQuery();
+                if (currentQuery) {{
+                    addHistoryItem(currentQuery);
+                }}
+            }}
+        }};
+
+        const ensureHistoryMounted = () => {{
+            if (renderHistory()) {{
+                return;
+            }}
+            window.setTimeout(ensureHistoryMounted, 120);
+        }};
+
+        if (!window.__miroSearchHistoryInitialized) {{
+            window.__miroSearchHistoryInitialized = true;
+            document.addEventListener("click", handleDocumentClick, true);
+            if (document.readyState === "loading") {{
+                document.addEventListener("DOMContentLoaded", ensureHistoryMounted, {{ once: true }});
+            }} else {{
+                ensureHistoryMounted();
+            }}
+        }}
+    }})();
+    </script>
+    """
+    demo_head = f"{favicon_head}{history_script}"
+
     with gr.Blocks(
         css=custom_css,
         title="OpenClaw-MiroSearch - 深度研究",
         theme=gr.themes.Base(),
-        head=favicon_head,
+        head=demo_head,
     ) as demo:
         # Top Navigation
         gr.HTML(f"""
@@ -2195,6 +2602,7 @@ def build_demo():
                 show_label=False,
                 elem_id="question-input",
             )
+            gr.HTML(history_panel_html, elem_id="search-history-shell")
             mode_selector = gr.Dropdown(
                 label="检索模式",
                 choices=RESEARCH_MODE_CHOICES,
