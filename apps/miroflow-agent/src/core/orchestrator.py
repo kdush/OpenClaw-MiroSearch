@@ -335,9 +335,9 @@ class Orchestrator:
             f"当前任务：\"{task_description}\"\n"
             f"尚缺检索轮次：{missing_rounds}，尚缺高置信来源：{missing_sources}。\n"
             "请执行下一轮检索并做口径统一，至少覆盖：\n"
-            "1) 时间窗（明确截至绝对日期）；\n"
-            "2) 统计对象（仅导弹 or 导弹+无人机+火箭弹）；\n"
-            "3) 参与方定义（美以合并 or 分开）。\n"
+            "1) 时间范围（明确起止范围与截至绝对日期）；\n"
+            "2) 核心对象边界（明确统计或对比对象的纳入与排除规则）；\n"
+            "3) 关键指标口径（明确单位、维度、是否合并统计）。\n"
             f"优先高置信来源域名：{recommended_domains}。\n"
             "如果仍有冲突，给出“数字区间+冲突原因+来源对应表”，不要给伪精确单值。"
         )
@@ -355,7 +355,7 @@ class Orchestrator:
             f"- 检索轮次：{self.verification_search_rounds}/{self.verification_min_search_rounds}\n"
             f"- 高置信来源数：{len(self.verification_high_conf_source_domains)}/{self.verification_min_high_conf_sources}\n"
             f"- 已命中高置信域名：{domains}\n"
-            "请在最终答案中明确写出时间锚点、统计口径、参与方定义，并处理数字冲突。"
+            "请在最终答案中明确写出时间锚点、关键指标口径、对象边界与分组规则，并处理数字冲突。"
         )
 
     def _save_message_history(
