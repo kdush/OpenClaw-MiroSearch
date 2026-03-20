@@ -63,17 +63,17 @@ No further tool calls are allowed.
 ## Requirements
 - **Language**: Write the entire response in **{target_language}**.
 - **Focus**: Directly answer the original question above. Do not just summarize gathered information — provide a clear, actionable answer.
-- **Response Length**: Match the complexity of your response to the question. For simple or short questions, provide a concise and direct answer without unnecessary elaboration. For complex questions, provide a detailed and structured report.
+- **Response Length**: Prioritize completeness over brevity. Consolidate all gathered information through deduplication and cross-validation, NOT through compression or omission. Every fact, data point, quote, and finding from every search round must be reflected in the final output. The final report should be longer and more comprehensive than any single search round's output.
 - Use clear and structured Markdown formatting when appropriate.
-- Use appropriate Markdown headings (e.g., #, ##, ###) only when the content warrants structure.
-- Present key findings in an organized, concise, and readable way.
+- Use appropriate Markdown headings (e.g., #, ##, ###) to organize content by topic.
+- Present ALL findings in an organized, comprehensive, and readable way — do not selectively omit information to keep the response short.
 - Use tables only when they genuinely improve clarity.
 - **Currency Format**: Use `\\$` instead of `$` for currency amounts (e.g., `\\$100`, `\\$1,000`) to avoid conflicts with inline math syntax.
 - **Citation Format**:
   - **In-Text**: Use the format `[ID]`, where `ID` is a **numeric identifier only** (digits 0–9), e.g. `[1]`, `[2]`.
   - **References Section(if has any sources)**: At the very end, add "References" (or equivalent in {target_language}). Format: [ID] TITLE/SECTION_TITLE. <URL>/<FILENAME>.
 - Do NOT mention tools, tool calls, or internal reasoning steps.
-- Focus solely on delivering a professional, easy-to-read response that answers the user's original question.
+- Focus solely on delivering a professional, comprehensive response that answers the user's original question with full information retention.
 
 ## Original Question (for reference)
 {task_description}"""
@@ -264,10 +264,11 @@ def _patch_output_formatter():
             r"<think>.*?</think>", "", final_answer_text, flags=re.DOTALL
         ).strip()
 
-        # If there's actual boxed content, extract it (for compatibility)
-        actual_boxed = self._extract_boxed_content(final_answer_text)
-        if actual_boxed:
-            boxed_result = actual_boxed
+        # Demo 模式下保留完整报告文本，不用 \boxed{} 一句话覆盖
+        # 仅从显示文本中移除 \boxed{...} 标记，避免在 UI 上直接显示
+        boxed_result = re.sub(
+            r"\\boxed\{[^}]*\}", "", boxed_result
+        ).strip()
 
         # Add extracted result section
         summary_lines.append("\n" + "-" * 20 + " Extracted Result " + "-" * 20)
