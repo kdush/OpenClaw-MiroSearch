@@ -1,5 +1,6 @@
 import base64
 import asyncio
+import html
 import json
 import logging
 import os
@@ -10,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 from typing import AsyncGenerator, Dict, List, Optional, Tuple
+from urllib.parse import quote, urlparse
 
 import gradio as gr
 from dotenv import load_dotenv
@@ -61,6 +63,88 @@ def _load_logo_data_uri() -> str:
     return f"data:image/png;base64,{encoded_logo}"
 
 
+def _build_fallback_favicon_data_uri() -> str:
+    """生成内联 SVG favicon，避免缺失本地 logo 时依赖远程资源。"""
+    svg_markup = (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
+        '<rect width="64" height="64" rx="14" fill="#0f766e"/>'
+        '<path d="M18 44V20h10c6.5 0 11 4.3 11 10.2c0 6-4.7 10.4-11 10.4h-3.5V44H18z" fill="#ffffff"/>'
+        '<circle cx="45" cy="44" r="5" fill="#99f6e4"/>'
+        "</svg>"
+    )
+    encoded_svg = base64.b64encode(svg_markup.encode("utf-8")).decode("ascii")
+    return f"data:image/svg+xml;base64,{encoded_svg}"
+
+
+def _resolve_safe_skills_package_path() -> Path:
+    """将 skills 包路径限制在仓库 skills 目录中，防止越权读取。"""
+    safe_dir = SKILLS_PACKAGE_SAFE_DIR.resolve()
+    fallback_path = (safe_dir / SKILLS_PACKAGE_DEFAULT_FILENAME).resolve()
+    candidate_path = Path(DEFAULT_SKILLS_PACKAGE_PATH).expanduser()
+    try:
+        resolved_candidate = candidate_path.resolve()
+    except OSError as exc:
+        logger.warning("解析 SKILLS_PACKAGE_PATH 失败，使用默认路径: %s", exc)
+        return fallback_path
+    if (
+        safe_dir in resolved_candidate.parents
+        and resolved_candidate.suffix.lower() == ".zip"
+    ):
+        return resolved_candidate
+    logger.warning(
+        "检测到不安全的 skills 包路径，已回退默认路径: %s", resolved_candidate
+    )
+    return fallback_path
+
+
+def _sanitize_skills_download_url(raw_url: str) -> str:
+    """校验下载 URL，防止脚本注入与危险协议。"""
+    candidate = (raw_url or "").strip()
+    if not candidate:
+        return ""
+    if any(char in candidate for char in ("\r", "\n", "\x00")):
+        logger.warning("检测到非法下载 URL（包含控制字符）")
+        return ""
+    parsed = urlparse(candidate)
+    if not parsed.scheme and not parsed.netloc:
+        if candidate.startswith(SKILLS_DOWNLOAD_ALLOWED_RELATIVE_PREFIX):
+            return candidate
+        logger.warning("检测到非法相对下载 URL: %s", candidate)
+        return ""
+    if parsed.scheme not in SKILLS_DOWNLOAD_ALLOWED_SCHEMES:
+        logger.warning("检测到非法下载 URL 协议: %s", parsed.scheme)
+        return ""
+    if not parsed.netloc:
+        logger.warning("检测到非法下载 URL（缺少主机）: %s", candidate)
+        return ""
+    if parsed.username or parsed.password:
+        logger.warning("检测到非法下载 URL（包含用户信息）: %s", candidate)
+        return ""
+    return candidate
+
+
+def _resolve_skills_package_download() -> Tuple[str, str]:
+    """解析 skills 包下载地址，优先使用环境变量，回退到本地文件路由。"""
+    package_path = _resolve_safe_skills_package_path()
+    configured_url = _sanitize_skills_download_url(DEFAULT_SKILLS_PACKAGE_URL)
+    if configured_url:
+        return configured_url, package_path.as_posix()
+    if package_path.exists():
+        absolute_path = package_path.resolve().as_posix()
+        encoded_path = quote(absolute_path, safe="/")
+        return f"/gradio_api/file={encoded_path}", absolute_path
+    return "", package_path.as_posix()
+
+
+def _collect_gradio_allowed_paths() -> List[str]:
+    """收集 Gradio 需要放行的本地文件路径。"""
+    allowed_paths: List[str] = []
+    skills_package_path = _resolve_safe_skills_package_path()
+    if skills_package_path.exists():
+        allowed_paths.append(str(skills_package_path.resolve()))
+    return allowed_paths
+
+
 # 控制是否启用 demo prompt patch
 ENABLE_PROMPT_PATCH = _env_flag("ENABLE_PROMPT_PATCH", True)
 if ENABLE_PROMPT_PATCH:
@@ -85,7 +169,7 @@ DEFAULT_RESEARCH_MODE = os.getenv("DEFAULT_RESEARCH_MODE", "balanced")
 DEFAULT_SEARCH_PROFILE = os.getenv("DEFAULT_SEARCH_PROFILE", "searxng-first")
 SEARCH_RESULT_NUM_CHOICES = [10, 20, 30]
 DEFAULT_SEARCH_RESULT_NUM = _env_int(
-    "DEFAULT_SEARCH_RESULT_NUM", SEARCH_RESULT_NUM_CHOICES[0]
+    "DEFAULT_SEARCH_RESULT_NUM", SEARCH_RESULT_NUM_CHOICES[1]
 )
 SEARCH_RESULT_DISPLAY_MAX = max(1, _env_int("SEARCH_RESULT_DISPLAY_MAX", 30))
 DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS = max(
@@ -97,6 +181,142 @@ DEFAULT_MODEL_TOOL_NAME = os.getenv("MODEL_TOOL_NAME", DEFAULT_MODEL_NAME)
 DEFAULT_MODEL_FAST_NAME = os.getenv("MODEL_FAST_NAME", DEFAULT_MODEL_NAME)
 DEFAULT_MODEL_THINKING_NAME = os.getenv("MODEL_THINKING_NAME", DEFAULT_MODEL_NAME)
 DEFAULT_MODEL_SUMMARY_NAME = os.getenv("MODEL_SUMMARY_NAME", DEFAULT_MODEL_FAST_NAME)
+ENABLE_TIMING_DIAGNOSTICS = _env_flag("ENABLE_TIMING_DIAGNOSTICS", True)
+LOCAL_FONT_FAMILY_STACK = (
+    "'Inter', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', "
+    "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+)
+SKILLS_PACKAGE_SAFE_DIR = Path(__file__).resolve().parents[2] / "skills"
+SKILLS_PACKAGE_DEFAULT_FILENAME = "openclaw-mirosearch.zip"
+DEFAULT_SKILLS_PACKAGE_PATH = os.getenv(
+    "SKILLS_PACKAGE_PATH",
+    str(SKILLS_PACKAGE_SAFE_DIR / SKILLS_PACKAGE_DEFAULT_FILENAME),
+)
+DEFAULT_SKILLS_PACKAGE_URL = os.getenv("SKILLS_PACKAGE_URL", "").strip()
+SKILLS_DOWNLOAD_FALLBACK_HINT = "未检测到可用下载地址，请配置环境变量 SKILLS_PACKAGE_URL。"
+SKILLS_DOWNLOAD_BUTTON_TEXT = "skills下载"
+SKILLS_DOWNLOAD_COPIED_TEXT = "skills下载（已复制）"
+SKILLS_DOWNLOAD_ALLOWED_RELATIVE_PREFIX = "/gradio_api/file="
+SKILLS_DOWNLOAD_ALLOWED_SCHEMES = {"https", "http"}
+
+# 输出丰富度配置（可通过环境变量覆盖）
+PRODUCTION_WEB_MAX_TOKENS = max(1024, _env_int("PRODUCTION_WEB_LLM_MAX_TOKENS", 3072))
+PRODUCTION_WEB_TOOL_RESULT_MAX_CHARS = max(
+    2000, _env_int("PRODUCTION_WEB_TOOL_RESULT_MAX_CHARS", 6000)
+)
+VERIFIED_MAX_TOKENS = max(1024, _env_int("VERIFIED_LLM_MAX_TOKENS", 3072))
+VERIFIED_TOOL_RESULT_MAX_CHARS = max(
+    2000, _env_int("VERIFIED_TOOL_RESULT_MAX_CHARS", 6000)
+)
+VERIFIED_KEEP_TOOL_RESULT = max(-1, _env_int("VERIFIED_KEEP_TOOL_RESULT", 4))
+VERIFIED_CONTEXT_COMPRESS_LIMIT = max(
+    0, _env_int("VERIFIED_CONTEXT_COMPRESS_LIMIT", 3)
+)
+RESEARCH_MAX_TOKENS = max(1024, _env_int("RESEARCH_LLM_MAX_TOKENS", 3072))
+RESEARCH_TOOL_RESULT_MAX_CHARS = max(
+    2000, _env_int("RESEARCH_TOOL_RESULT_MAX_CHARS", 6000)
+)
+RESEARCH_KEEP_TOOL_RESULT = max(-1, _env_int("RESEARCH_KEEP_TOOL_RESULT", 3))
+RESEARCH_CONTEXT_COMPRESS_LIMIT = max(
+    0, _env_int("RESEARCH_CONTEXT_COMPRESS_LIMIT", 2)
+)
+BALANCED_MAX_TOKENS = max(1024, _env_int("BALANCED_LLM_MAX_TOKENS", 3072))
+BALANCED_TOOL_RESULT_MAX_CHARS = max(
+    2000, _env_int("BALANCED_TOOL_RESULT_MAX_CHARS", 5000)
+)
+BALANCED_KEEP_TOOL_RESULT = max(-1, _env_int("BALANCED_KEEP_TOOL_RESULT", 3))
+BALANCED_CONTEXT_COMPRESS_LIMIT = max(
+    0, _env_int("BALANCED_CONTEXT_COMPRESS_LIMIT", 2)
+)
+QUOTA_MAX_TOKENS = max(1024, _env_int("QUOTA_LLM_MAX_TOKENS", 2048))
+QUOTA_TOOL_RESULT_MAX_CHARS = max(
+    2000, _env_int("QUOTA_TOOL_RESULT_MAX_CHARS", 3500)
+)
+QUOTA_KEEP_TOOL_RESULT = max(-1, _env_int("QUOTA_KEEP_TOOL_RESULT", 2))
+QUOTA_CONTEXT_COMPRESS_LIMIT = max(0, _env_int("QUOTA_CONTEXT_COMPRESS_LIMIT", 1))
+THINKING_MAX_TOKENS = max(1024, _env_int("THINKING_LLM_MAX_TOKENS", 3072))
+THINKING_TOOL_RESULT_MAX_CHARS = max(
+    2000, _env_int("THINKING_TOOL_RESULT_MAX_CHARS", 3000)
+)
+
+# 输出篇幅档位控制（默认详细）
+OUTPUT_DETAIL_LEVEL_CHOICES = ["compact", "balanced", "detailed"]
+OUTPUT_DETAIL_LEVEL_LABELS = {
+    "compact": "精简",
+    "balanced": "适中",
+    "detailed": "详细",
+}
+DEFAULT_OUTPUT_DETAIL_LEVEL = os.getenv("DEFAULT_OUTPUT_DETAIL_LEVEL", "detailed")
+OUTPUT_DETAIL_RENDER_MODE_MAP = {
+    "compact": "summary_only",
+    "balanced": "summary_with_details",
+    "detailed": "full",
+}
+OUTPUT_DETAIL_SUMMARY_MERGE_MAP = {
+    "compact": "latest",
+    "balanced": "all_unique",
+    "detailed": "all_unique",
+}
+
+DETAIL_COMPACT_MAX_TOKENS = max(1024, _env_int("DETAIL_COMPACT_MAX_TOKENS", 2048))
+DETAIL_COMPACT_TOOL_RESULT_MAX_CHARS = max(
+    2000, _env_int("DETAIL_COMPACT_TOOL_RESULT_MAX_CHARS", 2600)
+)
+DETAIL_COMPACT_SUMMARY_MAX_TOKENS = max(
+    1024, _env_int("DETAIL_COMPACT_SUMMARY_MAX_TOKENS", 2048)
+)
+DETAIL_COMPACT_VERIFICATION_MAX_TOKENS = max(
+    1024, _env_int("DETAIL_COMPACT_VERIFICATION_MAX_TOKENS", 1536)
+)
+DETAIL_COMPACT_KEEP_TOOL_RESULT = max(
+    -1, _env_int("DETAIL_COMPACT_KEEP_TOOL_RESULT", 1)
+)
+DETAIL_COMPACT_CONTEXT_COMPRESS_LIMIT = max(
+    0, _env_int("DETAIL_COMPACT_CONTEXT_COMPRESS_LIMIT", 1)
+)
+DETAIL_COMPACT_MAIN_AGENT_MAX_TURNS = max(
+    1, _env_int("DETAIL_COMPACT_MAIN_AGENT_MAX_TURNS", 8)
+)
+
+DETAIL_BALANCED_MAX_TOKENS = max(1024, _env_int("DETAIL_BALANCED_MAX_TOKENS", 4096))
+DETAIL_BALANCED_TOOL_RESULT_MAX_CHARS = max(
+    2000, _env_int("DETAIL_BALANCED_TOOL_RESULT_MAX_CHARS", 5000)
+)
+DETAIL_BALANCED_SUMMARY_MAX_TOKENS = max(
+    1024, _env_int("DETAIL_BALANCED_SUMMARY_MAX_TOKENS", 4096)
+)
+DETAIL_BALANCED_VERIFICATION_MAX_TOKENS = max(
+    1024, _env_int("DETAIL_BALANCED_VERIFICATION_MAX_TOKENS", 3072)
+)
+DETAIL_BALANCED_KEEP_TOOL_RESULT = max(
+    -1, _env_int("DETAIL_BALANCED_KEEP_TOOL_RESULT", 2)
+)
+DETAIL_BALANCED_CONTEXT_COMPRESS_LIMIT = max(
+    0, _env_int("DETAIL_BALANCED_CONTEXT_COMPRESS_LIMIT", 2)
+)
+DETAIL_BALANCED_MAIN_AGENT_MAX_TURNS = max(
+    1, _env_int("DETAIL_BALANCED_MAIN_AGENT_MAX_TURNS", 10)
+)
+
+DETAIL_DETAILED_MAX_TOKENS = max(1024, _env_int("DETAIL_DETAILED_MAX_TOKENS", 8192))
+DETAIL_DETAILED_TOOL_RESULT_MAX_CHARS = max(
+    2000, _env_int("DETAIL_DETAILED_TOOL_RESULT_MAX_CHARS", 12000)
+)
+DETAIL_DETAILED_SUMMARY_MAX_TOKENS = max(
+    1024, _env_int("DETAIL_DETAILED_SUMMARY_MAX_TOKENS", 8192)
+)
+DETAIL_DETAILED_VERIFICATION_MAX_TOKENS = max(
+    1024, _env_int("DETAIL_DETAILED_VERIFICATION_MAX_TOKENS", 6144)
+)
+DETAIL_DETAILED_KEEP_TOOL_RESULT = max(
+    -1, _env_int("DETAIL_DETAILED_KEEP_TOOL_RESULT", -1)
+)
+DETAIL_DETAILED_CONTEXT_COMPRESS_LIMIT = max(
+    0, _env_int("DETAIL_DETAILED_CONTEXT_COMPRESS_LIMIT", 0)
+)
+DETAIL_DETAILED_MAIN_AGENT_MAX_TURNS = max(
+    1, _env_int("DETAIL_DETAILED_MAIN_AGENT_MAX_TURNS", 16)
+)
 
 RESEARCH_MODE_CHOICES = [
     "production-web",
@@ -121,8 +341,32 @@ SEARCH_HISTORY_STORAGE_KEY = os.getenv(
 )
 SEARCH_HISTORY_MAX_ITEMS = max(1, _env_int("SEARCH_HISTORY_MAX_ITEMS", 8))
 SEARCH_HISTORY_TITLE = "最近搜索"
-SEARCH_HISTORY_HINT = "仅保存在当前浏览器，点击可回填，删除不影响当前结果。"
+SEARCH_HISTORY_HINT = "仅保存在当前浏览器，点击可回填并回显结果，删除不影响当前结果。"
 SEARCH_HISTORY_EMPTY_TEXT = "还没有搜索历史，开始一次研究后会显示在这里。"
+SEARCH_HISTORY_RESULT_MAX_HTML_CHARS = max(
+    2000, _env_int("SEARCH_HISTORY_RESULT_MAX_HTML_CHARS", 120000)
+)
+SEARCH_HISTORY_RESULT_MAX_TEXT_CHARS = max(
+    1000, _env_int("SEARCH_HISTORY_RESULT_MAX_TEXT_CHARS", 40000)
+)
+SEARCH_HISTORY_RESULT_CAPTURE_TIMEOUT_MS = max(
+    5000, _env_int("SEARCH_HISTORY_RESULT_CAPTURE_TIMEOUT_MS", 300000)
+)
+SEARCH_HISTORY_RESULT_CAPTURE_INTERVAL_MS = max(
+    200, _env_int("SEARCH_HISTORY_RESULT_CAPTURE_INTERVAL_MS", 600)
+)
+SEARCH_HISTORY_RESULT_CAPTURE_DEBOUNCE_MS = max(
+    100, _env_int("SEARCH_HISTORY_RESULT_CAPTURE_DEBOUNCE_MS", 350)
+)
+SEARCH_HISTORY_PLACEHOLDER_KEYWORDS = ("等待开始研究", "等待开始")
+
+RENDER_MODE_CHOICES = {"full", "summary_with_details", "summary_only"}
+DEFAULT_UI_RENDER_MODE = os.getenv("DEFAULT_UI_RENDER_MODE", "summary_with_details")
+DEFAULT_API_RENDER_MODE = os.getenv("DEFAULT_API_RENDER_MODE", "summary_with_details")
+FINAL_SUMMARY_MERGE_STRATEGY_CHOICES = {"latest", "all_unique"}
+DEFAULT_FINAL_SUMMARY_MERGE_STRATEGY = os.getenv(
+    "FINAL_SUMMARY_MERGE_STRATEGY", "all_unique"
+)
 
 SEARCH_PROFILE_ENV_MAP: Dict[str, Dict[str, str]] = {
     "searxng-first": {
@@ -176,74 +420,74 @@ MODE_OVERRIDE_MAP = {
         f"+llm.model_fast_name={DEFAULT_MODEL_FAST_NAME}",
         f"+llm.model_thinking_name={DEFAULT_MODEL_THINKING_NAME}",
         f"+llm.model_summary_name={DEFAULT_MODEL_SUMMARY_NAME}",
-        "llm.max_tokens=2048",
+        f"llm.max_tokens={PRODUCTION_WEB_MAX_TOKENS}",
         "+llm.max_retries=3",
         "+llm.retry_wait_seconds=3",
-        "+llm.tool_result_max_chars=4000",
+        f"llm.tool_result_max_chars={PRODUCTION_WEB_TOOL_RESULT_MAX_CHARS}",
     ],
     "verified": [
         "agent=demo_verified_search",
         "agent.main_agent.max_turns=14",
-        "agent.keep_tool_result=2",
-        "agent.context_compress_limit=2",
+        f"agent.keep_tool_result={VERIFIED_KEEP_TOOL_RESULT}",
+        f"agent.context_compress_limit={VERIFIED_CONTEXT_COMPRESS_LIMIT}",
         "agent.retry_with_summary=false",
         f"llm.model_name={DEFAULT_MODEL_NAME}",
         f"+llm.model_tool_name={DEFAULT_MODEL_TOOL_NAME}",
         f"+llm.model_fast_name={DEFAULT_MODEL_FAST_NAME}",
         f"+llm.model_thinking_name={DEFAULT_MODEL_THINKING_NAME}",
         f"+llm.model_summary_name={DEFAULT_MODEL_SUMMARY_NAME}",
-        "llm.max_tokens=2048",
+        f"llm.max_tokens={VERIFIED_MAX_TOKENS}",
         "+llm.max_retries=3",
         "+llm.retry_wait_seconds=3",
-        "+llm.tool_result_max_chars=3200",
+        f"llm.tool_result_max_chars={VERIFIED_TOOL_RESULT_MAX_CHARS}",
     ],
     "research": [
         "agent=demo_search_only",
-        "agent.main_agent.max_turns=8",
-        "agent.keep_tool_result=2",
-        "agent.context_compress_limit=2",
+        "agent.main_agent.max_turns=10",
+        f"agent.keep_tool_result={RESEARCH_KEEP_TOOL_RESULT}",
+        f"agent.context_compress_limit={RESEARCH_CONTEXT_COMPRESS_LIMIT}",
         "agent.retry_with_summary=false",
         f"llm.model_name={DEFAULT_MODEL_NAME}",
         f"+llm.model_tool_name={DEFAULT_MODEL_TOOL_NAME}",
         f"+llm.model_fast_name={DEFAULT_MODEL_FAST_NAME}",
         f"+llm.model_thinking_name={DEFAULT_MODEL_THINKING_NAME}",
         f"+llm.model_summary_name={DEFAULT_MODEL_SUMMARY_NAME}",
-        "llm.max_tokens=2048",
+        f"llm.max_tokens={RESEARCH_MAX_TOKENS}",
         "+llm.max_retries=4",
         "+llm.retry_wait_seconds=6",
-        "+llm.tool_result_max_chars=3000",
+        f"llm.tool_result_max_chars={RESEARCH_TOOL_RESULT_MAX_CHARS}",
     ],
     "balanced": [
         "agent=demo_search_only",
-        "agent.main_agent.max_turns=9",
-        "agent.keep_tool_result=1",
-        "agent.context_compress_limit=1",
+        "agent.main_agent.max_turns=11",
+        f"agent.keep_tool_result={BALANCED_KEEP_TOOL_RESULT}",
+        f"agent.context_compress_limit={BALANCED_CONTEXT_COMPRESS_LIMIT}",
         "agent.retry_with_summary=false",
         f"llm.model_name={DEFAULT_MODEL_NAME}",
         f"+llm.model_tool_name={DEFAULT_MODEL_TOOL_NAME}",
         f"+llm.model_fast_name={DEFAULT_MODEL_FAST_NAME}",
         f"+llm.model_thinking_name={DEFAULT_MODEL_THINKING_NAME}",
         f"+llm.model_summary_name={DEFAULT_MODEL_SUMMARY_NAME}",
-        "llm.max_tokens=1536",
+        f"llm.max_tokens={BALANCED_MAX_TOKENS}",
         "+llm.max_retries=2",
         "+llm.retry_wait_seconds=2",
-        "+llm.tool_result_max_chars=2200",
+        f"llm.tool_result_max_chars={BALANCED_TOOL_RESULT_MAX_CHARS}",
     ],
     "quota": [
         "agent=demo_search_only",
         "agent.main_agent.max_turns=7",
-        "agent.keep_tool_result=1",
-        "agent.context_compress_limit=1",
+        f"agent.keep_tool_result={QUOTA_KEEP_TOOL_RESULT}",
+        f"agent.context_compress_limit={QUOTA_CONTEXT_COMPRESS_LIMIT}",
         "agent.retry_with_summary=false",
         f"llm.model_name={DEFAULT_MODEL_FAST_NAME}",
         f"+llm.model_tool_name={DEFAULT_MODEL_FAST_NAME}",
         f"+llm.model_fast_name={DEFAULT_MODEL_FAST_NAME}",
         f"+llm.model_thinking_name={DEFAULT_MODEL_THINKING_NAME}",
         f"+llm.model_summary_name={DEFAULT_MODEL_SUMMARY_NAME}",
-        "llm.max_tokens=1536",
+        f"llm.max_tokens={QUOTA_MAX_TOKENS}",
         "+llm.max_retries=2",
         "+llm.retry_wait_seconds=2",
-        "+llm.tool_result_max_chars=2200",
+        f"llm.tool_result_max_chars={QUOTA_TOOL_RESULT_MAX_CHARS}",
     ],
     "thinking": [
         "agent=demo_no_tools",
@@ -256,10 +500,10 @@ MODE_OVERRIDE_MAP = {
         f"+llm.model_fast_name={DEFAULT_MODEL_FAST_NAME}",
         f"+llm.model_thinking_name={DEFAULT_MODEL_THINKING_NAME}",
         f"+llm.model_summary_name={DEFAULT_MODEL_SUMMARY_NAME}",
-        "llm.max_tokens=2048",
+        f"llm.max_tokens={THINKING_MAX_TOKENS}",
         "+llm.max_retries=2",
         "+llm.retry_wait_seconds=2",
-        "+llm.tool_result_max_chars=2200",
+        f"llm.tool_result_max_chars={THINKING_TOOL_RESULT_MAX_CHARS}",
     ],
 }
 
@@ -333,13 +577,108 @@ def _normalize_verification_min_search_rounds(min_rounds: Optional[int]) -> int:
     return max(1, min(MAX_VERIFICATION_MIN_SEARCH_ROUNDS, parsed))
 
 
+def _normalize_render_mode(render_mode: Optional[str], default_mode: str) -> str:
+    resolved_default_mode = str(default_mode or "summary_with_details").strip().lower()
+    if resolved_default_mode not in RENDER_MODE_CHOICES:
+        resolved_default_mode = "summary_with_details"
+    if render_mode is None:
+        return resolved_default_mode
+    normalized_render_mode = str(render_mode).strip().lower()
+    if normalized_render_mode in RENDER_MODE_CHOICES:
+        return normalized_render_mode
+    logger.warning("未知渲染模式 %s，回退到 %s", render_mode, resolved_default_mode)
+    return resolved_default_mode
+
+
+def _normalize_final_summary_merge_strategy(strategy: Optional[str]) -> str:
+    default_strategy = str(DEFAULT_FINAL_SUMMARY_MERGE_STRATEGY).strip().lower()
+    if default_strategy not in FINAL_SUMMARY_MERGE_STRATEGY_CHOICES:
+        default_strategy = "latest"
+    if strategy is None:
+        return default_strategy
+    normalized_strategy = str(strategy).strip().lower()
+    if normalized_strategy in FINAL_SUMMARY_MERGE_STRATEGY_CHOICES:
+        return normalized_strategy
+    logger.warning("未知总结合并策略 %s，回退到 %s", strategy, default_strategy)
+    return default_strategy
+
+
+def _normalize_output_detail_level(level: Optional[str]) -> str:
+    resolved_default = str(DEFAULT_OUTPUT_DETAIL_LEVEL or "detailed").strip().lower()
+    if resolved_default not in OUTPUT_DETAIL_LEVEL_CHOICES:
+        resolved_default = "detailed"
+    if level is None:
+        return resolved_default
+    normalized_level = str(level).strip().lower()
+    if normalized_level in OUTPUT_DETAIL_LEVEL_CHOICES:
+        return normalized_level
+    logger.warning("未知输出篇幅档位 %s，回退到 %s", level, resolved_default)
+    return resolved_default
+
+
+def _get_render_mode_for_output_detail(level: Optional[str]) -> str:
+    resolved_level = _normalize_output_detail_level(level)
+    return OUTPUT_DETAIL_RENDER_MODE_MAP.get(resolved_level, "full")
+
+
+def _get_summary_merge_for_output_detail(level: Optional[str]) -> str:
+    resolved_level = _normalize_output_detail_level(level)
+    return OUTPUT_DETAIL_SUMMARY_MERGE_MAP.get(resolved_level, "all_unique")
+
+
+def _get_mode_overrides_for_output_detail(level: Optional[str]) -> List[str]:
+    resolved_level = _normalize_output_detail_level(level)
+    if resolved_level == "compact":
+        return [
+            "++agent.output_detail_level=compact",
+            "++agent.research_report_mode=true",
+            f"agent.main_agent.max_turns={DETAIL_COMPACT_MAIN_AGENT_MAX_TURNS}",
+            f"agent.keep_tool_result={DETAIL_COMPACT_KEEP_TOOL_RESULT}",
+            f"agent.context_compress_limit={DETAIL_COMPACT_CONTEXT_COMPRESS_LIMIT}",
+            f"llm.max_tokens={DETAIL_COMPACT_MAX_TOKENS}",
+            f"llm.tool_result_max_chars={DETAIL_COMPACT_TOOL_RESULT_MAX_CHARS}",
+            f"llm.summary_max_tokens={DETAIL_COMPACT_SUMMARY_MAX_TOKENS}",
+            f"llm.verification_max_tokens={DETAIL_COMPACT_VERIFICATION_MAX_TOKENS}",
+        ]
+    if resolved_level == "balanced":
+        return [
+            "++agent.output_detail_level=balanced",
+            "++agent.research_report_mode=true",
+            f"agent.main_agent.max_turns={DETAIL_BALANCED_MAIN_AGENT_MAX_TURNS}",
+            f"agent.keep_tool_result={DETAIL_BALANCED_KEEP_TOOL_RESULT}",
+            f"agent.context_compress_limit={DETAIL_BALANCED_CONTEXT_COMPRESS_LIMIT}",
+            f"llm.max_tokens={DETAIL_BALANCED_MAX_TOKENS}",
+            f"llm.tool_result_max_chars={DETAIL_BALANCED_TOOL_RESULT_MAX_CHARS}",
+            f"llm.summary_max_tokens={DETAIL_BALANCED_SUMMARY_MAX_TOKENS}",
+            f"llm.verification_max_tokens={DETAIL_BALANCED_VERIFICATION_MAX_TOKENS}",
+        ]
+    return [
+        "++agent.output_detail_level=detailed",
+        "++agent.research_report_mode=true",
+        f"agent.main_agent.max_turns={DETAIL_DETAILED_MAIN_AGENT_MAX_TURNS}",
+        f"agent.keep_tool_result={DETAIL_DETAILED_KEEP_TOOL_RESULT}",
+        f"agent.context_compress_limit={DETAIL_DETAILED_CONTEXT_COMPRESS_LIMIT}",
+        f"llm.max_tokens={DETAIL_DETAILED_MAX_TOKENS}",
+        f"llm.tool_result_max_chars={DETAIL_DETAILED_TOOL_RESULT_MAX_CHARS}",
+        f"llm.summary_max_tokens={DETAIL_DETAILED_SUMMARY_MAX_TOKENS}",
+        f"llm.verification_max_tokens={DETAIL_DETAILED_VERIFICATION_MAX_TOKENS}",
+    ]
+
+
 def _compose_profile_cache_key(
     mode: str,
     search_profile: str,
     search_result_num: int,
     verification_min_search_rounds: int,
-) -> Tuple[str, str, int, int]:
-    return mode, search_profile, search_result_num, verification_min_search_rounds
+    output_detail_level: str,
+) -> Tuple[str, str, int, int, str]:
+    return (
+        mode,
+        search_profile,
+        search_result_num,
+        verification_min_search_rounds,
+        output_detail_level,
+    )
 
 
 @contextmanager
@@ -482,22 +821,51 @@ def _ensure_preloaded(
     search_profile: str,
     search_result_num: int,
     verification_min_search_rounds: int,
+    output_detail_level: str,
 ):
     """按检索模式与检索源策略懒加载 pipeline 组件。"""
     global _preload_cache
+    preload_start_time = time.perf_counter()
     resolved_result_num = _normalize_search_result_num(search_result_num)
     resolved_min_rounds = _normalize_verification_min_search_rounds(
         verification_min_search_rounds
     )
+    resolved_output_detail_level = _normalize_output_detail_level(output_detail_level)
     cache_key = _compose_profile_cache_key(
-        mode, search_profile, resolved_result_num, resolved_min_rounds
+        mode,
+        search_profile,
+        resolved_result_num,
+        resolved_min_rounds,
+        resolved_output_detail_level,
     )
     if cache_key in _preload_cache:
-        return
+        duration_ms = int((time.perf_counter() - preload_start_time) * 1000)
+        if ENABLE_TIMING_DIAGNOSTICS:
+            logger.info(
+                "Pipeline preload cache hit | cache_key=%s | duration_ms=%s",
+                cache_key,
+                duration_ms,
+            )
+        return {
+            "cache_key": cache_key,
+            "cache_hit": True,
+            "duration_ms": duration_ms,
+        }
 
     with _preload_lock:
         if cache_key in _preload_cache:
-            return
+            duration_ms = int((time.perf_counter() - preload_start_time) * 1000)
+            if ENABLE_TIMING_DIAGNOSTICS:
+                logger.info(
+                    "Pipeline preload cache hit(after lock) | cache_key=%s | duration_ms=%s",
+                    cache_key,
+                    duration_ms,
+                )
+            return {
+                "cache_key": cache_key,
+                "cache_hit": True,
+                "duration_ms": duration_ms,
+            }
 
         search_env = dict(
             SEARCH_PROFILE_ENV_MAP.get(
@@ -506,16 +874,20 @@ def _ensure_preloaded(
         )
         search_env["SEARCH_RESULT_NUM"] = str(resolved_result_num)
         mode_overrides = list(MODE_OVERRIDE_MAP.get(mode, MODE_OVERRIDE_MAP["balanced"]))
+        mode_overrides.extend(
+            _get_mode_overrides_for_output_detail(resolved_output_detail_level)
+        )
         if mode == "verified":
             mode_overrides.append(
                 f"agent.verification.min_search_rounds={resolved_min_rounds}"
             )
         logger.info(
-            "Loading pipeline components | mode=%s | search_profile=%s | result_num=%s | min_rounds=%s | provider_order=%s | provider_mode=%s",
+            "Loading pipeline components | mode=%s | search_profile=%s | result_num=%s | min_rounds=%s | detail_level=%s | provider_order=%s | provider_mode=%s",
             mode,
             search_profile,
             resolved_result_num,
             resolved_min_rounds,
+            resolved_output_detail_level,
             search_env.get("SEARCH_PROVIDER_ORDER", ""),
             search_env.get("SEARCH_PROVIDER_MODE", ""),
         )
@@ -545,6 +917,7 @@ def _ensure_preloaded(
             "search_profile": search_profile,
             "search_result_num": resolved_result_num,
             "verification_min_search_rounds": resolved_min_rounds,
+            "output_detail_level": resolved_output_detail_level,
         }
         logger.info(
             "Pipeline components loaded successfully | mode=%s | search_profile=%s | result_num=%s | min_rounds=%s",
@@ -553,6 +926,19 @@ def _ensure_preloaded(
             resolved_result_num,
             resolved_min_rounds,
         )
+        duration_ms = int((time.perf_counter() - preload_start_time) * 1000)
+        if ENABLE_TIMING_DIAGNOSTICS:
+            logger.info(
+                "Pipeline preload ready | cache_key=%s | cache_hit=%s | duration_ms=%s",
+                cache_key,
+                False,
+                duration_ms,
+            )
+        return {
+            "cache_key": cache_key,
+            "cache_hit": False,
+            "duration_ms": duration_ms,
+        }
 
 
 class ThreadSafeAsyncQueue:
@@ -671,9 +1057,11 @@ async def stream_events_optimized(
     search_profile: Optional[str] = None,
     search_result_num: Optional[int] = None,
     verification_min_search_rounds: Optional[int] = None,
+    output_detail_level: Optional[str] = None,
     disconnect_check=None,
 ) -> AsyncGenerator[dict, None]:
     """Optimized event stream generator that directly outputs structured events, no longer wrapped as SSE strings."""
+    stream_start_time = time.perf_counter()
     workflow_id = task_id
     resolved_mode = _normalize_research_mode(mode)
     resolved_search_profile = _normalize_search_profile(search_profile)
@@ -681,6 +1069,7 @@ async def stream_events_optimized(
     resolved_verification_min_rounds = _normalize_verification_min_search_rounds(
         verification_min_search_rounds
     )
+    resolved_output_detail_level = _normalize_output_detail_level(output_detail_level)
     last_send_time = time.time()
     last_heartbeat_time = time.time()
 
@@ -689,6 +1078,8 @@ async def stream_events_optimized(
     stream_queue.set_loop(asyncio.get_event_loop())
 
     cancel_event = threading.Event()
+    first_non_heartbeat_logged = False
+    event_counts: Dict[str, int] = {}
 
     def run_pipeline_in_thread():
         try:
@@ -709,17 +1100,29 @@ async def stream_events_optimized(
             wrapper_queue = ThreadQueueWrapper(stream_queue, cancel_event)
 
             # Ensure pipeline components are loaded (lazy loading)
-            _ensure_preloaded(
+            preload_info = _ensure_preloaded(
                 resolved_mode,
                 resolved_search_profile,
                 resolved_search_result_num,
                 resolved_verification_min_rounds,
+                resolved_output_detail_level,
             )
+            if ENABLE_TIMING_DIAGNOSTICS:
+                logger.info(
+                    "Task stream bootstrap | workflow_id=%s | mode=%s | search_profile=%s | detail_level=%s | preload_ms=%s | cache_hit=%s",
+                    workflow_id,
+                    resolved_mode,
+                    resolved_search_profile,
+                    resolved_output_detail_level,
+                    preload_info.get("duration_ms"),
+                    preload_info.get("cache_hit"),
+                )
             cache_key = _compose_profile_cache_key(
                 resolved_mode,
                 resolved_search_profile,
                 resolved_search_result_num,
                 resolved_verification_min_rounds,
+                resolved_output_detail_level,
             )
             profile_cache = _preload_cache[cache_key]
 
@@ -795,6 +1198,20 @@ async def stream_events_optimized(
                 if message is None:
                     logger.info("Pipeline completed")
                     break
+                event_type = str(message.get("event", "unknown"))
+                event_counts[event_type] = event_counts.get(event_type, 0) + 1
+                if (
+                    ENABLE_TIMING_DIAGNOSTICS
+                    and not first_non_heartbeat_logged
+                    and event_type != "heartbeat"
+                ):
+                    first_non_heartbeat_logged = True
+                    logger.info(
+                        "Task first event | workflow_id=%s | event=%s | latency_ms=%s",
+                        workflow_id,
+                        event_type,
+                        int((time.perf_counter() - stream_start_time) * 1000),
+                    )
                 yield message
                 last_send_time = time.time()
             except asyncio.TimeoutError:
@@ -830,6 +1247,13 @@ async def stream_events_optimized(
         except Exception:
             pass
         executor.shutdown(wait=False)
+        if ENABLE_TIMING_DIAGNOSTICS:
+            logger.info(
+                "Task stream finished | workflow_id=%s | total_ms=%s | event_counts=%s",
+                workflow_id,
+                int((time.perf_counter() - stream_start_time) * 1000),
+                json.dumps(event_counts, ensure_ascii=False, sort_keys=True),
+            )
 
 
 # ========================= Gradio Integration =========================
@@ -889,7 +1313,11 @@ def _is_empty_payload(value) -> bool:
     return False
 
 
-def _format_search_results(tool_input: dict, tool_output: dict) -> str:
+def _format_search_results(
+    tool_input: dict,
+    tool_output: dict,
+    display_limit: Optional[int] = None,
+) -> str:
     """Format google_search results in a beautiful card layout."""
     lines = []
 
@@ -996,8 +1424,11 @@ def _format_search_results(tool_input: dict, tool_output: dict) -> str:
 
         # Results list
         lines.append('<div class="search-results">')
-        display_limit = min(len(results), SEARCH_RESULT_DISPLAY_MAX)
-        for item in results[:display_limit]:
+        safe_display_limit = SEARCH_RESULT_DISPLAY_MAX
+        if display_limit is not None:
+            safe_display_limit = max(1, min(SEARCH_RESULT_DISPLAY_MAX, int(display_limit)))
+        visible_count = min(len(results), safe_display_limit)
+        for item in results[:visible_count]:
             title = item.get("title", "Untitled")
             link = item.get("link", "#")
 
@@ -1006,9 +1437,9 @@ def _format_search_results(tool_input: dict, tool_output: dict) -> str:
                 <span class="result-title">{title}</span>
             </a>""")
         lines.append("</div>")
-        if len(results) > display_limit:
+        if len(results) > visible_count:
             lines.append(
-                f'<div class="search-count">仅展示前 {display_limit} 条，完整结果共 {len(results)} 条。</div>'
+                f'<div class="search-count">仅展示前 {visible_count} 条，完整结果共 {len(results)} 条。</div>'
             )
 
     lines.append("</div>")
@@ -1076,7 +1507,45 @@ def _format_sogou_search_results(tool_input: dict, tool_output: dict) -> str:
     return "\n".join(lines)
 
 
-def _format_scrape_results(tool_input: dict, tool_output: dict) -> str:
+def _extract_scrape_preview_text(tool_output: dict, preview_chars: int) -> str:
+    if preview_chars <= 0:
+        return ""
+    payload = ""
+    if isinstance(tool_output, dict):
+        candidate = tool_output.get("result", tool_output)
+        if isinstance(candidate, dict):
+            for key in ("text", "markdown", "content", "summary", "result"):
+                value = candidate.get(key)
+                if isinstance(value, str) and value.strip():
+                    payload = value
+                    break
+            if not payload:
+                try:
+                    payload = json.dumps(candidate, ensure_ascii=False)
+                except Exception:
+                    payload = str(candidate)
+        elif isinstance(candidate, str):
+            payload = candidate
+        else:
+            try:
+                payload = json.dumps(candidate, ensure_ascii=False)
+            except Exception:
+                payload = str(candidate)
+    elif isinstance(tool_output, str):
+        payload = tool_output
+    normalized_payload = " ".join(str(payload or "").split()).strip()
+    if not normalized_payload:
+        return ""
+    if len(normalized_payload) > preview_chars:
+        return normalized_payload[:preview_chars] + "..."
+    return normalized_payload
+
+
+def _format_scrape_results(
+    tool_input: dict,
+    tool_output: dict,
+    preview_chars: int = 0,
+) -> str:
     """Format scrape/webpage results in a card layout."""
     lines = []
 
@@ -1108,19 +1577,86 @@ def _format_scrape_results(tool_input: dict, tool_output: dict) -> str:
         )
         lines.append("</div>")
         lines.append('<div class="scrape-status success">✓ Done</div>')
+    preview_text = _extract_scrape_preview_text(tool_output, preview_chars)
+    if preview_text:
+        lines.append("</div>")
+        lines.append(
+            f'<div class="tool-brief" style="padding: 0 16px 12px; line-height: 1.6;">{preview_text}</div>'
+        )
+        lines.append('<div class="scrape-card">')
     lines.append("</div>")
 
     return "\n".join(lines)
 
 
-def _render_markdown(state: dict) -> str:
-    lines = []
-    final_summary_lines = []  # Collect final summary content separately
+def _deduplicate_non_empty_blocks(blocks: List[str]) -> List[str]:
+    deduplicated_blocks: List[str] = []
+    seen_blocks = set()
+    for block in blocks:
+        normalized_block = (block or "").strip()
+        if not normalized_block or normalized_block in seen_blocks:
+            continue
+        seen_blocks.add(normalized_block)
+        deduplicated_blocks.append(normalized_block)
+    return deduplicated_blocks
+
+
+def _merge_final_summary_blocks(
+    final_summary_blocks: List[str],
+    merge_strategy: Optional[str] = None,
+) -> List[str]:
+    unique_blocks = _deduplicate_non_empty_blocks(final_summary_blocks)
+    if not unique_blocks:
+        return []
+    resolved_merge_strategy = _normalize_final_summary_merge_strategy(merge_strategy)
+    if resolved_merge_strategy == "all_unique":
+        return unique_blocks
+    return [unique_blocks[-1]]
+
+
+def _build_summary_section(final_summary_blocks: List[str]) -> List[str]:
+    if not final_summary_blocks:
+        return []
+    lines = ["## 📋 研究总结\n\n"]
+    lines.extend(final_summary_blocks)
+    return lines
+
+
+def _build_process_details_section(process_lines: List[str]) -> List[str]:
+    if not process_lines:
+        return []
+    lines = [
+        "\n\n---\n\n",
+        '<details class="process-details">\n<summary>🧭 查看检索过程（中间步骤）</summary>\n\n',
+    ]
+    lines.extend(process_lines)
+    lines.append("\n</details>\n")
+    return lines
+
+
+def _render_markdown(
+    state: dict,
+    render_mode: Optional[str] = None,
+    final_summary_merge_strategy: Optional[str] = None,
+) -> str:
+    resolved_render_mode = _normalize_render_mode(render_mode, DEFAULT_UI_RENDER_MODE)
+    if resolved_render_mode == "full":
+        search_display_limit = SEARCH_RESULT_DISPLAY_MAX
+        scrape_preview_chars = 2200
+    elif resolved_render_mode == "summary_with_details":
+        search_display_limit = min(15, SEARCH_RESULT_DISPLAY_MAX)
+        scrape_preview_chars = 700
+    else:
+        search_display_limit = min(8, SEARCH_RESULT_DISPLAY_MAX)
+        scrape_preview_chars = 0
+    error_lines = []
+    process_lines = []
+    final_summary_blocks = []
 
     # Render errors first if any
     if state.get("errors"):
         for err in state["errors"]:
-            lines.append(f'<div class="error-block">❌ {err}</div>')
+            error_lines.append(f'<div class="error-block">❌ {err}</div>')
 
     # Render all agents' content
     for agent_id in state.get("agent_order", []):
@@ -1137,9 +1673,9 @@ def _render_markdown(state: dict) -> str:
                 content = call.get("content", "")
                 if content:
                     if is_final_summary:
-                        final_summary_lines.append(content)
+                        final_summary_blocks.append(content)
                     else:
-                        lines.append(content)
+                        process_lines.append(content)
                 continue
 
             tool_input = call.get("input", {})
@@ -1149,16 +1685,20 @@ def _render_markdown(state: dict) -> str:
 
             # Special formatting for google_search
             if tool_name == "google_search" and (has_input or has_output):
-                formatted = _format_search_results(tool_input, tool_output)
+                formatted = _format_search_results(
+                    tool_input,
+                    tool_output,
+                    display_limit=search_display_limit,
+                )
                 if formatted:
-                    lines.append(formatted)
+                    process_lines.append(formatted)
                 continue
 
             # Special formatting for sogou_search
             if tool_name == "sogou_search" and (has_input or has_output):
                 formatted = _format_sogou_search_results(tool_input, tool_output)
                 if formatted:
-                    lines.append(formatted)
+                    process_lines.append(formatted)
                 continue
 
             # Special formatting for scrape/webpage tools
@@ -1168,16 +1708,20 @@ def _render_markdown(state: dict) -> str:
                 "scrape_webpage",
                 "scrape_and_extract_info",
             ) and (has_input or has_output):
-                formatted = _format_scrape_results(tool_input, tool_output)
+                formatted = _format_scrape_results(
+                    tool_input,
+                    tool_output,
+                    preview_chars=scrape_preview_chars,
+                )
                 if formatted:
-                    lines.append(formatted)
+                    process_lines.append(formatted)
                 continue
 
             # Special formatting for code execution tools
             if tool_name in ("python", "run_python_code") and (has_input or has_output):
                 # Use pure Markdown to avoid HTML wrapper blocking Markdown rendering
-                lines.append("\n---\n")
-                lines.append("#### 💻 Code Execution\n")
+                process_lines.append("\n---\n")
+                process_lines.append("#### 💻 Code Execution\n")
                 # Show code input - try multiple possible keys
                 code = ""
                 if isinstance(tool_input, dict):
@@ -1185,7 +1729,7 @@ def _render_markdown(state: dict) -> str:
                 elif isinstance(tool_input, str):
                     code = tool_input
                 if code:
-                    lines.append(f"\n```python\n{code}\n```\n")
+                    process_lines.append(f"\n```python\n{code}\n```\n")
                 # Show output if available
                 if has_output:
                     output = ""
@@ -1199,37 +1743,51 @@ def _render_markdown(state: dict) -> str:
                     elif isinstance(tool_output, str):
                         output = tool_output
                     if isinstance(output, str) and output.strip():
-                        lines.append("\n**Output:**\n")
-                        lines.append(
+                        process_lines.append("\n**Output:**\n")
+                        process_lines.append(
                             f'\n```text\n{output[:1000]}{"..." if len(output) > 1000 else ""}\n```\n'
                         )
-                lines.append("\n✅ Executed\n")
+                process_lines.append("\n✅ Executed\n")
                 continue
 
             # Other tools - show as compact card
             if has_input or has_output:
-                target_lines = final_summary_lines if is_final_summary else lines
-                target_lines.append('<div class="tool-card">')
-                target_lines.append(f'<div class="tool-header">🔧 {tool_name}</div>')
-                if has_input:
-                    # Show brief input summary
-                    if isinstance(tool_input, dict):
-                        brief = ", ".join(
-                            f"{k}: {str(v)[:30]}..."
-                            if len(str(v)) > 30
-                            else f"{k}: {v}"
-                            for k, v in list(tool_input.items())[:2]
-                        )
-                        target_lines.append(f'<div class="tool-brief">{brief}</div>')
+                process_lines.append('<div class="tool-card">')
+                process_lines.append(f'<div class="tool-header">🔧 {tool_name}</div>')
+                if has_input and isinstance(tool_input, dict):
+                    brief = ", ".join(
+                        f"{k}: {str(v)[:30]}..."
+                        if len(str(v)) > 30
+                        else f"{k}: {v}"
+                        for k, v in list(tool_input.items())[:2]
+                    )
+                    process_lines.append(f'<div class="tool-brief">{brief}</div>')
                 if has_output:
-                    target_lines.append('<div class="tool-status">✓ Done</div>')
-                target_lines.append("</div>")
+                    process_lines.append('<div class="tool-status">✓ Done</div>')
+                process_lines.append("</div>")
 
-    # Add final summary with Markdown-based styling (no HTML wrapper to preserve Markdown rendering)
-    if final_summary_lines:
-        lines.append("\n\n---\n\n")  # Markdown horizontal rule as divider
-        lines.append("## 📋 研究总结\n\n")
-        lines.extend(final_summary_lines)
+    merged_final_summary_blocks = _merge_final_summary_blocks(
+        final_summary_blocks,
+        merge_strategy=final_summary_merge_strategy,
+    )
+    lines = list(error_lines)
+
+    if resolved_render_mode == "full":
+        lines.extend(process_lines)
+        if merged_final_summary_blocks:
+            lines.append("\n\n---\n\n")
+            lines.extend(_build_summary_section(merged_final_summary_blocks))
+    elif resolved_render_mode == "summary_only":
+        if merged_final_summary_blocks:
+            lines.extend(_build_summary_section(merged_final_summary_blocks))
+        else:
+            lines.extend(process_lines)
+    else:
+        if merged_final_summary_blocks:
+            lines.extend(_build_summary_section(merged_final_summary_blocks))
+            lines.extend(_build_process_details_section(process_lines))
+        else:
+            lines.extend(process_lines)
 
     return "\n".join(lines) if lines else "*等待开始研究...*"
 
@@ -1331,6 +1889,7 @@ def _update_state_with_event(state: dict, message: dict):
 
 
 _CANCEL_FLAGS = {}
+_ACTIVE_TASK_IDS = set()
 _CANCEL_LOCK = threading.Lock()
 
 
@@ -1344,18 +1903,45 @@ def _reset_cancel_flag(task_id: str):
         _CANCEL_FLAGS[task_id] = False
 
 
+def _register_active_task(task_id: str):
+    with _CANCEL_LOCK:
+        _ACTIVE_TASK_IDS.add(task_id)
+        _CANCEL_FLAGS.setdefault(task_id, False)
+
+
+def _unregister_active_task(task_id: str):
+    with _CANCEL_LOCK:
+        _ACTIVE_TASK_IDS.discard(task_id)
+        _CANCEL_FLAGS.pop(task_id, None)
+
+
+def _get_active_task_ids() -> List[str]:
+    with _CANCEL_LOCK:
+        return list(_ACTIVE_TASK_IDS)
+
+
+def _cancel_task_ids(task_ids: List[str]) -> int:
+    cancelled = 0
+    for task_id in task_ids:
+        if not task_id:
+            continue
+        _set_cancel_flag(task_id)
+        cancelled += 1
+    return cancelled
+
+
 async def _disconnect_check_for_task(task_id: str):
     with _CANCEL_LOCK:
         return _CANCEL_FLAGS.get(task_id, False)
 
 
-def _spinner_markup(running: bool) -> str:
+def _spinner_markup(running: bool, status_text: str = "生成中...") -> str:
     if not running:
         return ""
     return (
-        '\n\n<div style="display:flex;align-items:center;gap:8px;color:#555;margin-top:8px;">'
+        '\n\n<div class="runtime-status" style="display:flex;align-items:center;gap:8px;color:#555;margin-top:8px;">'
         '<div style="width:16px;height:16px;border:2px solid #ddd;border-top-color:#3b82f6;border-radius:50%;animation:spin 0.8s linear infinite;"></div>'
-        "<span>生成中...</span>"
+        f"<span>{status_text}</span>"
         "</div>\n<style>@keyframes spin{to{transform:rotate(360deg)}}</style>\n"
     )
 
@@ -1366,6 +1952,7 @@ async def gradio_run(
     search_profile: str = DEFAULT_SEARCH_PROFILE,
     search_result_num: int = DEFAULT_SEARCH_RESULT_NUM,
     verification_min_search_rounds: int = DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS,
+    output_detail_level: str = DEFAULT_OUTPUT_DETAIL_LEVEL,
     ui_state: Optional[dict] = None,
 ):
     query = replace_chinese_punctuation(query or "")
@@ -1375,8 +1962,17 @@ async def gradio_run(
     resolved_verification_min_rounds = _normalize_verification_min_search_rounds(
         verification_min_search_rounds
     )
+    resolved_output_detail_level = _normalize_output_detail_level(output_detail_level)
+    resolved_ui_render_mode = _normalize_render_mode(
+        None,
+        _get_render_mode_for_output_detail(resolved_output_detail_level),
+    )
+    resolved_summary_merge_strategy = _normalize_final_summary_merge_strategy(
+        _get_summary_merge_for_output_detail(resolved_output_detail_level)
+    )
     task_id = str(uuid.uuid4())
     _reset_cancel_flag(task_id)
+    _register_active_task(task_id)
     if not ui_state:
         ui_state = {
             "task_id": task_id,
@@ -1384,6 +1980,9 @@ async def gradio_run(
             "search_profile": resolved_search_profile,
             "search_result_num": resolved_search_result_num,
             "verification_min_search_rounds": resolved_verification_min_rounds,
+            "render_mode": resolved_ui_render_mode,
+            "output_detail_level": resolved_output_detail_level,
+            "final_summary_merge_strategy": resolved_summary_merge_strategy,
         }
     else:
         ui_state = {
@@ -1393,46 +1992,90 @@ async def gradio_run(
             "search_profile": resolved_search_profile,
             "search_result_num": resolved_search_result_num,
             "verification_min_search_rounds": resolved_verification_min_rounds,
+            "render_mode": resolved_ui_render_mode,
+            "output_detail_level": resolved_output_detail_level,
+            "final_summary_merge_strategy": resolved_summary_merge_strategy,
         }
     state = _init_render_state()
-    # Initial: disable Run, enable Stop, and show spinner at bottom of text
-    yield (
-        _render_markdown(state) + _spinner_markup(True),
-        gr.update(interactive=False),
-        gr.update(interactive=True),
-        ui_state,
-    )
-    async for message in stream_events_optimized(
-        task_id,
-        query,
-        resolved_mode,
-        resolved_search_profile,
-        resolved_search_result_num,
-        resolved_verification_min_rounds,
-        lambda: _disconnect_check_for_task(task_id),
-    ):
-        # Skip heartbeat events - they don't need UI update
-        event_type = message.get("event", "unknown")
-        if event_type == "heartbeat":
-            continue
-
-        state = _update_state_with_event(state, message)
-        md = _render_markdown(state)
+    try:
+        initial_markdown = _render_markdown(
+            state,
+            render_mode=resolved_ui_render_mode,
+            final_summary_merge_strategy=resolved_summary_merge_strategy,
+        )
+        # Initial: disable Run, enable Stop, and show spinner at bottom of text
         yield (
-            md + _spinner_markup(True),
+            initial_markdown + _spinner_markup(True),
             gr.update(interactive=False),
             gr.update(interactive=True),
             ui_state,
+            initial_markdown,
         )
-        # Small delay to allow Gradio to process the update
-        await asyncio.sleep(0.01)
-    # End: enable Run, disable Stop, remove spinner
-    yield (
-        _render_markdown(state),
-        gr.update(interactive=True),
-        gr.update(interactive=False),
-        ui_state,
-    )
+        async for message in stream_events_optimized(
+            task_id,
+            query,
+            resolved_mode,
+            resolved_search_profile,
+            resolved_search_result_num,
+            resolved_verification_min_rounds,
+            resolved_output_detail_level,
+            lambda: _disconnect_check_for_task(task_id),
+        ):
+            event_type = message.get("event", "unknown")
+            if event_type == "heartbeat":
+                heartbeat_ts = (message.get("data") or {}).get("timestamp")
+                heartbeat_label = "生成中..."
+                if heartbeat_ts:
+                    heartbeat_label = (
+                        f"生成中... 最近心跳 {time.strftime('%H:%M:%S', time.localtime(heartbeat_ts))}"
+                    )
+                heartbeat_markdown = _render_markdown(
+                    state,
+                    render_mode=resolved_ui_render_mode,
+                    final_summary_merge_strategy=resolved_summary_merge_strategy,
+                )
+                yield (
+                    heartbeat_markdown + _spinner_markup(True, heartbeat_label),
+                    gr.update(interactive=False),
+                    gr.update(interactive=True),
+                    ui_state,
+                    heartbeat_markdown,
+                )
+                continue
+
+            state = _update_state_with_event(state, message)
+            md = _render_markdown(
+                state,
+                render_mode=resolved_ui_render_mode,
+                final_summary_merge_strategy=resolved_summary_merge_strategy,
+            )
+            yield (
+                md + _spinner_markup(True),
+                gr.update(interactive=False),
+                gr.update(interactive=True),
+                ui_state,
+                md,
+            )
+            # Small delay to allow Gradio to process the update
+            await asyncio.sleep(0.01)
+        # End: enable Run, disable Stop, remove spinner
+        yield (
+            _render_markdown(
+                state,
+                render_mode=resolved_ui_render_mode,
+                final_summary_merge_strategy=resolved_summary_merge_strategy,
+            ),
+            gr.update(interactive=True),
+            gr.update(interactive=False),
+            ui_state,
+            _render_markdown(
+                state,
+                render_mode=resolved_ui_render_mode,
+                final_summary_merge_strategy=resolved_summary_merge_strategy,
+            ),
+        )
+    finally:
+        _unregister_active_task(task_id)
 
 
 async def run_research_once(
@@ -1441,8 +2084,10 @@ async def run_research_once(
     search_profile: str = DEFAULT_SEARCH_PROFILE,
     search_result_num: int = DEFAULT_SEARCH_RESULT_NUM,
     verification_min_search_rounds: int = DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS,
+    output_detail_level: str = DEFAULT_OUTPUT_DETAIL_LEVEL,
+    render_mode: Optional[str] = None,
 ) -> str:
-    """供外部智能体调用：输入问题+模式+检索源策略，返回最终 Markdown。"""
+    """统一 API：支持按请求控制检索条数与最少检索轮次，返回最终 Markdown。"""
     query = replace_chinese_punctuation(query or "")
     resolved_mode = _normalize_research_mode(mode)
     resolved_search_profile = _normalize_search_profile(search_profile)
@@ -1450,62 +2095,83 @@ async def run_research_once(
     resolved_verification_min_rounds = _normalize_verification_min_search_rounds(
         verification_min_search_rounds
     )
+    resolved_output_detail_level = _normalize_output_detail_level(output_detail_level)
+    resolved_api_render_mode = _normalize_render_mode(
+        render_mode,
+        _get_render_mode_for_output_detail(resolved_output_detail_level),
+    )
+    resolved_summary_merge_strategy = _normalize_final_summary_merge_strategy(
+        _get_summary_merge_for_output_detail(resolved_output_detail_level)
+    )
     task_id = str(uuid.uuid4())
     _reset_cancel_flag(task_id)
+    _register_active_task(task_id)
     state = _init_render_state()
-    async for message in stream_events_optimized(
-        task_id,
-        query,
-        resolved_mode,
-        resolved_search_profile,
-        resolved_search_result_num,
-        resolved_verification_min_rounds,
-    ):
-        state = _update_state_with_event(state, message)
-    return _render_markdown(state)
+    try:
+        async for message in stream_events_optimized(
+            task_id,
+            query,
+            resolved_mode,
+            resolved_search_profile,
+            resolved_search_result_num,
+            resolved_verification_min_rounds,
+            resolved_output_detail_level,
+            lambda: _disconnect_check_for_task(task_id),
+        ):
+            state = _update_state_with_event(state, message)
+        return _render_markdown(
+            state,
+            render_mode=resolved_api_render_mode,
+            final_summary_merge_strategy=resolved_summary_merge_strategy,
+        )
+    finally:
+        _unregister_active_task(task_id)
 
 
-async def run_research_once_v2(
-    query: str,
-    mode: str,
-    search_profile: str = DEFAULT_SEARCH_PROFILE,
-    search_result_num: int = DEFAULT_SEARCH_RESULT_NUM,
-    verification_min_search_rounds: int = DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS,
-) -> str:
-    """扩展 API：支持按请求控制检索条数与最少检索轮次。"""
-    return await run_research_once(
-        query=query,
-        mode=mode,
-        search_profile=search_profile,
-        search_result_num=search_result_num,
-        verification_min_search_rounds=verification_min_search_rounds,
-    )
-
-
-def stop_current(ui_state: Optional[dict]):
+def stop_current_ui(ui_state: Optional[dict] = None):
     tid = (ui_state or {}).get("task_id")
-    if tid:
-        _set_cancel_flag(tid)
-    # Immediately switch button availability: enable Run, disable Stop
+    target_ids = [tid] if tid else _get_active_task_ids()
+    _cancel_task_ids(target_ids)
     return (
         gr.update(interactive=True),
         gr.update(interactive=False),
     )
 
 
+def stop_current_api():
+    active_task_ids = _get_active_task_ids()
+    cancelled = _cancel_task_ids(active_task_ids)
+    return {
+        "cancelled": cancelled,
+        "active_task_ids": active_task_ids,
+    }
+
+
+def restore_history_entry(
+    query: str,
+    result_markdown: str,
+    ui_state: Optional[dict] = None,
+):
+    """通过 Gradio 受控更新恢复历史查询与结果，避免直接操作前端 DOM。"""
+    restored_query = replace_chinese_punctuation(query or "")
+    restored_markdown = result_markdown or "*该条历史暂无可回显结论，请重新运行一次。*"
+    next_ui_state = dict(ui_state or {})
+    return restored_query, restored_markdown, restored_markdown, next_ui_state
+
+
 def build_demo():
     logo_data_uri = _load_logo_data_uri()
+    fallback_favicon_data_uri = _build_fallback_favicon_data_uri()
 
     custom_css = """
     /* ========== MiroThinker - Modern Clean Design ========== */
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
     
     /* Base */
     .gradio-container {
         max-width: 100% !important;
         margin: 0 !important;
         padding: 0 !important;
-        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important;
+        font-family: __LOCAL_FONT_FAMILY_STACK__ !important;
         background: #ffffff !important;
         min-height: 100vh;
     }
@@ -1516,8 +2182,9 @@ def build_demo():
     .top-nav {
         display: flex;
         align-items: center;
-        justify-content: flex-start;
-        padding: 16px 32px;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 14px 32px;
         border-bottom: 1px solid #f0f0f0;
         background: #ffffff;
     }
@@ -1550,13 +2217,80 @@ def build_demo():
         line-height: 1.2;
         white-space: nowrap;
     }
+
+    .nav-right {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        min-width: 280px;
+    }
+
+    .skills-top-link {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        color: #0f766e;
+        font-size: 0.83em;
+        line-height: 1.2;
+        text-decoration: none;
+        border: 1px solid #99d8cb;
+        border-radius: 999px;
+        background: #f3fcfa;
+        padding: 7px 14px;
+        white-space: nowrap;
+        transition: all 0.2s ease;
+        user-select: none;
+    }
+
+    .skills-top-link:hover {
+        border-color: #7ccbbc;
+        background: #ecfaf6;
+        color: #0f766e;
+    }
+
+    .skills-top-link:focus-visible {
+        outline: 2px solid #99f6e4;
+        outline-offset: 2px;
+    }
+
+    .skills-top-link-disabled {
+        border-color: #d1d5db;
+        background: #f8fafc;
+        color: #94a3b8;
+        cursor: not-allowed;
+    }
     
     /* ===== Hero Section ===== */
     .hero-section {
         text-align: center;
-        padding: 60px 24px 40px;
+        padding: 26px 24px 24px;
         max-width: 900px;
         margin: 0 auto;
+    }
+
+    .hero-brand {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        margin-bottom: 18px;
+    }
+
+    .hero-logo {
+        width: min(280px, 68vw);
+        max-height: 104px;
+        height: auto;
+        object-fit: contain;
+        box-shadow: none;
+        border-radius: 0;
+        flex-shrink: 0;
+    }
+
+    .hero-brand-name {
+        font-size: 0.96em;
+        font-weight: 600;
+        color: #0f172a;
+        letter-spacing: 0.01em;
     }
     
     .hero-title {
@@ -1584,6 +2318,7 @@ def build_demo():
         height: 1px;
         background: #d4d4d8;
     }
+
     
     /* ===== Input Section ===== */
     #input-section {
@@ -1916,6 +2651,25 @@ def build_demo():
     #log-view p {
         line-height: 1.7;
         color: #3f3f46;
+    }
+
+    #log-view .process-details {
+        margin-top: 12px;
+        border: 1px solid #e5e7eb;
+        border-radius: 10px;
+        background: #fafafa;
+        padding: 10px 12px;
+    }
+
+    #log-view .process-details > summary {
+        cursor: pointer;
+        color: #374151;
+        font-size: 0.9em;
+        font-weight: 500;
+    }
+
+    #log-view .process-details[open] > summary {
+        margin-bottom: 10px;
     }
     
     #log-view::-webkit-scrollbar {
@@ -2269,11 +3023,46 @@ def build_demo():
             height: 28px;
             max-width: 96px;
         }
-        
-        .hero-section {
-            padding: 40px 16px 24px;
+
+        .top-nav {
+            padding: 14px 16px;
+            flex-wrap: wrap;
+        }
+
+        .nav-right {
+            width: 100%;
+            min-width: 0;
+            justify-content: flex-start;
+        }
+
+        .skills-top-link {
+            padding: 6px 12px;
+            font-size: 0.78em;
         }
         
+        .hero-section {
+            padding: 20px 16px 18px;
+        }
+
+        .hero-brand {
+            margin-bottom: 14px;
+            gap: 8px;
+        }
+
+        .hero-logo {
+            width: min(220px, 72vw);
+            max-height: 92px;
+        }
+
+        .hero-brand-name {
+            font-size: 0.9em;
+        }
+
+        .hero-subtitle {
+            gap: 10px;
+            font-size: 0.92em;
+        }
+
         .input-wrapper, .output-wrapper {
             padding: 0 16px;
         }
@@ -2295,6 +3084,7 @@ def build_demo():
         }
     }
     """
+    custom_css = custom_css.replace("__LOCAL_FONT_FAMILY_STACK__", LOCAL_FONT_FAMILY_STACK)
 
     # 统一使用本地 logo，避免外部资源依赖。
     if logo_data_uri:
@@ -2304,8 +3094,24 @@ def build_demo():
             'alt="OpenClaw-MiroSearch logo" />'
         )
     else:
-        favicon_head = '<link rel="icon" href="https://dr.miromind.ai/favicon.ico?v=2">'
+        favicon_head = f'<link rel="icon" href="{fallback_favicon_data_uri}">'
         nav_logo_html = ""
+    hero_logo_src = logo_data_uri or fallback_favicon_data_uri
+    hero_brand_name_html = "" if logo_data_uri else "<span class=\"hero-brand-name\">OpenClaw-MiroSearch</span>"
+
+    skills_download_url, _ = _resolve_skills_package_download()
+    if skills_download_url:
+        escaped_skills_download_url = html.escape(skills_download_url, quote=True)
+        nav_skills_link_html = (
+            f'<a id="skills-download-link" class="skills-top-link" href="{escaped_skills_download_url}" '
+            f'data-copy-url="{escaped_skills_download_url}" target="_blank" rel="noopener noreferrer">'
+            f"{SKILLS_DOWNLOAD_BUTTON_TEXT}</a>"
+        )
+    else:
+        nav_skills_link_html = (
+            f'<span class="skills-top-link skills-top-link-disabled" title="{html.escape(SKILLS_DOWNLOAD_FALLBACK_HINT, quote=True)}">'
+            f"{SKILLS_DOWNLOAD_BUTTON_TEXT}</span>"
+        )
 
     history_panel_html = f"""
         <div id="search-history-wrapper" class="search-history-card">
@@ -2333,13 +3139,29 @@ def build_demo():
         const STORAGE_KEY = {json.dumps(SEARCH_HISTORY_STORAGE_KEY, ensure_ascii=False)};
         const MAX_ITEMS = {SEARCH_HISTORY_MAX_ITEMS};
         const EMPTY_TEXT = {json.dumps(SEARCH_HISTORY_EMPTY_TEXT, ensure_ascii=False)};
+        const RESULT_MAX_TEXT_CHARS = {SEARCH_HISTORY_RESULT_MAX_TEXT_CHARS};
+        const RESULT_CAPTURE_TIMEOUT_MS = {SEARCH_HISTORY_RESULT_CAPTURE_TIMEOUT_MS};
+        const RESULT_CAPTURE_INTERVAL_MS = {SEARCH_HISTORY_RESULT_CAPTURE_INTERVAL_MS};
+        const RESULT_CAPTURE_DEBOUNCE_MS = {SEARCH_HISTORY_RESULT_CAPTURE_DEBOUNCE_MS};
+        const PLACEHOLDER_KEYWORDS = {json.dumps(SEARCH_HISTORY_PLACEHOLDER_KEYWORDS, ensure_ascii=False)};
+        const SKILLS_BUTTON_TEXT = {json.dumps(SKILLS_DOWNLOAD_BUTTON_TEXT, ensure_ascii=False)};
+        const SKILLS_BUTTON_COPIED_TEXT = {json.dumps(SKILLS_DOWNLOAD_COPIED_TEXT, ensure_ascii=False)};
         const SELECTORS = {{
             textarea: "#question-input textarea",
             runButton: "#run-btn",
+            stopButton: "#stop-btn",
             historyPanel: "#search-history-panel",
             clearButton: "#search-history-clear",
             historyWrapper: "#search-history-wrapper",
+            rawOutput: "#history-raw-output textarea, #history-raw-output input",
+            restoreQuery: "#history-restore-query textarea, #history-restore-query input",
+            restoreResult: "#history-restore-result textarea, #history-restore-result input",
+            restoreButton: "#history-restore-btn button, #history-restore-btn",
+            skillsDownloadLink: "#skills-download-link",
         }};
+        let activeHistoryCapture = null;
+        let resultCaptureDebounceTimer = null;
+        let outputMutationObserver = null;
 
         const escapeHtml = (value) => String(value)
             .replace(/&/g, "&amp;")
@@ -2366,13 +3188,42 @@ def build_demo():
         }};
 
         const saveHistory = (historyItems) => {{
+            const trimText = (value, maxLength) => {{
+                const normalizedValue = typeof value === "string" ? value : "";
+                if (normalizedValue.length <= maxLength) {{
+                    return normalizedValue;
+                }}
+                return normalizedValue.slice(0, maxLength);
+            }};
+            const slicedItems = historyItems.slice(0, MAX_ITEMS);
             try {{
                 window.localStorage.setItem(
                     STORAGE_KEY,
-                    JSON.stringify(historyItems.slice(0, MAX_ITEMS))
+                    JSON.stringify(slicedItems)
                 );
             }} catch (error) {{
-                console.warn("保存搜索历史失败", error);
+                    try {{
+                        const compactItems = slicedItems.map((item) => ({{
+                            ...item,
+                            result_markdown: trimText(item.result_markdown, RESULT_MAX_TEXT_CHARS),
+                            result_text: trimText(item.result_text, 8000),
+                        }}));
+                        window.localStorage.setItem(STORAGE_KEY, JSON.stringify(compactItems));
+                }} catch (compactError) {{
+                    try {{
+                        const minimalItems = slicedItems.map((item) => ({{
+                            id: item.id,
+                            query: item.query,
+                            saved_at: item.saved_at,
+                            result_markdown: "",
+                            result_text: "",
+                            result_saved_at: item.result_saved_at || "",
+                        }}));
+                        window.localStorage.setItem(STORAGE_KEY, JSON.stringify(minimalItems));
+                    }} catch (minimalError) {{
+                        console.warn("保存搜索历史失败", minimalError || compactError || error);
+                    }}
+                }}
             }}
         }};
 
@@ -2412,6 +3263,9 @@ def build_demo():
                     const query = escapeHtml(item.query);
                     const itemId = escapeHtml(item.id || item.saved_at || item.query);
                     const savedAt = escapeHtml(formatTime(item.saved_at));
+                    const resultSavedAt = item.result_saved_at
+                        ? ` · 结果缓存：${{escapeHtml(formatTime(item.result_saved_at))}}`
+                        : "";
                     return `
                         <div class="search-history-item">
                             <button
@@ -2421,7 +3275,7 @@ def build_demo():
                                 data-history-id="${{itemId}}"
                             >
                                 <div class="search-history-query">${{query}}</div>
-                                <div class="search-history-meta">上次搜索：${{savedAt}}</div>
+                                <div class="search-history-meta">上次搜索：${{savedAt}}${{resultSavedAt}}</div>
                             </button>
                             <button
                                 type="button"
@@ -2469,16 +3323,287 @@ def build_demo():
             textareaElement.setSelectionRange(query.length, query.length);
         }};
 
+        const getInputLikeElement = (selector) => {{
+            if (!selector) {{
+                return null;
+            }}
+            return document.querySelector(selector);
+        }};
+
+        const getInputLikeValue = (selector) => {{
+            const inputElement = getInputLikeElement(selector);
+            if (!inputElement) {{
+                return "";
+            }}
+            return String(inputElement.value || "");
+        }};
+
+        const setInputLikeValue = (selector, value) => {{
+            const inputElement = getInputLikeElement(selector);
+            if (!inputElement) {{
+                return false;
+            }}
+            const normalizedValue = String(value || "");
+            const prototype = inputElement.tagName === "TEXTAREA"
+                ? window.HTMLTextAreaElement.prototype
+                : window.HTMLInputElement.prototype;
+            const descriptor = Object.getOwnPropertyDescriptor(prototype, "value");
+            if (descriptor && descriptor.set) {{
+                descriptor.set.call(inputElement, normalizedValue);
+            }} else {{
+                inputElement.value = normalizedValue;
+            }}
+            inputElement.dispatchEvent(new Event("input", {{ bubbles: true }}));
+            inputElement.dispatchEvent(new Event("change", {{ bubbles: true }}));
+            return true;
+        }};
+
+        const getButtonElement = (selector) => {{
+            const rootElement = document.querySelector(selector);
+            if (!rootElement) {{
+                return null;
+            }}
+            if (rootElement.tagName === "BUTTON") {{
+                return rootElement;
+            }}
+            return rootElement.querySelector("button") || rootElement;
+        }};
+
+        const copyTextToClipboard = async (text) => {{
+            const normalizedText = String(text || "").trim();
+            if (!normalizedText) {{
+                return false;
+            }}
+            if (navigator.clipboard && window.isSecureContext) {{
+                try {{
+                    await navigator.clipboard.writeText(normalizedText);
+                    return true;
+                }} catch (error) {{
+                    console.warn("Clipboard API 复制失败，尝试降级复制", error);
+                }}
+            }}
+            const textareaElement = document.createElement("textarea");
+            textareaElement.value = normalizedText;
+            textareaElement.setAttribute("readonly", "readonly");
+            textareaElement.style.position = "fixed";
+            textareaElement.style.opacity = "0";
+            textareaElement.style.pointerEvents = "none";
+            document.body.appendChild(textareaElement);
+            textareaElement.focus();
+            textareaElement.select();
+            let copied = false;
+            try {{
+                copied = document.execCommand("copy");
+            }} catch (error) {{
+                console.warn("降级复制失败", error);
+            }}
+            document.body.removeChild(textareaElement);
+            return copied;
+        }};
+
+        const bindSkillsDownloadAction = () => {{
+            const linkElement = document.querySelector(SELECTORS.skillsDownloadLink);
+            if (!linkElement) {{
+                return;
+            }}
+            if (linkElement.dataset.boundCopyAction === "1") {{
+                return;
+            }}
+            linkElement.dataset.boundCopyAction = "1";
+            linkElement.addEventListener("click", () => {{
+                const rawUrl = linkElement.dataset.copyUrl || linkElement.getAttribute("href") || "";
+                let absoluteUrl = "";
+                try {{
+                    absoluteUrl = new URL(rawUrl, window.location.origin).toString();
+                }} catch (error) {{
+                    console.warn("skills 下载链接格式异常，无法复制", error);
+                    return;
+                }}
+                copyTextToClipboard(absoluteUrl).then((copied) => {{
+                    if (!copied) {{
+                        return;
+                    }}
+                    linkElement.textContent = SKILLS_BUTTON_COPIED_TEXT;
+                    window.setTimeout(() => {{
+                        linkElement.textContent = SKILLS_BUTTON_TEXT;
+                    }}, 1200);
+                }});
+            }});
+        }};
+
+        const isButtonDisabled = (buttonElement) => {{
+            if (!buttonElement) {{
+                return false;
+            }}
+            if (buttonElement.disabled) {{
+                return true;
+            }}
+            if (buttonElement.getAttribute("aria-disabled") === "true") {{
+                return true;
+            }}
+            return false;
+        }};
+
+        const isResearchRunning = () => {{
+            const stopButtonElement = getButtonElement(SELECTORS.stopButton);
+            if (stopButtonElement) {{
+                return !isButtonDisabled(stopButtonElement);
+            }}
+            const runButtonElement = getButtonElement(SELECTORS.runButton);
+            if (runButtonElement) {{
+                return isButtonDisabled(runButtonElement);
+            }}
+            return false;
+        }};
+
+        const trimToLength = (value, maxLength) => {{
+            const normalizedValue = typeof value === "string" ? value : "";
+            if (normalizedValue.length <= maxLength) {{
+                return normalizedValue;
+            }}
+            return normalizedValue.slice(0, maxLength);
+        }};
+
+        const normalizeResultText = (value) => trimToLength(
+            String(value || "").replace(/\\s+/g, " ").trim(),
+            RESULT_MAX_TEXT_CHARS
+        );
+
+        const isPlaceholderResult = (text) => {{
+            const normalizedText = normalizeResultText(text);
+            if (!normalizedText) {{
+                return true;
+            }}
+            return PLACEHOLDER_KEYWORDS.some((keyword) =>
+                normalizedText.includes(String(keyword || "").trim())
+            );
+        }};
+
+        const getCurrentResultSnapshot = () => {{
+            const resultMarkdown = trimToLength(
+                getInputLikeValue(SELECTORS.rawOutput).trim(),
+                RESULT_MAX_TEXT_CHARS
+            );
+            const resultText = normalizeResultText(resultMarkdown);
+            if (!resultMarkdown && !resultText) {{
+                return null;
+            }}
+            if (isPlaceholderResult(resultText)) {{
+                return null;
+            }}
+            return {{
+                result_markdown: resultMarkdown,
+                result_text: resultText,
+                result_saved_at: new Date().toISOString(),
+            }};
+        }};
+
+        const updateHistoryItemResult = (historyId, snapshot) => {{
+            if (!historyId || !snapshot) {{
+                return;
+            }}
+            const nextHistory = loadHistory().map((item) => {{
+                const itemId = String(item.id || item.saved_at || item.query);
+                if (itemId !== historyId) {{
+                    return item;
+                }}
+                return {{
+                    ...item,
+                    result_markdown: snapshot.result_markdown,
+                    result_text: snapshot.result_text,
+                    result_saved_at: snapshot.result_saved_at,
+                }};
+            }});
+            saveHistory(nextHistory);
+            renderHistory();
+        }};
+
+        const commitActiveHistorySnapshot = (forceCommit = false) => {{
+            if (!activeHistoryCapture || !activeHistoryCapture.historyId) {{
+                return;
+            }}
+            if (Date.now() - activeHistoryCapture.startedAt > RESULT_CAPTURE_TIMEOUT_MS) {{
+                activeHistoryCapture = null;
+                return;
+            }}
+            const snapshot = getCurrentResultSnapshot();
+            if (!snapshot) {{
+                return;
+            }}
+            if (!forceCommit && snapshot.result_text === activeHistoryCapture.lastResultText) {{
+                return;
+            }}
+            updateHistoryItemResult(activeHistoryCapture.historyId, snapshot);
+            activeHistoryCapture.lastResultText = snapshot.result_text;
+            activeHistoryCapture.lastSavedAt = Date.now();
+            if (forceCommit || !isResearchRunning()) {{
+                activeHistoryCapture = null;
+            }}
+        }};
+
+        const scheduleActiveHistoryCapture = () => {{
+            if (!activeHistoryCapture) {{
+                return;
+            }}
+            if (resultCaptureDebounceTimer) {{
+                window.clearTimeout(resultCaptureDebounceTimer);
+            }}
+            resultCaptureDebounceTimer = window.setTimeout(() => {{
+                resultCaptureDebounceTimer = null;
+                commitActiveHistorySnapshot(false);
+            }}, RESULT_CAPTURE_DEBOUNCE_MS);
+        }};
+
+        const ensureOutputObserverMounted = () => {{
+            const rawOutputElement = getInputLikeElement(SELECTORS.rawOutput);
+            if (!rawOutputElement) {{
+                return false;
+            }}
+            if (outputMutationObserver) {{
+                outputMutationObserver.disconnect();
+            }}
+            outputMutationObserver = new MutationObserver(() => {{
+                scheduleActiveHistoryCapture();
+            }});
+            outputMutationObserver.observe(rawOutputElement, {{
+                attributes: true,
+                attributeFilter: ["value"],
+                childList: true,
+                subtree: true,
+                characterData: true,
+            }});
+            return true;
+        }};
+
+        const startResultCaptureForHistory = (historyId) => {{
+            if (!historyId) {{
+                return;
+            }}
+            activeHistoryCapture = {{
+                historyId,
+                startedAt: Date.now(),
+                lastResultText: "",
+                lastSavedAt: 0,
+            }};
+            scheduleActiveHistoryCapture();
+            window.setTimeout(() => {{
+                commitActiveHistorySnapshot(false);
+            }}, RESULT_CAPTURE_INTERVAL_MS);
+        }};
+
         const addHistoryItem = (query) => {{
             const normalizedQuery = query.trim();
             if (!normalizedQuery) {{
-                return;
+                return "";
             }}
 
             const nextItem = {{
                 id: `${{Date.now()}}-${{Math.random().toString(36).slice(2, 8)}}`,
                 query: normalizedQuery,
                 saved_at: new Date().toISOString(),
+                result_markdown: "",
+                result_text: "",
+                result_saved_at: "",
             }};
             const nextHistory = [
                 nextItem,
@@ -2486,9 +3611,17 @@ def build_demo():
             ];
             saveHistory(nextHistory);
             renderHistory();
+            return nextItem.id;
         }};
 
         const deleteHistoryItem = (historyId) => {{
+            if (activeHistoryCapture && activeHistoryCapture.historyId === historyId) {{
+                activeHistoryCapture = null;
+            }}
+            if (resultCaptureDebounceTimer) {{
+                window.clearTimeout(resultCaptureDebounceTimer);
+                resultCaptureDebounceTimer = null;
+            }}
             const nextHistory = loadHistory().filter(
                 (item) => String(item.id || item.saved_at || item.query) !== historyId
             );
@@ -2497,6 +3630,11 @@ def build_demo():
         }};
 
         const clearHistory = () => {{
+            activeHistoryCapture = null;
+            if (resultCaptureDebounceTimer) {{
+                window.clearTimeout(resultCaptureDebounceTimer);
+                resultCaptureDebounceTimer = null;
+            }}
             window.localStorage.removeItem(STORAGE_KEY);
             renderHistory();
         }};
@@ -2508,7 +3646,20 @@ def build_demo():
             if (!historyItem) {{
                 return;
             }}
-            setCurrentQuery(historyItem.query);
+            const restoreResult = String(
+                historyItem.result_markdown || historyItem.result_text || ""
+            ).trim();
+            const queryReady = setInputLikeValue(SELECTORS.restoreQuery, historyItem.query);
+            const resultReady = setInputLikeValue(SELECTORS.restoreResult, restoreResult);
+            const restoreButtonElement = getButtonElement(SELECTORS.restoreButton);
+            if (queryReady) {{
+                setCurrentQuery(historyItem.query);
+            }}
+            if (!restoreButtonElement || !queryReady || !resultReady) {{
+                console.info("该条历史暂无可回显结论，请重新运行一次后将自动缓存。");
+                return;
+            }}
+            restoreButtonElement.click();
         }};
 
         const handleDocumentClick = (event) => {{
@@ -2538,13 +3689,16 @@ def build_demo():
             if (runButtonElement) {{
                 const currentQuery = getCurrentQuery();
                 if (currentQuery) {{
-                    addHistoryItem(currentQuery);
+                    const historyId = addHistoryItem(currentQuery);
+                    startResultCaptureForHistory(historyId);
                 }}
             }}
         }};
 
         const ensureHistoryMounted = () => {{
+            bindSkillsDownloadAction();
             if (renderHistory()) {{
+                ensureOutputObserverMounted();
                 return;
             }}
             window.setTimeout(ensureHistoryMounted, 120);
@@ -2553,6 +3707,11 @@ def build_demo():
         if (!window.__miroSearchHistoryInitialized) {{
             window.__miroSearchHistoryInitialized = true;
             document.addEventListener("click", handleDocumentClick, true);
+            window.setInterval(() => {{
+                if (activeHistoryCapture) {{
+                    commitActiveHistorySnapshot(false);
+                }}
+            }}, RESULT_CAPTURE_INTERVAL_MS);
             if (document.readyState === "loading") {{
                 document.addEventListener("DOMContentLoaded", ensureHistoryMounted, {{ once: true }});
             }} else {{
@@ -2579,12 +3738,19 @@ def build_demo():
                         <span class="nav-brand-text">OpenClaw-MiroSearch 深度研究</span>
                     </div>
                 </div>
+                <div class="nav-right">
+                    {nav_skills_link_html}
+                </div>
             </nav>
         """)
 
         # Hero Section
-        gr.HTML("""
+        gr.HTML(f"""
             <div class="hero-section">
+                <div class="hero-brand">
+                    <img src="{hero_logo_src}" class="hero-logo" alt="OpenClaw-MiroSearch logo" />
+                    {hero_brand_name_html}
+                </div>
                 <h1 class="hero-title">深度研究，洞察未来</h1>
                 <div class="hero-subtitle">
                     <span class="hero-line"></span>
@@ -2631,6 +3797,25 @@ def build_demo():
                 ),
                 info="仅在 verified 模式下用于强制多轮检索门槛。",
             )
+            output_detail_level_selector = gr.Dropdown(
+                label="输出篇幅",
+                choices=[
+                    (
+                        OUTPUT_DETAIL_LEVEL_LABELS["compact"],
+                        "compact",
+                    ),
+                    (
+                        OUTPUT_DETAIL_LEVEL_LABELS["balanced"],
+                        "balanced",
+                    ),
+                    (
+                        OUTPUT_DETAIL_LEVEL_LABELS["detailed"],
+                        "detailed",
+                    ),
+                ],
+                value=_normalize_output_detail_level(DEFAULT_OUTPUT_DETAIL_LEVEL),
+                info="精简=当前短篇幅 / 适中=核心结论+必要非核心信息 / 详细=超长报告（默认）",
+            )
             with gr.Row(elem_id="btn-row"):
                 stop_btn = gr.Button(
                     "⏹ 停止",
@@ -2647,10 +3832,27 @@ def build_demo():
         with gr.Column(elem_id="output-section"):
             gr.HTML('<div class="output-label">研究进度</div>')
             out_md = gr.Markdown("*等待开始研究...*", elem_id="log-view")
+            history_raw_output = gr.Textbox(
+                value="*等待开始研究...*",
+                visible=False,
+                elem_id="history-raw-output",
+            )
 
-        # 供 API 调用的隐藏输出
+        # 供统一 API 调用的隐藏输出
         api_output = gr.Markdown(visible=False)
         api_btn = gr.Button(value="api-run", visible=False)
+        api_stop_output = gr.JSON(visible=False)
+        api_stop_btn = gr.Button(value="api-stop", visible=False)
+        history_restore_query = gr.Textbox(visible=False, elem_id="history-restore-query")
+        history_restore_result = gr.Textbox(
+            visible=False,
+            elem_id="history-restore-result",
+        )
+        history_restore_btn = gr.Button(
+            value="restore-history",
+            visible=False,
+            elem_id="history-restore-btn",
+        )
 
         # State
         ui_state = gr.State(
@@ -2664,6 +3866,15 @@ def build_demo():
                 "verification_min_search_rounds": _normalize_verification_min_search_rounds(
                     DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS
                 ),
+                "output_detail_level": _normalize_output_detail_level(
+                    DEFAULT_OUTPUT_DETAIL_LEVEL
+                ),
+                "render_mode": _get_render_mode_for_output_detail(
+                    _normalize_output_detail_level(DEFAULT_OUTPUT_DETAIL_LEVEL)
+                ),
+                "final_summary_merge_strategy": _get_summary_merge_for_output_detail(
+                    _normalize_output_detail_level(DEFAULT_OUTPUT_DETAIL_LEVEL)
+                ),
             }
         )
 
@@ -2676,29 +3887,42 @@ def build_demo():
                 search_profile_selector,
                 search_result_num_selector,
                 verification_min_rounds_selector,
+                output_detail_level_selector,
                 ui_state,
             ],
-            outputs=[out_md, run_btn, stop_btn, ui_state],
+            outputs=[out_md, run_btn, stop_btn, ui_state, history_raw_output],
             api_name="run_research_stream",
         )
-        stop_btn.click(fn=stop_current, inputs=[ui_state], outputs=[run_btn, stop_btn])
+        stop_btn.click(
+            fn=stop_current_ui,
+            inputs=[ui_state],
+            outputs=[run_btn, stop_btn],
+            api_name=False,
+        )
         api_btn.click(
             fn=run_research_once,
-            inputs=[inp, mode_selector, search_profile_selector],
-            outputs=[api_output],
-            api_name="run_research_once",
-        )
-        gr.Button(value="api-run-v2", visible=False).click(
-            fn=run_research_once_v2,
             inputs=[
                 inp,
                 mode_selector,
                 search_profile_selector,
                 search_result_num_selector,
                 verification_min_rounds_selector,
+                output_detail_level_selector,
             ],
             outputs=[api_output],
-            api_name="run_research_once_v2",
+            api_name="run_research_once",
+        )
+        api_stop_btn.click(
+            fn=stop_current_api,
+            inputs=[],
+            outputs=[api_stop_output],
+            api_name="stop_current",
+        )
+        history_restore_btn.click(
+            fn=restore_history_entry,
+            inputs=[history_restore_query, history_restore_result, ui_state],
+            outputs=[inp, out_md, history_raw_output, ui_state],
+            api_name=False,
         )
 
         # Footer
@@ -2715,4 +3939,11 @@ if __name__ == "__main__":
     demo = build_demo()
     host = os.getenv("HOST", "0.0.0.0")
     port = int(os.getenv("PORT", "8080"))
-    demo.queue().launch(server_name=host, server_port=port)
+    allowed_paths = _collect_gradio_allowed_paths()
+    launch_kwargs = {
+        "server_name": host,
+        "server_port": port,
+    }
+    if allowed_paths:
+        launch_kwargs["allowed_paths"] = allowed_paths
+    demo.queue().launch(**launch_kwargs)
