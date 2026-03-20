@@ -13,6 +13,25 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - 规划：模型级 failback（主模型失败自动切换备用模型）
 - 规划：结构化冲突检测报告与专项评测集
 
+## [0.1.7] - 2026-03-20
+
+### Added
+
+- 新增按网络环境分流的部署与调用指引：区分“中国大陆无代理”与“海外/有代理”两类推荐检索策略
+- 新增 SearXNG 可覆盖配置文件 `deploy/searxng/settings.yml`，支持按环境启停搜索引擎
+- Skill 文档新增网络环境路由章节，安装后可直接按地域与链路稳定性选 `search_profile`
+
+### Changed
+
+- Docker Compose 部署文档补充“引擎可达性自检”命令与参数建议，降低“全部超时”误判
+- AI Agent 接入文档补充网络感知路由建议：未知网络先 `searxng-first`，稳定后再升 `parallel-trusted`
+- OpenClaw Skill（`usage/install/skill-install/SKILL.md`）同步更新为网络环境优先决策
+
+### Fixed
+
+- 修复受限网络场景下 SearXNG 默认引擎集合导致的大面积超时问题（通过可达引擎集避免全量超时）
+- 修复自定义 SearXNG 配置缺失 `server.secret_key` 导致的容器重启循环问题
+
 ## [0.1.6] - 2025-03-20
 
 ### Added

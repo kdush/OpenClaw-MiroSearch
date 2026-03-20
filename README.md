@@ -170,12 +170,11 @@ Skill acquisition and installation:
 
 ## Changelog
 
-- Release `0.1.6` highlights:
-  - Architecture docs with Mermaid diagrams (system, data flow, deployment topology)
-  - English translations for CONTRIBUTING, SECURITY, CODE_OF_CONDUCT
-  - README content deduplication — feature lists and routing params now reference `docs/API_SPEC.md`
-  - `libs/miroflow-tools/README.md` reduced from 933 to ~365 lines
-  - Fixed Issue template YAML front matter and CHANGELOG/ROADMAP date errors
+- Release `0.1.7` highlights:
+  - Added network-environment routing guidance (Mainland China without proxy vs overseas/proxy-enabled)
+  - Added deployable SearXNG engine template: `deploy/searxng/settings.yml`
+  - Updated AI Agent + Skill docs with environment-aware `search_profile` decision flow
+  - Added connectivity self-check commands to reduce “all engines timeout” misdiagnosis
 - Full history: [`docs/CHANGELOG.md`](docs/CHANGELOG.md)
 
 ## Documentation Index

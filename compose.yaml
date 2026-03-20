@@ -50,6 +50,7 @@ services:
         condition: service_healthy
     volumes:
       - searxng-cache:/var/cache/searxng
+      - ./deploy/searxng/settings.yml:/etc/searxng/settings.yml:ro
     healthcheck:
       test:
         - CMD-SHELL

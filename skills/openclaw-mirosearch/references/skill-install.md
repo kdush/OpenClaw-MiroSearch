@@ -46,3 +46,5 @@ python3 "$CODEX_HOME/skills/openclaw-mirosearch/scripts/call_openclaw_mirosearch
 若能正常输出帮助信息，说明安装成功。
 
 后续调用与参数推荐，请继续阅读：`references/usage.md`。
+
+建议安装后优先阅读 `references/usage.md` 的“先按网络环境选路由”章节，根据部署地域（中国大陆无代理 / 海外或有代理）选择默认 `search_profile` 与引擎集合。

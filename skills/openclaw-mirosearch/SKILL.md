@@ -38,6 +38,7 @@ description: 用于 OpenClaw 或其他智能体执行深度检索与高质量联
 - 额度优先：`mode=quota` + `search_profile=searxng-only`
 - 核查深度：`search_result_num=30` + `verification_min_search_rounds=4`
 - 超长报告：`output_detail_level=detailed`
+- 网络分流：先看 `references/usage.md` 的“先按网络环境选路由”（中国大陆无代理优先 `searxng-first`，海外/有代理优先 `parallel-trusted`）
 
 ## 终态与降级重试
 

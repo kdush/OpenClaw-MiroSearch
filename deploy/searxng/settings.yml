@@ -1,0 +1,37 @@
+use_default_settings: true
+
+general:
+  instance_name: "OpenClaw-MiroSearch SearXNG"
+
+server:
+  secret_key: "openclaw-mirosearch-searxng-20260320"
+
+search:
+  safe_search: 0
+  default_lang: "auto"
+  formats:
+    - html
+
+outgoing:
+  request_timeout: 6.0
+  enable_http2: true
+
+engines:
+  - name: brave
+    disabled: true
+  - name: duckduckgo
+    disabled: true
+  - name: google
+    disabled: true
+  - name: startpage
+    disabled: true
+  - name: wikipedia
+    disabled: true
+  - name: bing
+    disabled: false
+  - name: baidu
+    disabled: false
+  - name: sogou
+    disabled: false
+  - name: yandex
+    disabled: false

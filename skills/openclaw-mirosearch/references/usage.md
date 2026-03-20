@@ -22,6 +22,19 @@
 
 ## 3. 参数推荐模板
 
+### 3.0 先按网络环境选路由
+
+- 中国大陆（无代理/出海链路不稳定）：
+  - 推荐 `search_profile=searxng-first`
+  - 推荐搜索源顺序：`searxng,serpapi,serper`
+  - 建议 SearXNG 引擎：`bing`、`baidu`、`sogou`、`yandex`
+- 海外或有稳定代理：
+  - 推荐 `search_profile=parallel-trusted`
+  - 推荐搜索源顺序：`serpapi,searxng,serper`
+  - 可启用 `google`、`duckduckgo`、`brave`、`startpage`、`wikipedia`
+- 网络不确定：
+  - 先用 `searxng-first` 起步，稳定后再切 `parallel-trusted`
+
 - 常规检索（默认）：
   - `mode=balanced`
   - `search_profile=parallel-trusted`
@@ -57,6 +70,9 @@ python3 scripts/call_openclaw_mirosearch.py \
 
 - 若结果出现 `No \boxed{} content found in the final answer.`：
   - 代表“本轮未收敛，可重试”，不代表服务离线。
+- 若 SearXNG 页面出现“大量引擎超时”：
+  - 优先判断是否网络可达性问题（不是服务崩溃）
+  - 中国大陆无代理建议禁用 `google/duckduckgo/brave/startpage/wikipedia` 等高超时源
 - 推荐降级顺序：
   1. 原参数重试 1 次
   1. `thinking -> balanced`

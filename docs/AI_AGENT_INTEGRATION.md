@@ -57,6 +57,24 @@
 - `verification_min_search_rounds=1`
 - `output_detail_level=compact`
 
+## 按网络环境选择检索策略
+
+上层 Agent 应将“网络环境”作为路由决策条件，而不是固定单一模板：
+
+- 中国大陆（无代理或出海链路波动）：
+  - 优先 `search_profile=searxng-first`
+  - 检索源顺序建议：`searxng,serpapi,serper`
+  - 失败策略：保持 `fallback`，不要直接并发所有海外源
+- 海外或有稳定代理：
+  - 优先 `search_profile=parallel-trusted`
+  - 检索源顺序建议：`serpapi,searxng,serper`
+  - 可启用并发聚合与置信补检
+- 未知网络：
+  - 首轮用 `searxng-first` 探测可达性
+  - 连续 1-2 轮稳定后再提升到 `parallel-trusted`
+
+建议 Agent 在启动阶段做一次轻量连通性采样（如 `bing/google/duckduckgo`），用结果决定初始模板，避免全量超时。
+
 ## 稳定性与重试
 
 - 轮询超时：调用 `stop_current` 后再发起新任务

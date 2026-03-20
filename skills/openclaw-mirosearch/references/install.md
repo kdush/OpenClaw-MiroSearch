@@ -72,13 +72,37 @@ curl -sS 'http://127.0.0.1:8080/gradio_api/info'
 
 若返回接口元数据，说明服务可用。
 
-## 5. 常见部署形态
+## 5. 网络环境适配（建议安装后立即做）
+
+- 中国大陆（无代理/出海链路不稳定）：
+  - 推荐 `DEFAULT_SEARCH_PROFILE=searxng-first`
+  - 推荐 `SEARCH_PROVIDER_ORDER=searxng,serpapi,serper`
+  - 推荐 `SEARCH_PROVIDER_MODE=fallback`
+  - SearXNG 引擎建议：`bing`、`baidu`、`sogou`、`yandex`
+- 海外或有稳定代理：
+  - 推荐 `DEFAULT_SEARCH_PROFILE=parallel-trusted`
+  - 推荐 `SEARCH_PROVIDER_ORDER=serpapi,searxng,serper`
+  - 推荐 `SEARCH_PROVIDER_MODE=parallel_conf_fallback`
+  - SearXNG 可开启 `google`、`duckduckgo`、`brave`、`startpage`、`wikipedia`
+
+若使用 Docker Compose，建议通过仓库内 `deploy/searxng/settings.yml` 控制 SearXNG 引擎启用列表。
+
+可先做链路自检（在部署机执行）：
+
+```bash
+curl -sS -m 8 -o /dev/null -w 'bing: %{http_code} %{time_total}\n' https://www.bing.com
+curl -sS -m 8 -o /dev/null -w 'baidu: %{http_code} %{time_total}\n' https://www.baidu.com
+curl -sS -m 8 -o /dev/null -w 'google: %{http_code} %{time_total}\n' https://www.google.com
+curl -sS -m 8 -o /dev/null -w 'duckduckgo: %{http_code} %{time_total}\n' https://duckduckgo.com
+```
+
+## 6. 常见部署形态
 
 - 单机 Demo（容器）：使用 `docker compose` 统一启动
 - 单机 Demo（源码）：直接运行 `apps/gradio-demo/main.py`
 - 生产 API：固定 `mode/search_profile`，通过反向代理暴露 `gradio_api`
 
-## 6. 失败排查
+## 7. 失败排查
 
 ### 服务起不来
 
