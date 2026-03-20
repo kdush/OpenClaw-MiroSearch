@@ -55,6 +55,13 @@ RESEARCH_BALANCED_MIN_SECTIONS = max(
 RESEARCH_DETAILED_MIN_SECTIONS = max(
     6, int(os.getenv("RESEARCH_DETAILED_MIN_SECTIONS", "10"))
 )
+RESEARCH_BALANCED_RETRY_MIN_CHARS = max(
+    300, int(os.getenv("RESEARCH_BALANCED_RETRY_MIN_CHARS", "900"))
+)
+RESEARCH_DETAILED_RETRY_MIN_CHARS = max(
+    RESEARCH_BALANCED_RETRY_MIN_CHARS,
+    int(os.getenv("RESEARCH_DETAILED_RETRY_MIN_CHARS", "1800")),
+)
 
 
 def _parse_bool_flag(value: Any, default: bool = False) -> bool:
@@ -130,6 +137,7 @@ class AnswerGenerator:
             cfg.agent.get("research_report_mode", self.demo_mode),
             default=self.demo_mode,
         )
+        self.summary_retry_min_chars = self._get_summary_retry_min_chars()
         verification_cfg = cfg.agent.get("verification", {})
         self.verification_enabled = bool(verification_cfg.get("enabled", False))
         self.verification_use_high_model = bool(
@@ -209,6 +217,46 @@ class AnswerGenerator:
                 "4) 优先引用高置信来源，并在正文中说明来源等级。"
             )
         return summary_prompt
+
+    def _get_summary_retry_min_chars(self) -> int:
+        """
+        返回当前档位触发“总结过短重试”的最小字符阈值。
+        """
+        if not self.research_report_mode:
+            return 0
+        if self.output_detail_level == "detailed":
+            return RESEARCH_DETAILED_RETRY_MIN_CHARS
+        if self.output_detail_level == "balanced":
+            return RESEARCH_BALANCED_RETRY_MIN_CHARS
+        return 0
+
+    def _is_summary_too_short(self, final_answer_text: str) -> bool:
+        """
+        判断最终总结是否短于当前档位阈值。
+        """
+        if self.summary_retry_min_chars <= 0:
+            return False
+        normalized_text = "".join(str(final_answer_text or "").split())
+        return len(normalized_text) < self.summary_retry_min_chars
+
+    def _build_expand_summary_prompt(self) -> str:
+        """
+        构建“总结过短”时的补充提示，强制模型汇总多轮检索信息。
+        """
+        if self.output_detail_level == "detailed":
+            return (
+                "你的上一版总结过短，未充分覆盖多轮检索信息。请重写为更完整的长报告：\n"
+                "1) 必须汇总全部检索轮次中的关键事实，不得只写单轮内容。\n"
+                "2) 明确区分：核心结论、关键数字、来源分歧、不确定项、补充背景。\n"
+                "3) 在信息充分时，正文至少达到更高信息密度，不要只给概述。\n"
+                "4) 结尾保留 \\boxed{一句话核心结论}。"
+            )
+        return (
+            "你的上一版总结偏短，请在保持结构清晰的前提下补充关键信息：\n"
+            "1) 覆盖多轮检索得到的主要事实与数字；\n"
+            "2) 补齐必要的来源分歧与不确定项说明；\n"
+            "3) 结尾保留 \\boxed{一句话核心结论}。"
+        )
 
     async def generate_cross_verification_note(
         self,
@@ -556,6 +604,19 @@ class AnswerGenerator:
                         final_answer_text, self.llm_client
                     )
                 )
+                if self._is_summary_too_short(final_answer_text):
+                    self.task_log.log_step(
+                        "warning",
+                        "Main Agent | Final Answer",
+                        f"Summary too short on attempt {retry_idx + 1}, length below threshold {self.summary_retry_min_chars}.",
+                    )
+                    if retry_idx < self.max_final_answer_retries - 1:
+                        if message_history and message_history[-1]["role"] == "assistant":
+                            message_history.pop()
+                        message_history.append(
+                            {"role": "user", "content": self._build_expand_summary_prompt()}
+                        )
+                        continue
 
                 if final_boxed_answer != FORMAT_ERROR_MESSAGE:
                     self.task_log.log_step(
