@@ -3739,7 +3739,14 @@ def build_demo():
             if (!selector) {{
                 return null;
             }}
-            return document.querySelector(selector);
+            const element = document.querySelector(selector);
+            if (!element) {{
+                return null;
+            }}
+            if (element.tagName === "TEXTAREA" || element.tagName === "INPUT") {{
+                return element;
+            }}
+            return element.querySelector("textarea") || element.querySelector("input") || null;
         }};
 
         const getInputLikeValue = (selector) => {{
