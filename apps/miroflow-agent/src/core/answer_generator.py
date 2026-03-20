@@ -154,6 +154,30 @@ class AnswerGenerator:
             str(domain).strip().lower() for domain in raw_domains if str(domain).strip()
         ]
 
+    async def _emit_stage_heartbeat(
+        self,
+        phase: str,
+        *,
+        turn: int = 0,
+        detail: str = "",
+        agent_name: str = "Final Summary",
+    ) -> None:
+        """发送阶段心跳，便于前端展示总结/校验阶段进度。"""
+        try:
+            await self.stream.update(
+                "stage_heartbeat",
+                {
+                    "phase": phase,
+                    "turn": max(0, int(turn)),
+                    "detail": detail,
+                    "agent_name": agent_name,
+                    "timestamp": time.time(),
+                },
+            )
+        except Exception:
+            # 心跳为辅助信息，不能影响主流程
+            pass
+
     def _build_main_summary_prompt(self, task_description: str) -> str:
         """
         根据输出档位和运行模式构建最终总结提示词。
@@ -281,6 +305,12 @@ class AnswerGenerator:
         verification_history.append({"role": "user", "content": verification_prompt})
 
         agent_type = "verification" if self.verification_use_high_model else "main"
+        await self._emit_stage_heartbeat(
+            "校验",
+            turn=turn_count,
+            detail="交叉校验中（无工具）",
+            agent_name="Final Summary",
+        )
         (
             verification_text,
             _,
@@ -300,6 +330,12 @@ class AnswerGenerator:
                 "warning",
                 "Main Agent | Cross Verification",
                 "高级模型交叉校验未返回有效内容，降级到 summary 模型重试一次。",
+            )
+            await self._emit_stage_heartbeat(
+                "校验",
+                turn=turn_count,
+                detail="交叉校验降级重试",
+                agent_name="Final Summary",
             )
             (
                 verification_text,
@@ -584,6 +620,14 @@ class AnswerGenerator:
             current_agent_type = final_summary_agent_types[
                 min(retry_idx, len(final_summary_agent_types) - 1)
             ]
+            await self._emit_stage_heartbeat(
+                "总结" if current_agent_type == "final_summary" else "校验",
+                turn=turn_count,
+                detail=(
+                    f"最终总结生成中（第 {retry_idx + 1}/{self.max_final_answer_retries} 次）"
+                ),
+                agent_name="Final Summary",
+            )
             (
                 final_answer_text,
                 should_break,

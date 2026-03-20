@@ -258,6 +258,39 @@ class Orchestrator:
             ),
         )
 
+    async def _emit_stage_heartbeat(
+        self,
+        phase: str,
+        *,
+        turn: int = 0,
+        detail: str = "",
+        agent_name: str = "main",
+        tool_name: str = "",
+    ) -> None:
+        """发送阶段心跳，便于前端显示当前回合与阶段。"""
+        payload: Dict[str, Any] = {
+            "phase": phase,
+            "turn": max(0, int(turn)),
+            "detail": detail,
+            "agent_name": agent_name,
+            "search_round": int(self.verification_search_rounds),
+            "verification_min_search_rounds": int(self.verification_min_search_rounds),
+            "verification_high_conf_sources": int(
+                len(self.verification_high_conf_source_domains)
+            ),
+            "verification_min_high_conf_sources": int(
+                self.verification_min_high_conf_sources
+            ),
+            "timestamp": time.time(),
+        }
+        if tool_name:
+            payload["tool_name"] = tool_name
+        try:
+            await self.stream.update("stage_heartbeat", payload)
+        except Exception:
+            # 心跳是辅助信息，不能影响主流程
+            pass
+
     @staticmethod
     def _normalize_domain(url: str) -> str:
         if not url:
@@ -1109,10 +1142,22 @@ class Orchestrator:
 
         self.current_agent_id = await self.stream.start_agent("main")
         await self.stream.start_llm("main")
+        await self._emit_stage_heartbeat(
+            "推理",
+            turn=0,
+            detail="主流程已启动",
+            agent_name="main",
+        )
 
         while turn_count < max_turns and total_attempts < max_attempts:
             turn_count += 1
             total_attempts += 1
+            await self._emit_stage_heartbeat(
+                "推理",
+                turn=turn_count,
+                detail="主模型推理中",
+                agent_name="main",
+            )
 
             if consecutive_rollbacks >= self.MAX_CONSECUTIVE_ROLLBACKS:
                 self.task_log.log_step(
@@ -1200,6 +1245,12 @@ class Orchestrator:
                         task_description
                     )
                     if followup_prompt:
+                        await self._emit_stage_heartbeat(
+                            "校验",
+                            turn=turn_count,
+                            detail="命中交叉校验门槛，追加检索指令",
+                            agent_name="main",
+                        )
                         message_history.append(
                             {"role": "user", "content": followup_prompt}
                         )
@@ -1269,6 +1320,13 @@ class Orchestrator:
                 tool_name = call["tool_name"]
                 arguments = call["arguments"]
                 call_id = call["id"]
+                await self._emit_stage_heartbeat(
+                    "检索" if tool_name in SEARCH_TOOL_NAMES else "工具调用",
+                    turn=turn_count,
+                    detail=f"执行工具 {tool_name}",
+                    agent_name="main",
+                    tool_name=tool_name,
+                )
 
                 # Fix common parameter name mistakes
                 arguments = self.tool_executor.fix_tool_call_arguments(
@@ -1511,10 +1569,22 @@ class Orchestrator:
             )
 
         # Final summary
+        await self._emit_stage_heartbeat(
+            "总结",
+            turn=turn_count,
+            detail="进入最终总结阶段",
+            agent_name="Final Summary",
+        )
         self.task_log.log_step(
             "info", "Main Agent | Final Summary", "Generating final summary"
         )
         if self.verification_enabled:
+            await self._emit_stage_heartbeat(
+                "校验",
+                turn=turn_count,
+                detail="输出前交叉校验汇总中",
+                agent_name="Final Summary",
+            )
             verification_status_note = self._build_verification_status_note()
             if verification_status_note:
                 message_history.append(
@@ -1528,6 +1598,12 @@ class Orchestrator:
 
         self.current_agent_id = await self.stream.start_agent("Final Summary")
         await self.stream.start_llm("Final Summary")
+        await self._emit_stage_heartbeat(
+            "总结",
+            turn=turn_count,
+            detail="最终总结生成中",
+            agent_name="Final Summary",
+        )
 
         # Generate final answer using answer generator
         (
