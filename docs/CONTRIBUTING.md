@@ -1,5 +1,7 @@
 # 贡献指南
 
+> 📄 English version: [CONTRIBUTING_en.md](./CONTRIBUTING_en.md)
+
 感谢你参与 OpenClaw-MiroSearch 的开发与改进。
 
 ## 开发环境

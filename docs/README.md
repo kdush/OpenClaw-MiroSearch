@@ -4,13 +4,17 @@
 
 ## 规范与治理
 
-- [贡献指南](./CONTRIBUTING.md)
-- [安全策略](./SECURITY.md)
-- [行为准则](./CODE_OF_CONDUCT.md)
+- [贡献指南](./CONTRIBUTING.md) / [Contributing Guide (en)](./CONTRIBUTING_en.md)
+- [安全策略](./SECURITY.md) / [Security Policy (en)](./SECURITY_en.md)
+- [行为准则](./CODE_OF_CONDUCT.md) / [Code of Conduct (en)](./CODE_OF_CONDUCT_en.md)
 - [支持说明](./SUPPORT.md)
 - [治理说明](./GOVERNANCE.md)
 - [发布流程](./RELEASE.md)
 - [变更记录](./CHANGELOG.md)
+
+## 架构与设计
+
+- [架构概览](./ARCHITECTURE.md) / [Architecture Overview (en)](./ARCHITECTURE_en.md)
 
 ## 项目说明
 

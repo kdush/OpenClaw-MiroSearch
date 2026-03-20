@@ -1,5 +1,7 @@
 # 安全策略
 
+> 📄 English version: [SECURITY_en.md](./SECURITY_en.md)
+
 ## 支持范围
 
 当前以 `main` 与 `dev` 分支的最新版本为主要维护对象。
@@ -13,7 +15,10 @@
 - 影响范围评估
 - 建议修复方案（可选）
 
-在仓库尚未配置专用安全邮箱前，请先通过仓库维护者可用的私下联系渠道沟通。
+**报告渠道（按优先级）：**
+
+1. [GitHub Security Advisories](../../security/advisories/new)（推荐，支持私密讨论）
+2. 如无法使用 Security Advisories，请通过仓库维护者 GitHub 个人资料页中的联系方式私下沟通
 
 ## 安全基线要求
 

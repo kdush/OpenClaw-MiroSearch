@@ -252,663 +252,96 @@ if __name__ == "__main__":
 
 Analyze images and answer questions about visual content using Anthropic Claude.
 
-**Tools**:
-
-- 👁️ `visual_question_answering(image_path_or_url, question)`: Answer questions about images
-
-**Environment Variables**:
-
-- 🔑 `ANTHROPIC_API_KEY`: Anthropic API key (required)
-- 🌐 `ANTHROPIC_BASE_URL`: API base URL (default: `https://api.anthropic.com`)
-
-**Example**:
-
-<details>
-<summary>Click to expand code example</summary>
-
-```python
-import asyncio
-from miroflow_tools import ToolManager
-from mcp import StdioServerParameters
-
-async def main():
-    server_configs = [
-        {
-            "name": "tool-vqa",
-            "params": StdioServerParameters(
-                command="python",
-                args=["-m", "miroflow_tools.mcp_servers.vision_mcp_server"],
-                env={
-                    "ANTHROPIC_API_KEY": "your_anthropic_api_key",
-                    "ANTHROPIC_BASE_URL": "https://api.anthropic.com"
-                }
-            )
-        }
-    ]
-
-    manager = ToolManager(server_configs)
-
-    result = await manager.execute_tool_call(
-        server_name="tool-vqa",
-        tool_name="visual_question_answering",
-        arguments={
-            "image_path_or_url": "https://example.com/image.jpg",
-            "question": "What is in this image?"
-        }
-    )
-    print(result)
-
-if __name__ == "__main__":
-    asyncio.run(main())
-```
-
-</details>
+- 👁️ `visual_question_answering(image_path_or_url, question)`
+- **Env**: `ANTHROPIC_API_KEY` (required), `ANTHROPIC_BASE_URL` (default: `https://api.anthropic.com`)
+- **Module**: `miroflow_tools.mcp_servers.vision_mcp_server`
 
 ### Server: tool-vqa-os
 
-Analyze images and answer questions about visual content using open-source compatible models.
+Open-source alternative for visual question answering.
 
-**Tools**:
-
-- 👁️ `visual_question_answering(image_path_or_url, question)`: Answer questions about images
-
-**Environment Variables**:
-
-- 🔑 `VISION_API_KEY`: API key (required)
-- 🌐 `VISION_BASE_URL`: API endpoint URL (required)
-- 🤖 `VISION_MODEL_NAME`: Model name (required)
-
-**Example**:
-
-<details>
-<summary>Click to expand code example</summary>
-
-```python
-import asyncio
-from miroflow_tools import ToolManager
-from mcp import StdioServerParameters
-
-async def main():
-    server_configs = [
-        {
-            "name": "tool-vqa-os",
-            "params": StdioServerParameters(
-                command="python",
-                args=["-m", "miroflow_tools.mcp_servers.vision_mcp_server_os"],
-                env={
-                    "VISION_API_KEY": "your_vision_api_key",
-                    "VISION_BASE_URL": "your_vision_base_url",
-                    "VISION_MODEL_NAME": "your_vision_model_name"
-                }
-            )
-        }
-    ]
-
-    manager = ToolManager(server_configs)
-
-    result = await manager.execute_tool_call(
-        server_name="tool-vqa-os",
-        tool_name="visual_question_answering",
-        arguments={
-            "image_path_or_url": "https://example.com/image.jpg",
-            "question": "What is in this image?"
-        }
-    )
-    print(result)
-
-if __name__ == "__main__":
-    asyncio.run(main())
-```
-
-</details>
+- 👁️ `visual_question_answering(image_path_or_url, question)`
+- **Env**: `VISION_API_KEY`, `VISION_BASE_URL`, `VISION_MODEL_NAME` (all required)
+- **Module**: `miroflow_tools.mcp_servers.vision_mcp_server_os`
 
 ### Server: tool-transcribe
 
 Transcribe audio files and answer questions about audio content using OpenAI Whisper.
 
-**Tools**:
-
-- 🎤 `audio_transcription(audio_path_or_url)`: Transcribe audio to text
-- 🎧 `audio_question_answering(audio_path_or_url, question)`: Answer questions about audio
-
-**Environment Variables**:
-
-- 🔑 `OPENAI_API_KEY`: OpenAI API key (required)
-- 🌐 `OPENAI_BASE_URL`: API base URL (default: `https://api.openai.com/v1`)
-
-**Supported Formats**: 🎵 MP3, WAV, M4A, AAC, OGG, FLAC
-
-**Example**:
-
-<details>
-<summary>Click to expand code example</summary>
-
-```python
-import asyncio
-from miroflow_tools import ToolManager
-from mcp import StdioServerParameters
-
-async def main():
-    server_configs = [
-        {
-            "name": "tool-transcribe",
-            "params": StdioServerParameters(
-                command="python",
-                args=["-m", "miroflow_tools.mcp_servers.audio_mcp_server"],
-                env={
-                    "OPENAI_API_KEY": "your_openai_api_key",
-                    "OPENAI_BASE_URL": "https://api.openai.com/v1"
-                }
-            )
-        }
-    ]
-
-    manager = ToolManager(server_configs)
-
-    # Transcribe audio
-    result = await manager.execute_tool_call(
-        server_name="tool-transcribe",
-        tool_name="audio_transcription",
-        arguments={"audio_path_or_url": "/path/to/audio.mp3"}
-    )
-    print(result)
-
-    # Answer questions about audio
-    result = await manager.execute_tool_call(
-        server_name="tool-transcribe",
-        tool_name="audio_question_answering",
-        arguments={
-            "audio_path_or_url": "/path/to/audio.mp3",
-            "question": "What is the main topic discussed?"
-        }
-    )
-    print(result)
-
-if __name__ == "__main__":
-    asyncio.run(main())
-```
-
-</details>
+- 🎤 `audio_transcription(audio_path_or_url)`
+- 🎧 `audio_question_answering(audio_path_or_url, question)`
+- **Env**: `OPENAI_API_KEY` (required), `OPENAI_BASE_URL` (default: `https://api.openai.com/v1`)
+- **Formats**: MP3, WAV, M4A, AAC, OGG, FLAC
+- **Module**: `miroflow_tools.mcp_servers.audio_mcp_server`
 
 ### Server: tool-transcribe-os
 
-Transcribe audio files using open-source compatible models.
+Open-source alternative for audio transcription.
 
-**Tools**:
-
-- 🎤 `audio_transcription(audio_path_or_url)`: Transcribe audio to text
-
-**Environment Variables**:
-
-- 🔑 `WHISPER_API_KEY`: API key (required)
-- 🌐 `WHISPER_BASE_URL`: API endpoint URL (required)
-- 🤖 `WHISPER_MODEL_NAME`: Model name (required)
-
-**Supported Formats**: 🎵 MP3, WAV, M4A, AAC, OGG, FLAC
-
-**Example**:
-
-<details>
-<summary>Click to expand code example</summary>
-
-```python
-import asyncio
-from miroflow_tools import ToolManager
-from mcp import StdioServerParameters
-
-async def main():
-    server_configs = [
-        {
-            "name": "tool-transcribe-os",
-            "params": StdioServerParameters(
-                command="python",
-                args=["-m", "miroflow_tools.mcp_servers.audio_mcp_server_os"],
-                env={
-                    "WHISPER_API_KEY": "your_whisper_api_key",
-                    "WHISPER_BASE_URL": "your_whisper_base_url",
-                    "WHISPER_MODEL_NAME": "your_whisper_model_name"
-                }
-            )
-        }
-    ]
-
-    manager = ToolManager(server_configs)
-
-    result = await manager.execute_tool_call(
-        server_name="tool-transcribe-os",
-        tool_name="audio_transcription",
-        arguments={"audio_path_or_url": "/path/to/audio.mp3"}
-    )
-    print(result)
-
-if __name__ == "__main__":
-    asyncio.run(main())
-```
-
-</details>
+- 🎤 `audio_transcription(audio_path_or_url)`
+- **Env**: `WHISPER_API_KEY`, `WHISPER_BASE_URL`, `WHISPER_MODEL_NAME` (all required)
+- **Formats**: MP3, WAV, M4A, AAC, OGG, FLAC
+- **Module**: `miroflow_tools.mcp_servers.audio_mcp_server_os`
 
 ### Server: tool-reading
 
 Convert various document formats to Markdown using MarkItDown.
 
-**Tools**:
-
-- 📄 `convert_to_markdown(uri)`: Convert documents (PDF, DOC, PPT, Excel, CSV, ZIP, etc.) to Markdown. URI must start with `file:`, `data:`, `http:`, or `https:` scheme.
-
-**Supported Formats**: 📄 PDF, DOC, DOCX, PPT, PPTX, XLS, XLSX, CSV, ZIP, and more
-
-**Example**:
-
-<details>
-<summary>Click to expand code example</summary>
-
-```python
-import asyncio
-from miroflow_tools import ToolManager
-from mcp import StdioServerParameters
-
-async def main():
-    # Configure server (no additional environment variables required)
-    server_configs = [
-        {
-            "name": "tool-reading",
-            "params": StdioServerParameters(
-                command="python",
-                args=["-m", "miroflow_tools.mcp_servers.reading_mcp_server"]
-            )
-        }
-    ]
-
-    manager = ToolManager(server_configs)
-
-    result = await manager.execute_tool_call(
-        server_name="tool-reading",
-        tool_name="convert_to_markdown",
-        arguments={"uri": "file:///path/to/document.pdf"}
-    )
-    print(result)
-
-if __name__ == "__main__":
-    asyncio.run(main())
-```
-
-</details>
+- 📄 `convert_to_markdown(uri)`: URI must start with `file:`, `data:`, `http:`, or `https:` scheme
+- **Env**: None required
+- **Formats**: PDF, DOC, DOCX, PPT, PPTX, XLS, XLSX, CSV, ZIP, and more
+- **Module**: `miroflow_tools.mcp_servers.reading_mcp_server`
 
 ### Server: tool-reasoning
 
-Solve complex reasoning problems requiring chain-of-thought using Anthropic Claude with thinking.
+Solve complex reasoning problems using Anthropic Claude with chain-of-thought.
 
-**Tools**:
-
-- 🧠 `reasoning(question)`: Solve hard math problems, puzzles, riddles, and IQ test questions
-
-**Environment Variables**:
-
-- 🔑 `ANTHROPIC_API_KEY`: Anthropic API key (required)
-- 🌐 `ANTHROPIC_BASE_URL`: API base URL (default: `https://api.anthropic.com`)
-
-**Example**:
-
-<details>
-<summary>Click to expand code example</summary>
-
-```python
-import asyncio
-from miroflow_tools import ToolManager
-from mcp import StdioServerParameters
-
-async def main():
-    server_configs = [
-        {
-            "name": "tool-reasoning",
-            "params": StdioServerParameters(
-                command="python",
-                args=["-m", "miroflow_tools.mcp_servers.reasoning_mcp_server"],
-                env={
-                    "ANTHROPIC_API_KEY": "your_anthropic_api_key",
-                    "ANTHROPIC_BASE_URL": "https://api.anthropic.com"
-                }
-            )
-        }
-    ]
-
-    manager = ToolManager(server_configs)
-
-    result = await manager.execute_tool_call(
-        server_name="tool-reasoning",
-        tool_name="reasoning",
-        arguments={"question": "Solve: If a train travels 60 mph for 2 hours, then 80 mph for 1 hour, what's the average speed?"}
-    )
-    print(result)
-
-if __name__ == "__main__":
-    asyncio.run(main())
-```
-
-</details>
+- 🧠 `reasoning(question)`
+- **Env**: `ANTHROPIC_API_KEY` (required), `ANTHROPIC_BASE_URL` (default: `https://api.anthropic.com`)
+- **Module**: `miroflow_tools.mcp_servers.reasoning_mcp_server`
 
 ### Server: tool-reasoning-os
 
-Solve complex reasoning problems requiring chain-of-thought using open-source compatible models.
+Open-source alternative for complex reasoning.
 
-**Tools**:
-
-- 🧠 `reasoning(question)`: Solve hard math problems, puzzles, riddles, and IQ test questions
-
-**Environment Variables**:
-
-- 🔑 `REASONING_API_KEY`: API key (required)
-- 🌐 `REASONING_BASE_URL`: API endpoint URL (required)
-- 🤖 `REASONING_MODEL_NAME`: Model name (required)
-
-**Example**:
-
-<details>
-<summary>Click to expand code example</summary>
-
-```python
-import asyncio
-from miroflow_tools import ToolManager
-from mcp import StdioServerParameters
-
-async def main():
-    server_configs = [
-        {
-            "name": "tool-reasoning-os",
-            "params": StdioServerParameters(
-                command="python",
-                args=["-m", "miroflow_tools.mcp_servers.reasoning_mcp_server_os"],
-                env={
-                    "REASONING_API_KEY": "your_reasoning_api_key",
-                    "REASONING_BASE_URL": "your_reasoning_base_url",
-                    "REASONING_MODEL_NAME": "your_reasoning_model_name"
-                }
-            )
-        }
-    ]
-
-    manager = ToolManager(server_configs)
-
-    result = await manager.execute_tool_call(
-        server_name="tool-reasoning-os",
-        tool_name="reasoning",
-        arguments={"question": "Solve: If a train travels 60 mph for 2 hours, then 80 mph for 1 hour, what's the average speed?"}
-    )
-    print(result)
-
-if __name__ == "__main__":
-    asyncio.run(main())
-```
-
-</details>
+- 🧠 `reasoning(question)`
+- **Env**: `REASONING_API_KEY`, `REASONING_BASE_URL`, `REASONING_MODEL_NAME` (all required)
+- **Module**: `miroflow_tools.mcp_servers.reasoning_mcp_server_os`
 
 ### Server: search_and_scrape_webpage
 
 Google/Meta search gateway with multi-provider routing support (Serper / SerpAPI / SearXNG).
 
-**Tools**:
-
-- 🔍 `google_search(q, gl="us", hl="en", location=None, num=None, tbs=None, page=None, autocorrect=None)`: Perform web searches via Serper API and retrieve rich results
-
-**Environment Variables**:
-
-- 🔑 `SERPER_API_KEY`: Serper API key (required)
-- 🌐 `SERPER_BASE_URL`: Serper API base URL (default: `https://google.serper.dev`)
-
-**Example**:
-
-<details>
-<summary>Click to expand code example</summary>
-
-```python
-import asyncio
-from miroflow_tools import ToolManager
-from mcp import StdioServerParameters
-
-async def main():
-    server_configs = [
-        {
-            "name": "search_and_scrape_webpage",
-            "params": StdioServerParameters(
-                command="python",
-                args=["-m", "miroflow_tools.dev_mcp_servers.search_and_scrape_webpage"],
-                env={
-                    "SERPER_API_KEY": "your_serper_api_key",
-                    "SERPER_BASE_URL": "https://google.serper.dev"
-                }
-            )
-        }
-    ]
-
-    manager = ToolManager(server_configs)
-
-    result = await manager.execute_tool_call(
-        server_name="search_and_scrape_webpage",
-        tool_name="google_search",
-        arguments={
-            "q": "Python async programming",
-            "gl": "us",
-            "hl": "en",
-            "num": 10
-        }
-    )
-    print(result)
-
-if __name__ == "__main__":
-    asyncio.run(main())
-```
-
-</details>
+- 🔍 `google_search(q, gl, hl, location, num, tbs, page, autocorrect)`: Perform web searches and retrieve rich results
+- **Env**: `SERPER_API_KEY` (required), `SERPER_BASE_URL` (default: `https://google.serper.dev`)
+- **Module**: `miroflow_tools.dev_mcp_servers.search_and_scrape_webpage`
 
 ### Server: jina_scrape_llm_summary
 
 Scrape content from URLs and extract meaningful information using an LLM.
 
-**Tools**:
-
-- 🔎 `scrape_and_extract_info(url, info_to_extract, custom_headers=None)`: Scrape content from a URL (web pages, PDFs, code files, etc.) and extract meaningful information using an LLM
-
-**Environment Variables**:
-
-- 🔑 `JINA_API_KEY`: Jina.ai API key (required)
-- 🌐 `JINA_BASE_URL`: Jina.ai API base URL (default: `https://r.jina.ai`)
-- 🔗 `SUMMARY_LLM_BASE_URL`: LLM API base URL for summarization (required)
-- 🤖 `SUMMARY_LLM_MODEL_NAME`: LLM model name for summarization (required)
-- 🔑 `SUMMARY_LLM_API_KEY`: LLM API key for summarization (optional, depends on LLM provider)
-
-**Example**:
-
-<details>
-<summary>Click to expand code example</summary>
-
-```python
-import asyncio
-from miroflow_tools import ToolManager
-from mcp import StdioServerParameters
-
-async def main():
-    server_configs = [
-        {
-            "name": "jina_scrape_llm_summary",
-            "params": StdioServerParameters(
-                command="python",
-                args=["-m", "miroflow_tools.dev_mcp_servers.jina_scrape_llm_summary"],
-                env={
-                    "JINA_API_KEY": "your_jina_api_key",
-                    "JINA_BASE_URL": "https://r.jina.ai",
-                    "SUMMARY_LLM_BASE_URL": "your_llm_base_url",
-                    "SUMMARY_LLM_MODEL_NAME": "your_llm_model_name",
-                    "SUMMARY_LLM_API_KEY": "your_llm_api_key"
-                }
-            )
-        }
-    ]
-
-    manager = ToolManager(server_configs)
-
-    result = await manager.execute_tool_call(
-        server_name="jina_scrape_llm_summary",
-        tool_name="scrape_and_extract_info",
-        arguments={
-            "url": "https://example.com/article",
-            "info_to_extract": "What is the main topic of this article?"
-        }
-    )
-    print(result)
-
-if __name__ == "__main__":
-    asyncio.run(main())
-```
-
-</details>
+- 🔎 `scrape_and_extract_info(url, info_to_extract, custom_headers)`: Scrape and summarize web pages, PDFs, code files, etc.
+- **Env**: `JINA_API_KEY` (required), `JINA_BASE_URL`, `SUMMARY_LLM_BASE_URL`, `SUMMARY_LLM_MODEL_NAME`, `SUMMARY_LLM_API_KEY`
+- **Module**: `miroflow_tools.dev_mcp_servers.jina_scrape_llm_summary`
 
 ### Server: tool-google-search
 
 Google search via Serper API with website scraping capabilities.
 
-**Tools**:
-
-- 🔍 `google_search(q, gl="us", hl="en", location=None, num=10, tbs=None, page=1)`: Google search
-- 🌐 `scrape_website(url)`: Scrape website content using Jina.ai
-
-**Environment Variables**:
-
-- 🔑 `SERPER_API_KEY`: Serper API key (required for Google search)
-- 🌐 `SERPER_BASE_URL`: Serper API base URL (default: `https://google.serper.dev`)
-- 🔑 `JINA_API_KEY`: Jina.ai API key (required for scraping)
-- 🌐 `JINA_BASE_URL`: Jina.ai API base URL (default: `https://r.jina.ai`)
-
-**Filtering Options** (via environment variables):
-
-- 🚫 `REMOVE_SNIPPETS`: Remove snippets from search results
-- 🚫 `REMOVE_KNOWLEDGE_GRAPH`: Remove knowledge graph from results
-- 🚫 `REMOVE_ANSWER_BOX`: Remove answer box from results
-
-**Example**:
-
-<details>
-<summary>Click to expand code example</summary>
-
-```python
-import asyncio
-from miroflow_tools import ToolManager
-from mcp import StdioServerParameters
-
-async def main():
-    server_configs = [
-        {
-            "name": "tool-google-search",
-            "params": StdioServerParameters(
-                command="python",
-                args=["-m", "miroflow_tools.mcp_servers.searching_google_mcp_server"],
-                env={
-                    "SERPER_API_KEY": "your_serper_api_key",
-                    "SERPER_BASE_URL": "https://google.serper.dev",
-                    "JINA_API_KEY": "your_jina_api_key",
-                    "JINA_BASE_URL": "https://r.jina.ai"
-                }
-            )
-        }
-    ]
-
-    manager = ToolManager(server_configs)
-
-    # Google search
-    result = await manager.execute_tool_call(
-        server_name="tool-google-search",
-        tool_name="google_search",
-        arguments={
-            "q": "Python async programming",
-            "gl": "us",
-            "hl": "en",
-            "num": 10
-        }
-    )
-    print(result)
-
-    # Scrape website
-    result = await manager.execute_tool_call(
-        server_name="tool-google-search",
-        tool_name="scrape_website",
-        arguments={"url": "https://example.com/article"}
-    )
-    print(result)
-
-if __name__ == "__main__":
-    asyncio.run(main())
-```
-
-</details>
+- 🔍 `google_search(q, gl, hl, location, num, tbs, page)`: Google search
+- 🌐 `scrape_website(url)`: Scrape website content via Jina.ai
+- **Env**: `SERPER_API_KEY`, `SERPER_BASE_URL`, `JINA_API_KEY`, `JINA_BASE_URL`
+- **Filtering Env** (optional): `REMOVE_SNIPPETS`, `REMOVE_KNOWLEDGE_GRAPH`, `REMOVE_ANSWER_BOX`
+- **Module**: `miroflow_tools.mcp_servers.searching_google_mcp_server`
 
 ### Server: tool-sogou-search
 
 Sogou search (optimized for Chinese) with website scraping capabilities. *Optional capability*
 
-**Tools**:
-
-- 🔍 `sogou_search(Query, Cnt=10)`: Sogou search (Chinese)
-- 🌐 `scrape_website(url)`: Scrape website content using Jina.ai
-
-**Environment Variables**:
-
-- 🔑 `TENCENTCLOUD_SECRET_ID`: Tencent Cloud secret ID (required)
-- 🔑 `TENCENTCLOUD_SECRET_KEY`: Tencent Cloud secret key (required)
-- 🔑 `JINA_API_KEY`: Jina.ai API key (required for scraping)
-- 🌐 `JINA_BASE_URL`: Jina.ai API base URL (default: `https://r.jina.ai`)
-
-**Example**:
-
-<details>
-<summary>Click to expand code example</summary>
-
-```python
-import asyncio
-from miroflow_tools import ToolManager
-from mcp import StdioServerParameters
-
-async def main():
-    server_configs = [
-        {
-            "name": "tool-sogou-search",
-            "params": StdioServerParameters(
-                command="python",
-                args=["-m", "miroflow_tools.mcp_servers.searching_sogou_mcp_server"],
-                env={
-                    "TENCENTCLOUD_SECRET_ID": "your_tencent_secret_id",
-                    "TENCENTCLOUD_SECRET_KEY": "your_tencent_secret_key",
-                    "JINA_API_KEY": "your_jina_api_key",
-                    "JINA_BASE_URL": "https://r.jina.ai"
-                }
-            )
-        }
-    ]
-
-    manager = ToolManager(server_configs)
-
-    # Sogou search
-    result = await manager.execute_tool_call(
-        server_name="tool-sogou-search",
-        tool_name="sogou_search",
-        arguments={
-            "Query": "Python 异步编程",
-            "Cnt": 10
-        }
-    )
-    print(result)
-
-    # Scrape website
-    result = await manager.execute_tool_call(
-        server_name="tool-sogou-search",
-        tool_name="scrape_website",
-        arguments={"url": "https://example.com/article"}
-    )
-    print(result)
-
-if __name__ == "__main__":
-    asyncio.run(main())
-```
-
-</details>
+- 🔍 `sogou_search(Query, Cnt)`: Sogou search (Chinese)
+- 🌐 `scrape_website(url)`: Scrape website content via Jina.ai
+- **Env**: `TENCENTCLOUD_SECRET_ID`, `TENCENTCLOUD_SECRET_KEY`, `JINA_API_KEY`, `JINA_BASE_URL`
+- **Module**: `miroflow_tools.mcp_servers.searching_sogou_mcp_server`
 
 ## 🚀 Development
 

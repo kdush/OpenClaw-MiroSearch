@@ -23,58 +23,18 @@ OpenClaw-MiroSearch 是一个面向智能体场景的开源联网检索工程，
 
 ## 已实现功能
 
-### 研究模式（`mode`）
+- **6 种研究模式**：`production-web` / `verified` / `research` / `balanced`（默认） / `quota` / `thinking`
+- **6 种检索路由**：`searxng-first` / `serp-first` / `multi-route` / `parallel` / `parallel-trusted` / `searxng-only`
+- **多源检索**：SearXNG、SerpAPI、Serper —— 支持并发聚合与置信度补检
+- **统一 API**：`run_research_once` 提供 6 参数全维控制（模式、路由、深度、输出篇幅）
+- **运行态可观测**：阶段心跳（检索/推理/校验/总结）、陈旧任务自动收敛
 
-系统支持以下研究模式：
+> 完整 API 规格与参数说明请参见 [`docs/API_SPEC.md`](docs/API_SPEC.md)
+>
+> 架构概览与数据流图请参见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)（[English](docs/ARCHITECTURE_en.md)）
 
-- `production-web`
-- `verified`
-- `research`
-- `balanced`
-- `quota`
-- `thinking`
-
-推荐默认：`balanced`
-
-### 检索路由（`search_profile`）
-
-系统支持以下检索路由策略：
-
-- `searxng-first`
-- `serp-first`
-- `multi-route`
-- `parallel`
-- `parallel-trusted`
-- `searxng-only`
-
-关键策略说明：
-
-- `parallel`：多路并发检索后聚合去重
-- `parallel-trusted`：并发检索后执行置信度评估；若不足则按高信源顺序串行补检
-
-### 搜索源兼容
-
-- SearXNG
-- SerpAPI
-- Serper
-
-### 对外接口
-
-- `POST /gradio_api/call/run_research_once`
-- `GET /gradio_api/call/run_research_once/{event_id}`
-- `POST /gradio_api/call/stop_current`
-- `GET /gradio_api/info`
-
-接口标准说明：
-
-- 研究调用统一为一个标准接口：`run_research_once`
-- 不再维护历史双接口分支
-
-### 运行态可观测与自愈
-
-- 阶段心跳：前端“生成中”状态会显示当前阶段（检索/推理/校验/总结）、回合与检索轮次
-- 陈旧任务收敛：后台周期巡检会将长时间未更新且进程不活跃的 `running` 自动收敛为 `failed`
-- 参数生效约束：`verification_min_search_rounds` 仅在 `mode=verified` 时显示并生效
+<!-- TODO: 添加 Demo 截图，建议尺寸 900×500，放置在 assets/demo-screenshot.png -->
+<!-- <p align="center"><img src="assets/demo-screenshot.png" alt="Demo Screenshot" width="900" /></p> -->
 
 ## 代码结构
 
@@ -209,35 +169,19 @@ Skill 使用：
 - API 说明：[`skills/openclaw-mirosearch/references/api.md`](skills/openclaw-mirosearch/references/api.md)
 - AI Agent 接入详解：[`docs/AI_AGENT_INTEGRATION.md`](docs/AI_AGENT_INTEGRATION.md)
 
-## 路由参数说明
-
-以下环境变量用于控制检索行为：
-
-- `SEARCH_PROVIDER_ORDER`
-- `SEARCH_PROVIDER_MODE`：`fallback | merge | parallel | parallel_conf_fallback`
-- `SEARCH_PROVIDER_TRUSTED_ORDER`
-- `SEARCH_PROVIDER_PARALLEL_MAX_WAIT_MS`
-- `SEARCH_PROVIDER_PARALLEL_MIN_SUCCESS`
-- `SEARCH_PROVIDER_FALLBACK_MAX_STEPS`
-- `SEARCH_RESULT_NUM`
-- `SEARCH_CONFIDENCE_ENABLED`
-- `SEARCH_CONFIDENCE_SCORE_THRESHOLD`
-- `SEARCH_CONFIDENCE_MIN_RESULTS`
-- `SEARCH_CONFIDENCE_MIN_UNIQUE_DOMAINS`
-- `SEARCH_CONFIDENCE_MIN_PROVIDER_COVERAGE`
-- `SEARCH_CONFIDENCE_MIN_HIGH_CONF_HITS`
-- `SEARCH_CONFIDENCE_HIGH_CONF_DOMAINS`
-
 ## 建议配置基线
 
-- 默认生产基线：`mode=balanced` + `search_profile=parallel-trusted`
-- 高风险事实核查：`mode=verified` + `search_profile=parallel-trusted`
-- 额度优先场景：`mode=quota` + `search_profile=searxng-only`
-- 核查深度建议：`search_result_num=30` + `verification_min_search_rounds=4`
+- **默认生产**：`mode=balanced` + `search_profile=parallel-trusted`
+- **高风险事实核查**：`mode=verified` + `search_profile=parallel-trusted`
+- **额度优先**：`mode=quota` + `search_profile=searxng-only`
+- **核查深度**：`search_result_num=30` + `verification_min_search_rounds=4`
+
+> 完整路由环境变量说明请参见 [`apps/miroflow-agent/README.md`](apps/miroflow-agent/README.md) 和 [`docs/API_SPEC.md`](docs/API_SPEC.md)
 
 ## 文档索引
 
 - 文档总览：[`docs/README.md`](docs/README.md)
+- 架构概览：[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 - Docker Compose 独立部署：[`docs/DEPLOY_DOCKER_COMPOSE.md`](docs/DEPLOY_DOCKER_COMPOSE.md)
 - Demo 说明：[`apps/gradio-demo/README.md`](apps/gradio-demo/README.md)
 - Agent 说明：[`apps/miroflow-agent/README.md`](apps/miroflow-agent/README.md)

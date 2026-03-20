@@ -13,7 +13,34 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - 规划：模型级 failback（主模型失败自动切换备用模型）
 - 规划：结构化冲突检测报告与专项评测集
 
-## [0.1.5] - 2026-03-20
+## [0.1.6] - 2025-03-20
+
+### Added
+
+- 新增 `docs/ARCHITECTURE.md` 与 `docs/ARCHITECTURE_en.md`（含 Mermaid 系统架构图、数据流时序图、部署拓扑图）
+- 新增核心文档英文版：`CONTRIBUTING_en.md`、`SECURITY_en.md`、`CODE_OF_CONDUCT_en.md`
+- 中英文文档互相引用，`docs/README.md` 索引同步更新
+- 新增 `.github/CODEOWNERS` 代码所有者配置
+- 根 README（中/英）添加架构文档链接与 Demo 截图占位
+
+### Changed
+
+- 根 README 已实现功能从冗长枚举精简为摘要列表，详细参数引用 `docs/API_SPEC.md`
+- 根 README 路由参数列表精简，引用 Agent README 与 API_SPEC
+- `libs/miroflow-tools/README.md` 从 933 行精简至约 365 行，移除重复代码示例
+- `docs/QA.md` 重写：标注历史文档性质、统一中文、移除重复内容
+- `docs/SECURITY.md` 补充 GitHub Security Advisories 作为首选漏洞报告渠道
+
+### Fixed
+
+- 修复 `.github/ISSUE_TEMPLATE/` 中 bug_report.md 和 feature_request.md 的 YAML front matter 格式
+- 修正 CHANGELOG 5 处与 ROADMAP 1 处日期错误（2026 → 2025）
+
+### Removed
+
+- 删除冗余的根目录 `README_en.md`（内容已合并至 `README.md`）
+
+## [0.1.5] - 2025-03-20
 
 ### Added
 
@@ -27,7 +54,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - 统一整理文档入口，默认面向英文读者，中文文档作为单独切换页
 - 技能调用说明从安装文档中剥离，降低安装与使用混淆
 
-## [0.1.4] - 2026-03-20
+## [0.1.4] - 2025-03-20
 
 ### Added
 
@@ -56,7 +83,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 - Demo 技能包下载入口增加 URL/路径安全约束，限制协议与越权路径访问风险
 
-## [0.1.2] - 2026-03-19
+## [0.1.2] - 2025-03-19
 
 ### Changed
 
@@ -70,7 +97,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - 减少 `verified` 多轮检索时中间稿重复暴露导致的多段报告体验问题
 - 修正文档中的 `stop_current` 路径为 `/gradio_api/call/stop_current`
 
-## [0.1.1] - 2026-03-19
+## [0.1.1] - 2025-03-19
 
 ### Added
 
@@ -83,7 +110,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - 主流程与总结/校验模型路由优化，增强高级模型在关键判断环节的介入
 - 新增模型路由观测日志（`requested`/`responded`）用于核验真实命中模型
 
-## [0.1.0] - 2026-03-18
+## [0.1.0] - 2025-03-18
 
 ### Added
 

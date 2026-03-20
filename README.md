@@ -23,49 +23,18 @@ This project is modified from [MiroMindAI/MiroThinker](https://github.com/MiroMi
 
 ## Implemented Features
 
-### Research Modes (`mode`)
+- **6 research modes**: `production-web` / `verified` / `research` / `balanced` (default) / `quota` / `thinking`
+- **6 search routing profiles**: `searxng-first` / `serp-first` / `multi-route` / `parallel` / `parallel-trusted` / `searxng-only`
+- **Multi-source search**: SearXNG, SerpAPI, Serper — with parallel aggregation and confidence-based supplemental retrieval
+- **Unified API**: `run_research_once` with 6 parameters for full control over mode, routing, depth, and output detail
+- **Runtime observability**: stage heartbeat (search/reasoning/verification/summary), stale-task auto-reconciliation
 
-- `production-web`
-- `verified`
-- `research`
-- `balanced`
-- `quota`
-- `thinking`
+> For full API specification and parameter reference, see [`docs/API_SPEC.md`](docs/API_SPEC.md)
+>
+> For architecture overview and data flow diagrams, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) ([English](docs/ARCHITECTURE_en.md))
 
-Default recommendation: `balanced`
-
-### Search Profiles (`search_profile`)
-
-- `searxng-first`
-- `serp-first`
-- `multi-route`
-- `parallel`
-- `parallel-trusted`
-- `searxng-only`
-
-Key strategy notes:
-
-- `parallel`: multi-route parallel search with deduplication
-- `parallel-trusted`: parallel search with confidence evaluation; if insufficient, sequential supplemental search follows the high-trust source order
-
-### Search Source Compatibility
-
-- SearXNG
-- SerpAPI
-- Serper
-
-### API Endpoints
-
-- `POST /gradio_api/call/run_research_once`
-- `GET /gradio_api/call/run_research_once/{event_id}`
-- `POST /gradio_api/call/stop_current`
-- `GET /gradio_api/info`
-
-### Runtime Observability & Self-Healing
-
-- Stage heartbeat: the "Generating..." UI shows the active phase (search/reasoning/verification/summary), turn, and search round
-- Stale-task reconciliation: a background checker converges long-stale inactive `running` tasks to `failed`
-- Parameter scope: `verification_min_search_rounds` is shown and effective only when `mode=verified`
+<!-- TODO: 添加 Demo 截图，建议尺寸 900×500，放置在 assets/demo-screenshot.png -->
+<!-- <p align="center"><img src="assets/demo-screenshot.png" alt="Demo Screenshot" width="900" /></p> -->
 
 ## Quick Start
 
@@ -191,44 +160,29 @@ Skill acquisition and installation:
 - API docs: [`skills/openclaw-mirosearch/references/api.md`](skills/openclaw-mirosearch/references/api.md)
 - AI Agent integration: [`docs/AI_AGENT_INTEGRATION.md`](docs/AI_AGENT_INTEGRATION.md)
 
-## Routing Parameter Reference
-
-Environment variables controlling search behavior:
-
-- `SEARCH_PROVIDER_ORDER`
-- `SEARCH_PROVIDER_MODE`: `fallback | merge | parallel | parallel_conf_fallback`
-- `SEARCH_PROVIDER_TRUSTED_ORDER`
-- `SEARCH_PROVIDER_PARALLEL_MAX_WAIT_MS`
-- `SEARCH_PROVIDER_PARALLEL_MIN_SUCCESS`
-- `SEARCH_PROVIDER_FALLBACK_MAX_STEPS`
-- `SEARCH_RESULT_NUM`
-- `SEARCH_CONFIDENCE_ENABLED`
-- `SEARCH_CONFIDENCE_SCORE_THRESHOLD`
-- `SEARCH_CONFIDENCE_MIN_RESULTS`
-- `SEARCH_CONFIDENCE_MIN_UNIQUE_DOMAINS`
-- `SEARCH_CONFIDENCE_MIN_PROVIDER_COVERAGE`
-- `SEARCH_CONFIDENCE_MIN_HIGH_CONF_HITS`
-- `SEARCH_CONFIDENCE_HIGH_CONF_DOMAINS`
-
 ## Recommended Configuration Baseline
 
-- Default production baseline: `mode=balanced` + `search_profile=parallel-trusted`
-- High-risk fact-checking: `mode=verified` + `search_profile=parallel-trusted`
-- Quota-priority scenario: `mode=quota` + `search_profile=searxng-only`
-- Verification depth recommendation: `search_result_num=30` + `verification_min_search_rounds=4`
+- **Default production**: `mode=balanced` + `search_profile=parallel-trusted`
+- **High-risk fact-checking**: `mode=verified` + `search_profile=parallel-trusted`
+- **Quota-priority**: `mode=quota` + `search_profile=searxng-only`
+- **Verification depth**: `search_result_num=30` + `verification_min_search_rounds=4`
+
+> For the full list of routing environment variables, see [`apps/miroflow-agent/README.md`](apps/miroflow-agent/README.md#4-检索路由配置) and [`docs/API_SPEC.md`](docs/API_SPEC.md)
 
 ## Changelog
 
-- Release `0.1.5` highlights:
-  - Default homepage now opens in English with a direct link to the Chinese document
-  - Skill docs now separate installation from usage
-  - README documents now include model configuration and fallback rules
-  - Root docs now link to the changelog with a release summary
+- Release `0.1.6` highlights:
+  - Architecture docs with Mermaid diagrams (system, data flow, deployment topology)
+  - English translations for CONTRIBUTING, SECURITY, CODE_OF_CONDUCT
+  - README content deduplication — feature lists and routing params now reference `docs/API_SPEC.md`
+  - `libs/miroflow-tools/README.md` reduced from 933 to ~365 lines
+  - Fixed Issue template YAML front matter and CHANGELOG/ROADMAP date errors
 - Full history: [`docs/CHANGELOG.md`](docs/CHANGELOG.md)
 
 ## Documentation Index
 
 - Overview: [`docs/README.md`](docs/README.md)
+- Architecture: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) / [`ARCHITECTURE_en.md`](docs/ARCHITECTURE_en.md)
 - Changelog: [`docs/CHANGELOG.md`](docs/CHANGELOG.md)
 - Docker Compose deployment: [`docs/DEPLOY_DOCKER_COMPOSE.md`](docs/DEPLOY_DOCKER_COMPOSE.md)
 - Demo docs: [`apps/gradio-demo/README.md`](apps/gradio-demo/README.md)

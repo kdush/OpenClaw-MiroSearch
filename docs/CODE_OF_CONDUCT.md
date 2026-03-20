@@ -1,5 +1,7 @@
 # 行为准则
 
+> 📄 English version: [CODE_OF_CONDUCT_en.md](./CODE_OF_CONDUCT_en.md)
+
 本项目致力于构建开放、专业、尊重他人的协作环境。
 
 ## 我们期望的行为

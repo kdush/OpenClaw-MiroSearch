@@ -1,6 +1,10 @@
-______________________________________________________________________
-
-## name: Bug report about: 报告问题或回归 title: "\[Bug\] " labels: bug assignees: ""
+---
+name: Bug report
+about: 报告问题或回归
+title: "[Bug] "
+labels: bug
+assignees: ""
+---
 
 ## 问题描述
 

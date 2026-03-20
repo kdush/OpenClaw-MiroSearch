@@ -1,58 +1,31 @@
-# MiroFlow QA Documentation
+# 质量校验记录
 
-> Note: This document is historical evaluation/QA material inherited from upstream workflows. It is not part of the current OpenClaw-MiroSearch online retrieval main path.
+> ⚠️ 本文档为上游 MiroThinker 项目遗留的评测 QA 材料，**不属于 OpenClaw-MiroSearch 联网检索主路径**。
+> 保留仅供历史参考；当前项目的代码质量检查请参阅 [CONTRIBUTING.md](./CONTRIBUTING.md)。
 
-## Q1: Can I extract GAIA-Text-103 results from existing GAIA-Validation evaluations?
+## 上游评测：GAIA-Text-103 子集提取
 
-**Answer:** Yes! If you have completed GAIA-Validation evaluations, you can extract and re-grade the GAIA-Text-103 subset using our specialized tools.
-
-### Step-by-Step Process
-
-1. **Extract GAIA-Text-103 Tasks**
-
-   ```bash
-   # Extract text-103 tasks to a separate directory
-   uv run benchmarks/subset_extraction/gaia-to-text-103-mover.py ../../logs/gaia-validation/0806/qwen_MiroThinker-32B-SFT_evaluation
-   ```
-
-   This creates a new directory: `gaia-text-103-extraction/qwen_MiroThinker-32B-SFT_evaluation`
-
-1. **Re-grade with GAIA-Text-103 Evaluator**
-
-   ```bash
-   # Apply GAIA-Text-103 specific grading
-   uv run benchmarks/subset_extraction/gaia-text-103-grader.py ../../logs/gaia-validation/0806/gaia-text-103-extraction
-   ```
-
-1. **Verify Results**
-
-   ```bash
-   # Check accuracy and generate statistics
-   uv run benchmarks/check_progress/check_progress_gaia-validation-text-103.py ../../logs/gaia-validation/0806/gaia-text-103-extraction
-   ```
-
-## Q2: Does the choice of judgment model affect evaluation performance?
-
-**Answer:** Yes, there is a measurable difference in evaluation outcomes between the two judgment models.
-
-We have standardized on GPT-4.1-2025-04-14 as our primary judgment model for several practical reasons:
-
-- **Ease of deployment:** No need to host additional GPU-intensive models
-- **Consistency:** Aligns with evaluation standards used in other benchmarks (SimpleQA, BrowseComp)
-- **Reproducibility:** Provides a consistent baseline for cross-evaluation comparisons
-
-## Code Quality Checks
-
-Before submitting a pull request, ensure your code meets our quality standards:
+如果已完成 GAIA-Validation 评测，可用以下脚本提取并重评 GAIA-Text-103 子集：
 
 ```bash
-# Fix linting issues automatically
-uv tool run ruff@0.8.0 check --fix .
+# 1. 提取子集
+uv run benchmarks/subset_extraction/gaia-to-text-103-mover.py <evaluation_dir>
 
-# Format code according to our style guidelines
-uv tool run ruff@0.8.0 format .
+# 2. 重评
+uv run benchmarks/subset_extraction/gaia-text-103-grader.py <extraction_dir>
+
+# 3. 检查结果
+uv run benchmarks/check_progress/check_progress_gaia-validation-text-103.py <extraction_dir>
 ```
 
-## Know Issues
+## 上游评测：判断模型选择
 
-- The context management component before the summary requires further refinement to improve accuracy and reliability. I guess this is because the length estimation is not accurate.
+上游标准化使用 GPT-4.1-2025-04-14 作为主要判断模型，原因：
+
+- 无需自建 GPU 密集型推理服务
+- 与 SimpleQA、BrowseComp 等评测基准对齐
+- 提供可复现的跨评测比较基线
+
+## 已知问题
+
+- 总结前的上下文管理组件的长度估算精度有待提升，可能影响最终准确性
