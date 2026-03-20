@@ -33,8 +33,7 @@ OpenClaw-MiroSearch 是一个面向智能体场景的开源联网检索工程，
 >
 > 架构概览与数据流图请参见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)（[English](docs/ARCHITECTURE_en.md)）
 
-<!-- TODO: 添加 Demo 截图，建议尺寸 900×500，放置在 assets/demo-screenshot.png -->
-<!-- <p align="center"><img src="assets/demo-screenshot.png" alt="Demo Screenshot" width="900" /></p> -->
+<p align="center"><img src="assets/demo-screenshot.png" alt="Demo Screenshot" width="900" /></p>
 
 ## 代码结构
 

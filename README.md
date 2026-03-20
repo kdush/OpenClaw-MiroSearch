@@ -33,8 +33,7 @@ This project is modified from [MiroMindAI/MiroThinker](https://github.com/MiroMi
 >
 > For architecture overview and data flow diagrams, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) ([English](docs/ARCHITECTURE_en.md))
 
-<!-- TODO: 添加 Demo 截图，建议尺寸 900×500，放置在 assets/demo-screenshot.png -->
-<!-- <p align="center"><img src="assets/demo-screenshot.png" alt="Demo Screenshot" width="900" /></p> -->
+<p align="center"><img src="assets/demo-screenshot.png" alt="Demo Screenshot" width="900" /></p>
 
 ## Quick Start
 
