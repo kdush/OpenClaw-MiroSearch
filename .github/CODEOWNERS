@@ -1,21 +1,21 @@
 # 默认所有文件由仓库维护者审查
 # 请根据实际团队成员替换 GitHub 用户名
-* @repo-maintainer
+* @kdush
 
 # 核心 Agent 模块
-apps/miroflow-agent/ @repo-maintainer
+apps/miroflow-agent/ @kdush
 
 # Gradio Demo 应用
-apps/gradio-demo/ @repo-maintainer
+apps/gradio-demo/ @kdush
 
 # 共享工具库
-libs/miroflow-tools/ @repo-maintainer
+libs/miroflow-tools/ @kdush
 
 # 文档
-docs/ @repo-maintainer
-README.md @repo-maintainer
-README_zh.md @repo-maintainer
+docs/ @kdush
+README.md @kdush
+README_zh.md @kdush
 
 # CI/CD 与项目配置
-.github/ @repo-maintainer
-compose.yaml @repo-maintainer
+.github/ @kdush
+compose.yaml @kdush
