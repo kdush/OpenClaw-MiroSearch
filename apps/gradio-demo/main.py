@@ -2175,6 +2175,19 @@ def build_demo():
         background: #ffffff !important;
         min-height: 100vh;
     }
+
+    /* 历史回填内部同步组件：需要渲染到 DOM，但不展示 */
+    .history-sync-hidden {
+        display: none !important;
+        visibility: hidden !important;
+        width: 0 !important;
+        height: 0 !important;
+        min-height: 0 !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        border: 0 !important;
+        overflow: hidden !important;
+    }
     
     footer { display: none !important; }
     
@@ -3153,9 +3166,9 @@ def build_demo():
             historyPanel: "#search-history-panel",
             clearButton: "#search-history-clear",
             historyWrapper: "#search-history-wrapper",
-            rawOutput: "#history-raw-output textarea, #history-raw-output input",
-            restoreQuery: "#history-restore-query textarea, #history-restore-query input",
-            restoreResult: "#history-restore-result textarea, #history-restore-result input",
+            rawOutput: "#history-raw-output textarea, #history-raw-output input, #history-raw-output",
+            restoreQuery: "#history-restore-query textarea, #history-restore-query input, #history-restore-query",
+            restoreResult: "#history-restore-result textarea, #history-restore-result input, #history-restore-result",
             restoreButton: "#history-restore-btn button, #history-restore-btn",
             skillsDownloadLink: "#skills-download-link",
         }};
@@ -3834,8 +3847,9 @@ def build_demo():
             out_md = gr.Markdown("*等待开始研究...*", elem_id="log-view")
             history_raw_output = gr.Textbox(
                 value="*等待开始研究...*",
-                visible=False,
+                visible=True,
                 elem_id="history-raw-output",
+                elem_classes=["history-sync-hidden"],
             )
 
         # 供统一 API 调用的隐藏输出
@@ -3843,15 +3857,21 @@ def build_demo():
         api_btn = gr.Button(value="api-run", visible=False)
         api_stop_output = gr.JSON(visible=False)
         api_stop_btn = gr.Button(value="api-stop", visible=False)
-        history_restore_query = gr.Textbox(visible=False, elem_id="history-restore-query")
+        history_restore_query = gr.Textbox(
+            visible=True,
+            elem_id="history-restore-query",
+            elem_classes=["history-sync-hidden"],
+        )
         history_restore_result = gr.Textbox(
-            visible=False,
+            visible=True,
             elem_id="history-restore-result",
+            elem_classes=["history-sync-hidden"],
         )
         history_restore_btn = gr.Button(
             value="restore-history",
-            visible=False,
+            visible=True,
             elem_id="history-restore-btn",
+            elem_classes=["history-sync-hidden"],
         )
 
         # State
