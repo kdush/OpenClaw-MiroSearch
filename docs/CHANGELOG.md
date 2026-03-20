@@ -13,6 +13,21 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - 规划：模型级 failback（主模型失败自动切换备用模型）
 - 规划：结构化冲突检测报告与专项评测集
 
+## [0.1.8] - 2026-03-20
+
+### Fixed
+
+- 修复 demo 模式"研究总结"区域仅显示 `\boxed{}` 一句话的渲染错误：`prompt_patch.py` 不再用 boxed 内容覆盖完整报告文本，改为保留全文并移除标记
+
+### Changed
+
+- `detailed` 档位 token 上限全面提升：`summary_max_tokens` / `max_tokens` 8192→16384，`verification_max_tokens` 6144→12288，`tool_result_max_chars` 12000→20000，`max_turns` 16→20
+- `detailed` 档位研究报告模式提示词重写：新增"全量保留、去重整合、禁止压缩"核心原则，要求每轮检索信息全部体现、多轮重复信息去重合并、绝对禁止为控制篇幅省略信息
+- `detailed` 档位正文字数目标 6000→12000 字符，最小章节数 10→12
+- `detailed` 档位总结过短重试阈值 1800→5000 字符，`balanced` 档位重试阈值 900→1500 字符
+- 总结提示词基础版本（`prompt_patch.py`）移除简洁优先倾向，改为"全量保留优于简洁"原则
+- 扩写提示词强化：要求逐轮检查信息覆盖，最终报告须比任何单轮检索输出更长更完整
+
 ## [0.1.7] - 2025-03-20
 
 ### Added
