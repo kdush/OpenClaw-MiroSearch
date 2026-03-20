@@ -13,6 +13,7 @@ and the orchestrator to execute complex multi-turn agent tasks.
 """
 
 import asyncio
+import time
 import traceback
 import uuid
 from typing import Any, Dict, List, Optional
@@ -72,6 +73,8 @@ async def execute_task_pipeline(
         - log_file_path: The path to the saved task log file.
         - failure_experience_summary: Summary of failure experience for retry (None if successful).
     """
+    total_start_time = time.perf_counter()
+
     # Create task log
     task_log = TaskLog(
         log_dir=log_dir,
@@ -95,11 +98,21 @@ async def execute_task_pipeline(
 
     try:
         # Initialize LLM client
+        llm_init_start_time = time.perf_counter()
         random_uuid = str(uuid.uuid4())
         unique_id = f"{task_id}-{random_uuid}"
         llm_client = ClientFactory(task_id=unique_id, cfg=cfg, task_log=task_log)
+        task_log.record_stage_timing(
+            "pipeline.llm_client_init",
+            int((time.perf_counter() - llm_init_start_time) * 1000),
+            metadata={
+                "provider": cfg.llm.provider,
+                "model_name": cfg.llm.model_name,
+            },
+        )
 
         # Initialize orchestrator
+        orchestrator_init_start_time = time.perf_counter()
         orchestrator = Orchestrator(
             main_agent_tool_manager=main_agent_tool_manager,
             sub_agent_tool_managers=sub_agent_tool_managers,
@@ -111,7 +124,12 @@ async def execute_task_pipeline(
             tool_definitions=tool_definitions,
             sub_agent_tool_definitions=sub_agent_tool_definitions,
         )
+        task_log.record_stage_timing(
+            "pipeline.orchestrator_init",
+            int((time.perf_counter() - orchestrator_init_start_time) * 1000),
+        )
 
+        main_agent_run_start_time = time.perf_counter()
         (
             final_summary,
             final_boxed_answer,
@@ -121,6 +139,10 @@ async def execute_task_pipeline(
             task_file_name=task_file_name,
             task_id=task_id,
             is_final_retry=is_final_retry,
+        )
+        task_log.record_stage_timing(
+            "pipeline.main_agent_run",
+            int((time.perf_counter() - main_agent_run_start_time) * 1000),
         )
 
         llm_client.close()
@@ -197,7 +219,18 @@ async def execute_task_pipeline(
                 "Detected non-terminal task status 'running' at pipeline end; force set to 'failed'.",
             )
 
+        task_log.record_stage_timing(
+            "pipeline.total",
+            int((time.perf_counter() - total_start_time) * 1000),
+        )
         task_log.end_time = get_utc_plus_8_time()
+        timing_summary = task_log.format_stage_timing_summary()
+        if timing_summary:
+            task_log.log_step(
+                "info",
+                "Timing | Summary",
+                timing_summary,
+            )
 
         # Record task summary to structured log
         task_log.log_step(

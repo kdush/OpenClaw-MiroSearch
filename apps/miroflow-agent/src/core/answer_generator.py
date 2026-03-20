@@ -13,6 +13,7 @@ This module provides the AnswerGenerator class that handles:
 
 import logging
 import os
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from omegaconf import DictConfig
@@ -35,6 +36,42 @@ logger = logging.getLogger(__name__)
 
 # Safety limits for retry loops
 DEFAULT_MAX_FINAL_ANSWER_RETRIES = 3
+RESEARCH_COMPACT_TARGET_MAX_CHARS = max(
+    300, int(os.getenv("RESEARCH_COMPACT_TARGET_MAX_CHARS", "1200"))
+)
+RESEARCH_BALANCED_TARGET_MIN_CHARS = max(
+    600, int(os.getenv("RESEARCH_BALANCED_TARGET_MIN_CHARS", "1800"))
+)
+RESEARCH_BALANCED_TARGET_MAX_CHARS = max(
+    RESEARCH_BALANCED_TARGET_MIN_CHARS,
+    int(os.getenv("RESEARCH_BALANCED_TARGET_MAX_CHARS", "3200")),
+)
+RESEARCH_DETAILED_TARGET_MIN_CHARS = max(
+    1000, int(os.getenv("RESEARCH_DETAILED_TARGET_MIN_CHARS", "6000"))
+)
+RESEARCH_BALANCED_MIN_SECTIONS = max(
+    4, int(os.getenv("RESEARCH_BALANCED_MIN_SECTIONS", "7"))
+)
+RESEARCH_DETAILED_MIN_SECTIONS = max(
+    6, int(os.getenv("RESEARCH_DETAILED_MIN_SECTIONS", "10"))
+)
+
+
+def _parse_bool_flag(value: Any, default: bool = False) -> bool:
+    """将多种输入类型安全解析为布尔值。"""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return default
 
 
 class AnswerGenerator:
@@ -78,12 +115,21 @@ class AnswerGenerator:
             DEFAULT_MAX_FINAL_ANSWER_RETRIES if cfg.agent.keep_tool_result == -1 else 1
         )
         self.retry_with_summary = cfg.agent.get("retry_with_summary", True)
+        self.output_detail_level = str(
+            cfg.agent.get("output_detail_level", "balanced")
+        ).strip().lower()
+        if self.output_detail_level not in {"compact", "balanced", "detailed"}:
+            self.output_detail_level = "balanced"
         self.demo_mode = os.getenv("DEMO_MODE", "").strip().lower() in {
             "1",
             "true",
             "yes",
             "on",
         }
+        self.research_report_mode = _parse_bool_flag(
+            cfg.agent.get("research_report_mode", self.demo_mode),
+            default=self.demo_mode,
+        )
         verification_cfg = cfg.agent.get("verification", {})
         self.verification_enabled = bool(verification_cfg.get("enabled", False))
         self.verification_use_high_model = bool(
@@ -99,6 +145,70 @@ class AnswerGenerator:
         self.verification_high_conf_domains = [
             str(domain).strip().lower() for domain in raw_domains if str(domain).strip()
         ]
+
+    def _build_main_summary_prompt(self, task_description: str) -> str:
+        """
+        根据输出档位和运行模式构建最终总结提示词。
+
+        research_report_mode=true 时，覆盖短答案模板约束，强制按研究报告输出。
+        """
+        summary_prompt = generate_agent_summarize_prompt(
+            task_description,
+            agent_type="main",
+        )
+        if self.research_report_mode:
+            if self.output_detail_level == "detailed":
+                summary_prompt += (
+                    "\n\n研究报告模式（详细档，最高优先级覆盖）：\n"
+                    "1) 覆盖并忽略上文“尽量短/少词/仅数字”的竞赛型约束，本次必须输出完整研究报告正文。\n"
+                    f"2) 正文字数目标：在信息充分时不少于 {RESEARCH_DETAILED_TARGET_MIN_CHARS} 个中文字符。\n"
+                    f"3) 至少包含 {RESEARCH_DETAILED_MIN_SECTIONS} 个一级小节，且每节提供可核验事实、时间锚点与来源线索。\n"
+                    "4) 必须包含：关键结论速览、时间线、关键数字表、已知/不确定/冲突信息、深度背景、风险与后续观察。\n"
+                    "5) 禁止空泛总结；若数据不足，明确缺口、已尝试口径和下一步补证方案。\n"
+                    "6) 结尾额外给出一条 \\boxed{一句话核心结论}，用于结构化提取；但正文必须完整保留。"
+                )
+            elif self.output_detail_level == "balanced":
+                summary_prompt += (
+                    "\n\n研究报告模式（适中档，最高优先级覆盖）：\n"
+                    "1) 覆盖并忽略上文短答案约束，输出中篇结构化报告。\n"
+                    f"2) 正文字数目标：约 {RESEARCH_BALANCED_TARGET_MIN_CHARS}-{RESEARCH_BALANCED_TARGET_MAX_CHARS} 个中文字符。\n"
+                    f"3) 至少包含 {RESEARCH_BALANCED_MIN_SECTIONS} 个一级小节，核心结论在前，非核心信息放在“补充信息”或“附录”。\n"
+                    "4) 每个核心结论至少给出一条证据或数字；若有冲突，明确冲突来源与口径差异。\n"
+                    "5) 结尾额外给出一条 \\boxed{一句话核心结论}。"
+                )
+            else:
+                summary_prompt += (
+                    "\n\n研究报告模式（精简档，最高优先级覆盖）：\n"
+                    f"1) 保持短篇幅，正文控制在约 {RESEARCH_COMPACT_TARGET_MAX_CHARS} 个中文字符以内。\n"
+                    "2) 只保留最关键结论与必要证据，非核心背景可省略。\n"
+                    "3) 结尾额外给出一条 \\boxed{一句话核心结论}。"
+                )
+        else:
+            if self.output_detail_level == "detailed":
+                summary_prompt += (
+                    "\n\nDetailed Output Requirements:\n"
+                    "1) Provide a complete, structured report with clear section headings.\n"
+                    "2) Include a timeline/time anchor section using absolute dates.\n"
+                    "3) Include a 'Key Figures' section with as many verifiable numbers as available.\n"
+                    "4) Include 'What is known / uncertain / conflicting' sections.\n"
+                    "5) Include actionable next steps or monitoring points when applicable.\n"
+                    "6) Do not be overly concise; prioritize completeness and traceable detail."
+                )
+            elif self.output_detail_level == "compact":
+                summary_prompt += (
+                    "\n\nCompact Output Requirements:\n"
+                    "Keep the response concise and only include the most critical findings."
+                )
+
+        if self.verification_enabled:
+            summary_prompt += (
+                "\n\n在最终答案中必须体现以下核验约束：\n"
+                "1) 使用绝对时间锚点（例如：截至 YYYY-MM-DD）。\n"
+                "2) 明确统计口径与统计对象定义。\n"
+                "3) 若关键数字存在冲突，输出区间与冲突说明，不要伪造单值。\n"
+                "4) 优先引用高置信来源，并在正文中说明来源等级。"
+            )
+        return summary_prompt
 
     async def generate_cross_verification_note(
         self,
@@ -196,6 +306,7 @@ class AnswerGenerator:
             Tuple of (response_text, should_break, tool_calls_info, message_history)
         """
         original_message_history = message_history
+        llm_call_start_time = time.perf_counter()
         try:
             response, message_history = await self.llm_client.create_message(
                 system_prompt=system_prompt,
@@ -246,6 +357,19 @@ class AnswerGenerator:
                 f"{purpose} | LLM Call",
                 "completed successfully",
             )
+            elapsed_ms = int((time.perf_counter() - llm_call_start_time) * 1000)
+            self.task_log.record_stage_timing(
+                f"answer_generator.llm_call.{agent_type}",
+                elapsed_ms,
+                message=f"{purpose} completed in {elapsed_ms}ms",
+                metadata={
+                    "purpose": purpose,
+                    "agent_type": agent_type,
+                    "tool_definition_count": len(tool_definitions or []),
+                    "tool_call_count": len(tool_calls_info or []),
+                    "should_break": should_break,
+                },
+            )
             return (
                 assistant_response_text,
                 should_break,
@@ -254,6 +378,20 @@ class AnswerGenerator:
             )
 
         except Exception as e:
+            elapsed_ms = int((time.perf_counter() - llm_call_start_time) * 1000)
+            self.task_log.record_stage_timing(
+                f"answer_generator.llm_call.{agent_type}",
+                elapsed_ms,
+                message=f"{purpose} failed in {elapsed_ms}ms",
+                metadata={
+                    "purpose": purpose,
+                    "agent_type": agent_type,
+                    "tool_definition_count": len(tool_definitions or []),
+                    "status": "error",
+                    "error": str(e),
+                },
+                info_level="error",
+            )
             self.task_log.log_step(
                 "error",
                 f"{purpose} | LLM Call ERROR",
@@ -378,18 +516,7 @@ class AnswerGenerator:
                 task_description=task_description,
             )
 
-        summary_prompt = generate_agent_summarize_prompt(
-            task_description,
-            agent_type="main",
-        )
-        if self.verification_enabled:
-            summary_prompt += (
-                "\n\n在最终答案中必须体现以下核验约束：\n"
-                "1) 使用绝对时间锚点（例如：截至 YYYY-MM-DD）。\n"
-                "2) 明确统计口径与统计对象定义。\n"
-                "3) 若关键数字存在冲突，输出区间与冲突说明，不要伪造单值。\n"
-                "4) 优先引用高置信来源，并在正文中说明来源等级。"
-            )
+        summary_prompt = self._build_main_summary_prompt(task_description)
 
         if message_history[-1]["role"] == "user":
             message_history.pop(-1)

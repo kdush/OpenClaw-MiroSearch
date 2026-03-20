@@ -59,6 +59,7 @@ DEFAULT_LLM_FAILURE_SLEEP_SECONDS = 2
 DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS = 3
 DEFAULT_VERIFICATION_MIN_HIGH_CONF_SOURCES = 2
 DEFAULT_VERIFICATION_MAX_GUIDANCE_ATTEMPTS = 3
+DEFAULT_VERIFICATION_MAX_STAGNANT_GUIDANCE_ATTEMPTS = 1
 DEFAULT_HIGH_CONF_DOMAINS = [
     "reuters.com",
     "apnews.com",
@@ -244,6 +245,18 @@ class Orchestrator:
         self.verification_search_rounds = 0
         self.verification_guidance_attempts = 0
         self.verification_high_conf_source_domains: set[str] = set()
+        self.verification_guidance_anchor_search_rounds = 0
+        self.verification_guidance_anchor_high_conf_sources = 0
+        self.verification_stagnant_guidance_attempts = 0
+        self.verification_max_stagnant_guidance_attempts = max(
+            1,
+            int(
+                verification_cfg.get(
+                    "max_stagnant_guidance_attempts",
+                    DEFAULT_VERIFICATION_MAX_STAGNANT_GUIDANCE_ATTEMPTS,
+                )
+            ),
+        )
 
     @staticmethod
     def _normalize_domain(url: str) -> str:
@@ -316,6 +329,58 @@ class Orchestrator:
             >= self.verification_min_high_conf_sources
         )
 
+    def _has_verification_progress_since_last_guidance(self) -> bool:
+        if self.verification_guidance_attempts == 0:
+            return True
+        return (
+            self.verification_search_rounds
+            > self.verification_guidance_anchor_search_rounds
+            or len(self.verification_high_conf_source_domains)
+            > self.verification_guidance_anchor_high_conf_sources
+        )
+
+    def _mark_verification_guidance_issued(self) -> None:
+        self.verification_guidance_anchor_search_rounds = self.verification_search_rounds
+        self.verification_guidance_anchor_high_conf_sources = len(
+            self.verification_high_conf_source_domains
+        )
+
+    def _should_issue_verification_guidance(self, turn_count: int, max_turns: int) -> bool:
+        if not self.verification_enabled:
+            return False
+        if self._verification_requirements_met():
+            return False
+        if self.verification_guidance_attempts >= self.verification_max_guidance_attempts:
+            return False
+        if turn_count >= max_turns:
+            return False
+
+        if self._has_verification_progress_since_last_guidance():
+            self.verification_stagnant_guidance_attempts = 0
+            return True
+
+        self.verification_stagnant_guidance_attempts += 1
+        self.task_log.log_step(
+            "warning",
+            "Main Agent | Verification Gate",
+            "上一轮校验加压后没有新增检索证据，停止重复追加检索指令，直接进入收敛阶段。",
+            metadata={
+                "verification_search_rounds": self.verification_search_rounds,
+                "verification_min_search_rounds": self.verification_min_search_rounds,
+                "verification_high_conf_sources": len(
+                    self.verification_high_conf_source_domains
+                ),
+                "verification_min_high_conf_sources": self.verification_min_high_conf_sources,
+                "verification_guidance_attempts": self.verification_guidance_attempts,
+                "verification_stagnant_guidance_attempts": self.verification_stagnant_guidance_attempts,
+                "verification_max_stagnant_guidance_attempts": self.verification_max_stagnant_guidance_attempts,
+            },
+        )
+        return (
+            self.verification_stagnant_guidance_attempts
+            < self.verification_max_stagnant_guidance_attempts
+        )
+
     def _build_verification_followup_prompt(self, task_description: str) -> str:
         if not self.verification_enabled:
             return ""
@@ -338,8 +403,11 @@ class Orchestrator:
             "1) 时间范围（明确起止范围与截至绝对日期）；\n"
             "2) 核心对象边界（明确统计或对比对象的纳入与排除规则）；\n"
             "3) 关键指标口径（明确单位、维度、是否合并统计）。\n"
+            "4) 数字证据（至少补齐 3 条“数字+时间+来源”，如伤亡、损失、规模、时间点）。\n"
+            "若当前检索仍缺数字，下一轮请使用数字定向关键词（示例：伤亡/死亡/受伤/损失/规模/截至日期）。\n"
             f"优先高置信来源域名：{recommended_domains}。\n"
-            "如果仍有冲突，给出“数字区间+冲突原因+来源对应表”，不要给伪精确单值。"
+            "如果仍有冲突，给出“数字区间+冲突原因+来源对应表”，不要给伪精确单值。\n"
+            "禁止用“结果被省略/未展示”替代数字证据。"
         )
 
     def _build_verification_status_note(self) -> str:
@@ -355,7 +423,8 @@ class Orchestrator:
             f"- 检索轮次：{self.verification_search_rounds}/{self.verification_min_search_rounds}\n"
             f"- 高置信来源数：{len(self.verification_high_conf_source_domains)}/{self.verification_min_high_conf_sources}\n"
             f"- 已命中高置信域名：{domains}\n"
-            "请在最终答案中明确写出时间锚点、关键指标口径、对象边界与分组规则，并处理数字冲突。"
+            "请在最终答案中明确写出时间锚点、关键指标口径、对象边界与分组规则，并处理数字冲突。\n"
+            "最终答案必须包含“关键数字速览”：至少 3 条“数字+时间+来源”；若不足，明确缺失项与已尝试检索口径。"
         )
 
     def _save_message_history(
@@ -639,7 +708,9 @@ class Orchestrator:
                 )
                 break
 
-            if assistant_response_text:
+            llm_has_progress = bool(assistant_response_text) or bool(tool_calls)
+
+            if llm_has_progress:
                 if consecutive_llm_failures > 0:
                     self.task_log.log_step(
                         "info",
@@ -647,9 +718,10 @@ class Orchestrator:
                         f"Recovered after {consecutive_llm_failures} consecutive empty/failed LLM responses.",
                     )
                 consecutive_llm_failures = 0
-                text_response = extract_llm_response_text(assistant_response_text)
-                if text_response:
-                    await self.stream.tool_call("show_text", {"text": text_response})
+                if assistant_response_text:
+                    text_response = extract_llm_response_text(assistant_response_text)
+                    if text_response:
+                        await self.stream.tool_call("show_text", {"text": text_response})
             else:
                 consecutive_llm_failures += 1
                 self.task_log.log_step(
@@ -1068,7 +1140,9 @@ class Orchestrator:
             )
 
             # Process LLM response
-            if assistant_response_text:
+            llm_has_progress = bool(assistant_response_text) or bool(tool_calls)
+
+            if llm_has_progress:
                 if consecutive_llm_failures > 0:
                     self.task_log.log_step(
                         "info",
@@ -1076,16 +1150,18 @@ class Orchestrator:
                         f"Recovered after {consecutive_llm_failures} consecutive empty/failed LLM responses.",
                     )
                 consecutive_llm_failures = 0
-                text_response = extract_llm_response_text(assistant_response_text)
-                if text_response:
-                    await self.stream.tool_call("show_text", {"text": text_response})
+                if assistant_response_text:
+                    text_response = extract_llm_response_text(assistant_response_text)
+                    if text_response:
+                        await self.stream.tool_call("show_text", {"text": text_response})
 
                 # Extract boxed content
-                boxed_content = self.output_formatter._extract_boxed_content(
-                    assistant_response_text
-                )
-                if boxed_content:
-                    self.intermediate_boxed_answers.append(boxed_content)
+                if assistant_response_text:
+                    boxed_content = self.output_formatter._extract_boxed_content(
+                        assistant_response_text
+                    )
+                    if boxed_content:
+                        self.intermediate_boxed_answers.append(boxed_content)
 
                 if should_break and tool_calls:
                     self.task_log.log_step(
@@ -1117,14 +1193,9 @@ class Orchestrator:
 
             # Handle no tool calls case
             if not tool_calls:
-                if (
-                    self.verification_enabled
-                    and not self._verification_requirements_met()
-                    and self.verification_guidance_attempts
-                    < self.verification_max_guidance_attempts
-                    and turn_count < max_turns
-                ):
+                if self._should_issue_verification_guidance(turn_count, max_turns):
                     self.verification_guidance_attempts += 1
+                    self._mark_verification_guidance_issued()
                     followup_prompt = self._build_verification_followup_prompt(
                         task_description
                     )

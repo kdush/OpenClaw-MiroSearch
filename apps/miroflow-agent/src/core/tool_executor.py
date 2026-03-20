@@ -11,8 +11,10 @@ including argument fixing, duplicate detection, result processing, and error han
 import json
 import logging
 import os
+import re
 import time
 from collections import defaultdict
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from miroflow_tools.manager import ToolManager
@@ -26,6 +28,7 @@ logger = logging.getLogger(__name__)
 # Maximum length for scrape results in demo mode (to support more conversation turns)
 DEMO_SCRAPE_MAX_LENGTH = 20_000
 TRUE_VALUES = {"1", "true", "yes", "on"}
+SEARCH_QUERY_KEY_MAP = {"google_search": "q", "sogou_search": "Query"}
 
 
 class ToolExecutor:
@@ -74,6 +77,74 @@ class ToolExecutor:
             self.disable_empty_search_rollback = (
                 disable_empty_search_raw.strip().lower() in TRUE_VALUES
             )
+        self.append_current_year_to_fresh_queries = (
+            os.getenv("SEARCH_QUERY_APPEND_CURRENT_YEAR", "1").strip().lower()
+            in TRUE_VALUES
+        )
+        self.current_year_anchor = datetime.now(timezone(timedelta(hours=8))).year
+        freshness_keywords_raw = os.getenv(
+            "SEARCH_QUERY_FRESHNESS_KEYWORDS",
+            "最新,当前,近况,进展,动态,局势,战况,冲突,战争,新闻,部署,情况,现状,today,latest,recent,current,ongoing,update,updates,news,war,conflict",
+        )
+        self.search_freshness_keywords = tuple(
+            keyword.strip().lower()
+            for keyword in freshness_keywords_raw.split(",")
+            if keyword.strip()
+        )
+        historical_keywords_raw = os.getenv(
+            "SEARCH_QUERY_HISTORICAL_KEYWORDS",
+            "历史,回顾,沿革,起源,古代,中世纪,一战,二战,史,timeline,history,historical,evolution",
+        )
+        self.search_historical_keywords = tuple(
+            keyword.strip().lower()
+            for keyword in historical_keywords_raw.split(",")
+            if keyword.strip()
+        )
+
+    def _contains_any_keyword(self, text: str, keywords: Tuple[str, ...]) -> bool:
+        normalized_text = str(text or "").lower()
+        return any(keyword in normalized_text for keyword in keywords)
+
+    def _contains_year(self, text: str, year: int) -> bool:
+        return re.search(rf"(?<!\d){year}(?!\d)", str(text or "")) is not None
+
+    def _inject_current_year_for_fresh_query(
+        self, tool_name: str, arguments: dict
+    ) -> dict:
+        if not self.append_current_year_to_fresh_queries:
+            return arguments
+
+        query_key = SEARCH_QUERY_KEY_MAP.get(tool_name)
+        if not query_key:
+            return arguments
+
+        query_text = arguments.get(query_key)
+        if not isinstance(query_text, str):
+            return arguments
+
+        normalized_query = query_text.strip()
+        if not normalized_query:
+            return arguments
+
+        if self._contains_any_keyword(normalized_query, self.search_historical_keywords):
+            return arguments
+
+        if not self._contains_any_keyword(
+            normalized_query, self.search_freshness_keywords
+        ):
+            return arguments
+
+        if self._contains_year(normalized_query, self.current_year_anchor):
+            return arguments
+
+        arguments[query_key] = f"{normalized_query} {self.current_year_anchor}"
+        logger.info(
+            "Search query freshness anchor applied: tool=%s, year=%s, query=%s",
+            tool_name,
+            self.current_year_anchor,
+            arguments[query_key],
+        )
+        return arguments
 
     def fix_tool_call_arguments(self, tool_name: str, arguments: dict) -> dict:
         """
@@ -106,6 +177,8 @@ class ToolExecutor:
                 fixed_args["code_block"] = fixed_args.pop("code")
             if "sandbox_id" not in fixed_args:
                 fixed_args["sandbox_id"] = "default"
+
+        fixed_args = self._inject_current_year_for_fresh_query(tool_name, fixed_args)
 
         return fixed_args
 

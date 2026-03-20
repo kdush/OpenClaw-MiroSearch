@@ -7,6 +7,9 @@ top_p: 1.0
 min_p: 0.0
 top_k: -1
 max_tokens: 4096
+tool_result_max_chars: 4000
+summary_max_tokens: 3072
+verification_max_tokens: 2048
 api_key: ""
 base_url: https://api.anthropic.com
 repetition_penalty: 1.0

@@ -19,6 +19,7 @@ import dataclasses
 import logging
 import os
 import re
+import time
 from typing import Any, Dict, List, Tuple, Union
 
 import tiktoken
@@ -292,10 +293,14 @@ class OpenAIClient(BaseClient):
                 params["extra_body"]["add_generation_prompt"] = False
 
             try:
+                request_start_time = time.perf_counter()
                 if self.async_client:
                     response = await self.client.chat.completions.create(**params)
                 else:
                     response = self.client.chat.completions.create(**params)
+                request_duration_ms = int(
+                    (time.perf_counter() - request_start_time) * 1000
+                )
                 # Update token count
                 self._update_token_usage(getattr(response, "usage", None))
                 response_model_name = getattr(response, "model", "N/A")
@@ -308,6 +313,18 @@ class OpenAIClient(BaseClient):
                     "info",
                     "LLM | Response Status",
                     f"{getattr(response.choices[0], 'finish_reason', 'N/A')}",
+                )
+                self.task_log.record_stage_timing(
+                    f"llm.request.{agent_type}",
+                    request_duration_ms,
+                    message=f"LLM request completed in {request_duration_ms}ms",
+                    metadata={
+                        "agent_type": agent_type,
+                        "requested_model": request_model_name,
+                        "responded_model": response_model_name,
+                        "tool_count": len(openai_tools),
+                        "message_count": len(messages_for_llm),
+                    },
                 )
 
                 # Check if response was truncated due to length limit

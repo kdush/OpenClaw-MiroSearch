@@ -29,6 +29,9 @@ init(autoreset=True, strip=False)
 
 # This will be set to the configured logger instance
 logger = None
+TIMING_TRACE_KEY = "stage_timings"
+TIMING_SUMMARY_TRACE_KEY = "stage_timing_summary"
+DEFAULT_TIMING_SUMMARY_LIMIT = 8
 
 
 def get_color_for_level(level: str) -> str:
@@ -184,6 +187,80 @@ class TaskLog:
 
     step_logs: List[StepLog] = field(default_factory=list)
     trace_data: Dict[str, Any] = field(default_factory=dict)
+
+    def record_stage_timing(
+        self,
+        stage_name: str,
+        duration_ms: int,
+        message: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        info_level: Literal["info", "warning", "error", "debug"] = "info",
+    ) -> None:
+        """记录阶段耗时，并同步写入 trace_data 与标准日志。"""
+        normalized_duration_ms = max(0, int(duration_ms))
+        stage_metadata = dict(metadata or {})
+        stage_metadata["duration_ms"] = normalized_duration_ms
+
+        self.trace_data.setdefault(TIMING_TRACE_KEY, []).append(
+            {
+                "stage_name": stage_name,
+                "duration_ms": normalized_duration_ms,
+                "timestamp": get_utc_plus_8_time(),
+                "metadata": stage_metadata,
+            }
+        )
+
+        timing_summary = self.trace_data.setdefault(TIMING_SUMMARY_TRACE_KEY, {})
+        stage_summary = timing_summary.setdefault(
+            stage_name,
+            {
+                "count": 0,
+                "total_duration_ms": 0,
+                "max_duration_ms": 0,
+                "last_duration_ms": 0,
+            },
+        )
+        stage_summary["count"] += 1
+        stage_summary["total_duration_ms"] += normalized_duration_ms
+        stage_summary["max_duration_ms"] = max(
+            stage_summary["max_duration_ms"], normalized_duration_ms
+        )
+        stage_summary["last_duration_ms"] = normalized_duration_ms
+
+        self.log_step(
+            info_level,
+            f"Timing | {stage_name}",
+            message or f"{stage_name} completed in {normalized_duration_ms}ms",
+            metadata=stage_metadata,
+        )
+
+    def format_stage_timing_summary(
+        self, limit: int = DEFAULT_TIMING_SUMMARY_LIMIT
+    ) -> str:
+        """按累计耗时降序生成阶段耗时摘要。"""
+        timing_summary = self.trace_data.get(TIMING_SUMMARY_TRACE_KEY, {})
+        if not isinstance(timing_summary, dict) or not timing_summary:
+            return ""
+
+        ranked_items = sorted(
+            timing_summary.items(),
+            key=lambda item: (
+                item[1].get("total_duration_ms", 0),
+                item[1].get("max_duration_ms", 0),
+            ),
+            reverse=True,
+        )
+
+        summary_lines = []
+        for stage_name, stage_data in ranked_items[: max(1, int(limit))]:
+            count = int(stage_data.get("count", 0))
+            total_duration_ms = int(stage_data.get("total_duration_ms", 0))
+            max_duration_ms = int(stage_data.get("max_duration_ms", 0))
+            avg_duration_ms = int(total_duration_ms / count) if count > 0 else 0
+            summary_lines.append(
+                f"{stage_name}: total={total_duration_ms}ms, avg={avg_duration_ms}ms, max={max_duration_ms}ms, count={count}"
+            )
+        return "\n".join(summary_lines)
 
     def start_sub_agent_session(
         self, sub_agent_name: str, subtask_description: str
