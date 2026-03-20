@@ -53,6 +53,7 @@ DEFAULT_RESEARCH_MODE="balanced"
 DEFAULT_SEARCH_PROFILE="parallel-trusted"
 DEFAULT_SEARCH_RESULT_NUM=20
 DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS=3
+DEFAULT_OUTPUT_DETAIL_LEVEL="balanced"
 ```
 
 启动：
@@ -104,7 +105,7 @@ uv run main.py
 ```bash
 curl -sS -H 'Content-Type: application/json' \
   -d '{"data":[]}' \
-  'http://127.0.0.1:8080/gradio_api/run/stop_current'
+  'http://127.0.0.1:8080/gradio_api/call/stop_current'
 ```
 
 ### 无结果或质量差

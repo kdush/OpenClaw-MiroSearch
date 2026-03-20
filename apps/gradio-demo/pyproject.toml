@@ -1,6 +1,6 @@
 [project]
 name = "gradio-demo"
-version = "0.1.0"
+version = "0.1.3"
 description = "Gradio Demo"
 readme = "README.md"
 requires-python = ">=3.12"

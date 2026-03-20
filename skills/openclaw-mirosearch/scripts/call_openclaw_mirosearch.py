@@ -7,11 +7,12 @@ import time
 from urllib import error, parse, request
 
 DEFAULT_BASE_URL = os.getenv("MIRO_SEARCH_BASE_URL", "http://127.0.0.1:8080")
-DEFAULT_API_NAME = "run_research_once"
+UNIFIED_API_NAME = "run_research_once"
 DEFAULT_SEARCH_RESULT_NUM = int(os.getenv("MIRO_SEARCH_RESULT_NUM", "20"))
 DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS = int(
     os.getenv("MIRO_VERIFICATION_MIN_SEARCH_ROUNDS", "3")
 )
+DEFAULT_OUTPUT_DETAIL_LEVEL = os.getenv("MIRO_OUTPUT_DETAIL_LEVEL", "balanced")
 VALID_MODES = (
     "production-web",
     "verified",
@@ -28,6 +29,7 @@ VALID_SEARCH_PROFILES = (
     "parallel-trusted",
     "searxng-only",
 )
+VALID_OUTPUT_DETAIL_LEVELS = ("compact", "balanced", "detailed")
 DEFAULT_SEARCH_PROFILE = "parallel-trusted"
 
 
@@ -100,52 +102,32 @@ def run_research_once(
     search_profile: str,
     search_result_num: int,
     verification_min_search_rounds: int,
-    api_name: str,
+    output_detail_level: str,
     timeout: int,
 ) -> str:
     base_url = _normalize_base_url(base_url)
-    api_name = api_name.strip("/")
-
-    start_url = f"{base_url}/gradio_api/call/{parse.quote(api_name)}"
-    try:
-        start_resp = _http_post_json(
-            start_url,
-            {
-                "data": [
-                    query,
-                    mode,
-                    search_profile,
-                    search_result_num,
-                    verification_min_search_rounds,
-                ]
-            },
-            timeout=timeout,
-        )
-    except RuntimeError as exc:
-        # 兼容旧版本接口（不支持新增参数）
-        if "HTTP 422" not in str(exc):
-            raise
-        try:
-            start_resp = _http_post_json(
-                start_url,
-                {"data": [query, mode, search_profile]},
-                timeout=timeout,
-            )
-        except RuntimeError as exc_v1:
-            if "HTTP 422" not in str(exc_v1):
-                raise
-            start_resp = _http_post_json(
-                start_url,
-                {"data": [query, mode]},
-                timeout=timeout,
-            )
+    start_url = f"{base_url}/gradio_api/call/{parse.quote(UNIFIED_API_NAME)}"
+    start_resp = _http_post_json(
+        start_url,
+        {
+            "data": [
+                query,
+                mode,
+                search_profile,
+                search_result_num,
+                verification_min_search_rounds,
+                output_detail_level,
+            ]
+        },
+        timeout=timeout,
+    )
 
     event_id = start_resp.get("event_id")
     if not event_id:
         raise RuntimeError(f"启动调用失败，未返回 event_id: {start_resp}")
 
     deadline = time.time() + timeout
-    poll_url = f"{base_url}/gradio_api/call/{parse.quote(api_name)}/{event_id}"
+    poll_url = f"{base_url}/gradio_api/call/{parse.quote(UNIFIED_API_NAME)}/{event_id}"
 
     while time.time() < deadline:
         sse_text = _http_get_text(poll_url, timeout=max(10, min(60, timeout)))
@@ -192,7 +174,12 @@ def main() -> int:
         default=DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS,
         help="最少检索轮次（verified 模式生效）",
     )
-    parser.add_argument("--api-name", default=DEFAULT_API_NAME, help="API 名称")
+    parser.add_argument(
+        "--output-detail-level",
+        default=DEFAULT_OUTPUT_DETAIL_LEVEL,
+        choices=VALID_OUTPUT_DETAIL_LEVELS,
+        help="输出篇幅档位：compact/balanced/detailed",
+    )
     parser.add_argument("--timeout", type=int, default=240, help="总超时秒数")
     args = parser.parse_args()
 
@@ -204,7 +191,7 @@ def main() -> int:
             search_profile=args.search_profile,
             search_result_num=args.search_result_num,
             verification_min_search_rounds=args.verification_min_search_rounds,
-            api_name=args.api_name,
+            output_detail_level=args.output_detail_level,
             timeout=args.timeout,
         )
     except Exception as exc:
