@@ -71,43 +71,120 @@
 
 ## 后续版本
 
-### `v0.2.0`（生产化补齐）
+### `v0.1.9`（配额韧性 · Key 层）
+
+核心主题：在不动 API 层架构的前提下，先解决最高频的生产痛点——配额耗尽与全局取消广播
 
 目标能力：
 
-- 同服务多 Key 轮转（LLM 与搜索源）
-- 模型级 failback（主模型失败自动切换备用模型）
-- 结构化运行观测：429、超时、路由命中率、失败原因分布
-- 最小回归门禁：覆盖 `mode/search_profile/run_research_once` 核心路径
-- 会话级任务隔离：活动任务表、取消接口与停止动作按会话/调用方定向，不再全局广播取消
+- **LLM Key 池轮转**：支持 `OPENAI_API_KEYS=key1,key2,key3` 环境变量，round-robin 分配；429 时自动切换到下一个 Key 重试，不再等待固定 `retry_wait_seconds`
+- **429 感知退避增强**：在 `openai_client.py` 中识别 `openai.RateLimitError`，读取 `Retry-After` response header 作为等待时长；Key 全部耗尽才走指数退避兜底
+- **搜索工具 Key 轮转**：`libs/miroflow-tools` 中 google_search / sogou 等搜索工具支持 `GOOGLE_API_KEYS` 多 Key 列表轮转，行为与 LLM Key 池一致
+- **会话级 API 任务隔离**：`stop_current_api` 支持可选 `caller_id` 参数，按调用方定向取消；活动任务表从 `Set[task_id]` 改为 `{task_id: caller_id}` 映射，不再全局广播取消
 
 验收标准：
 
-- 长时间运行稳定
-- 配额耗尽或单点异常时可自动降级
+- 单 Key 返回 429 时自动切换到下一 Key 并成功重试（单元测试 mock 验证）
+- Key 全部耗尽时优雅报错，不无限循环
+- `stop_current_api(caller_id=X)` 只取消该 caller 的任务，不影响其他并发任务
+
+### `v0.1.10`（可观测性基础 + 回归门禁）
+
+核心主题：在日志已有的基础上补充结构化 metrics 聚合，并建立最小自动化回归门禁
+
+目标能力：
+
+- **结构化运行 metrics**：任务结束时聚合输出：429次数、超时次数、Key 切换次数、模型路由命中率（requested vs responded）、检索轮次、总耗时分段；暴露为新 API 端点 `GET /metrics/last`
+- **最小回归门禁**：补充 pytest 覆盖 3 条核心路径——`run_research_once` 全流程不崩溃（mock LLM）、`stop_current_api` 按 caller_id 取消、`output_detail_level` token 参数路由校验；接入 GitHub Actions 自动运行
+- **模型级 failback（轻量版）**：在已有 `max_consecutive_llm_failures` 机制上，新增 `model_fallback_name` 配置项；主模型连续失败达阈值时自动切换到 fallback 模型继续执行
+
+验收标准：
+
+- `GET /metrics/last` 返回最近一次任务的结构化统计 JSON
+- `uv run pytest` 通过 3 条核心测试
+- GitHub Actions PR 检查自动运行 pytest
+
+### `v0.2.0`（生产化）
+
+核心主题：API 层独立、运行时韧性、可观测性
+
+目标能力：
+
+- **API 层独立**：引入 FastAPI/Starlette 原生 API 层，提供标准 OpenAPI schema 与 SSE 流式输出；Gradio 仅作 Demo UI 保留，不再承担对外 API 职责
+- **认证与限流**：API 层支持 Bearer Token 鉴权；基于 Valkey 实现请求级限流，防止外部调用方滥用
+- **结果缓存**：相同 `query + mode + profile` 请求在可配置时间窗内命中 Valkey 缓存，避免重复消耗搜索配额与 LLM tokens
+- **SearchProvider 协议化**：抽象 `SearchProvider` 协议接口，SearXNG / SerpAPI / Serper / Bing / 搜狗各实现一个 Provider，通过配置注册；新增搜索源不再需要改核心代码
+- **同服务多 Key 轮转**：LLM 与搜索源支持多 API Key 池轮转，单 Key 耗尽或 429 时自动切换
+- **模型级 failback**：主模型失败自动切换备用模型，按 `primary → secondary → fallback` 链路降级
+- **结构化运行观测**：暴露 Prometheus `/metrics` 端点（请求量、延迟 P50/P99、搜索源命中率、429 频次、LLM token 用量、失败原因分布），附带 Grafana dashboard JSON
+- **异步任务队列**：引入轻量任务队列（如 `arq`），支持并发多任务、任务优先级、超时自动取消与状态持久化
+- **会话级任务隔离**：活动任务表、取消接口与停止动作按会话/调用方定向，不再全局广播取消
+- **最小回归门禁**：CI 覆盖 `mode/search_profile/run_research_once` 核心路径的集成测试
+
+验收标准：
+
+- 长时间运行稳定，配额耗尽或单点异常时可自动降级
+- 外部 Agent 可通过标准 HTTP + Bearer Token 调用，无需依赖 Gradio 协议
+- Prometheus 指标可被 Grafana 面板正常采集与展示
+
+### `v0.2.5`（MCP 标准暴露）
+
+核心主题：让 MiroSearch 成为可被 AI IDE 与智能体原生发现的 MCP Server
+
+目标能力：
+
+- **MCP Server 模式**：将 `run_research_once` 暴露为标准 MCP tool（支持 stdio 与 SSE transport），上层 Agent（Cursor、Windsurf、Claude Desktop 等）可原生 MCP 接入
+- **MCP 工具描述规范化**：提供完整的 tool schema（参数类型、枚举值、默认值），让 Agent 无需查阅文档即可正确调用
+- **MCP 与 HTTP API 共存**：两种接入方式共享同一任务引擎，行为一致
+
+验收标准：
+
+- 在 Cursor / Windsurf 等 AI IDE 中添加 MCP Server 配置后，可直接通过 tool call 发起检索
+- MCP 调用与 HTTP API 调用结果一致
 
 ### `v0.3.0`（质量增强）
 
+核心主题：检索质量、评测体系、多语言支持
+
 目标能力：
 
-- 结构化冲突检测报告（时间窗/统计对象/统计口径/参与方定义）
-- 数字事实专项评测集与自动回归评分
-- 高置信来源白名单分层（按领域可配置）
+- **Eval Pipeline CI 化**：搭建可重复运行的评测流水线（golden QA pairs → 自动调用 → 自动打分），集成到 CI，利用 `apps/miroflow-agent/benchmarks/` 目录
+- **多源融合排序**：多源并发检索结果引入 URL 级去重 + Reciprocal Rank Fusion（RRF），提升 `parallel` 与 `parallel-trusted` 模式的结果质量
+- **多语言检索优化**：自动 query 语言检测 → 选择对应搜索引擎集；中文查询自动启用搜狗搜索（`tool-sogou-search`）；跨语言查询扩展（中文 query 自动生成英文变体并发检索）
+- **研究结果持久化**：完成的研究报告按 query hash 存入 Valkey 或 SQLite，提供 `/search_history` 端点供 Agent 查询历史研究
+- **结构化冲突检测报告**：时间窗 / 统计对象 / 统计口径 / 参与方定义的冲突自动检测与报告
+- **数字事实专项评测集与自动回归评分**
+- **高置信来源白名单分层**：按领域可配置的分级信任机制
 
 验收标准：
 
-- 数字类问答错误率下降
+- 数字类问答错误率可量化下降
 - 输出可解释，证据链清晰
+- 中文检索质量不低于英文同等复杂度查询
+- CI 每次合并自动运行评测集并输出分数报告
 
 ### `v1.0.0`（生态与分发）
 
+核心主题：一键部署、生态接入、正式发布
+
 目标能力：
 
-- 反向代理模板与 HTTPS 生产示例（Nginx/Caddy/Traefik 至少一种）
-- OpenClaw 技能包版本化发布与兼容矩阵
-- 里程碑验收清单与正式发布流程闭环
+- **反向代理模板与 HTTPS 生产示例**：Nginx / Caddy / Traefik 至少一种
+- **Helm Chart / 一键云部署**：提供 Kubernetes Helm Chart，并支持 Railway / Render 等平台一键部署 template
+- **OpenClaw 技能包版本化发布**：技能包语义化版本号，附带发布变更日志
+- **兼容矩阵自动验证**：Skill 版本与服务版本的兼容矩阵通过 CI 自动验证，不仅靠文档声明
+- **里程碑验收清单与正式发布流程闭环**
 
 验收标准：
 
-- 新环境可按文档快速部署
-- 外部智能体可按技能文档直接调用
+- 新环境可按文档在 15 分钟内完成部署
+- 外部智能体可按技能文档直接调用，无需额外沟通
+- 兼容矩阵在 CI 中自动检测并阻止不兼容版本发布
+
+## 优先级说明
+
+如果资源有限，建议优先投入以下三项：
+
+1. **API 层独立**（v0.2.0）— 解除 Gradio 耦合是后续所有生产化能力的前置条件
+2. **MCP Server 模式**（v0.2.5）— 项目定位"面向智能体"的差异化核心能力，让 MiroSearch 直接出现在各大 AI IDE 的工具列表中
+3. **结果缓存**（v0.2.0）— 投入极小，成本收益比最高
