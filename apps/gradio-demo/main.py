@@ -376,6 +376,21 @@ SEARCH_STAGE_TOOL_NAMES = {
     "scrape_and_extract_info",
 }
 
+# 工具名 → 前端友好显示名
+TOOL_DISPLAY_NAMES: dict[str, str] = {
+    "google_search": "网络搜索",
+    "sogou_search": "搜狗搜索",
+    "scrape": "网页抓取",
+    "scrape_website": "网页抓取",
+    "scrape_webpage": "网页抓取",
+    "scrape_and_extract_info": "信息提取",
+    "show_text": "文本展示",
+}
+
+
+def _tool_display_name(raw_name: str) -> str:
+    return TOOL_DISPLAY_NAMES.get(raw_name, raw_name)
+
 RENDER_MODE_CHOICES = {"full", "summary_with_details", "summary_only"}
 DEFAULT_UI_RENDER_MODE = os.getenv("DEFAULT_UI_RENDER_MODE", "summary_with_details")
 DEFAULT_API_RENDER_MODE = os.getenv("DEFAULT_API_RENDER_MODE", "summary_with_details")
@@ -1192,7 +1207,7 @@ async def stream_events_optimized(
             phase = "检索" if tool_name in SEARCH_STAGE_TOOL_NAMES else "工具调用"
             _touch_stage(
                 phase,
-                detail=f"{tool_name} 执行中",
+                detail=f"{_tool_display_name(tool_name)} 执行中",
                 last_tool=tool_name,
                 search_round_increment=is_search_output,
             )
@@ -1995,7 +2010,7 @@ def _update_state_with_event(state: dict, message: dict):
             "检索" if tool_name in SEARCH_STAGE_TOOL_NAMES else "工具调用"
         )
         runtime_stage["last_tool"] = tool_name
-        runtime_stage["detail"] = f"{tool_name} 执行中"
+        runtime_stage["detail"] = f"{_tool_display_name(tool_name)} 执行中"
         runtime_stage["updated_at"] = time.time()
         entry = tools[tool_call_id]
         if tool_name == "show_text" and "delta_input" in data:
@@ -2027,7 +2042,7 @@ def _update_state_with_event(state: dict, message: dict):
                             runtime_stage.get("search_round", 0)
                         ) + 1
                         runtime_stage["detail"] = (
-                            f"{tool_name} 已完成（第 {runtime_stage['search_round']} 轮）"
+                            f"{_tool_display_name(tool_name)} 已完成（第 {runtime_stage['search_round']} 轮）"
                         )
                 else:
                     # Only update input if we don't already have valid input data, or if the new data is not empty
