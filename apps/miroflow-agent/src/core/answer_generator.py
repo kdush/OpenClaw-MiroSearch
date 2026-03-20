@@ -47,20 +47,20 @@ RESEARCH_BALANCED_TARGET_MAX_CHARS = max(
     int(os.getenv("RESEARCH_BALANCED_TARGET_MAX_CHARS", "3200")),
 )
 RESEARCH_DETAILED_TARGET_MIN_CHARS = max(
-    1000, int(os.getenv("RESEARCH_DETAILED_TARGET_MIN_CHARS", "6000"))
+    1000, int(os.getenv("RESEARCH_DETAILED_TARGET_MIN_CHARS", "12000"))
 )
 RESEARCH_BALANCED_MIN_SECTIONS = max(
     4, int(os.getenv("RESEARCH_BALANCED_MIN_SECTIONS", "7"))
 )
 RESEARCH_DETAILED_MIN_SECTIONS = max(
-    6, int(os.getenv("RESEARCH_DETAILED_MIN_SECTIONS", "10"))
+    6, int(os.getenv("RESEARCH_DETAILED_MIN_SECTIONS", "12"))
 )
 RESEARCH_BALANCED_RETRY_MIN_CHARS = max(
-    300, int(os.getenv("RESEARCH_BALANCED_RETRY_MIN_CHARS", "900"))
+    300, int(os.getenv("RESEARCH_BALANCED_RETRY_MIN_CHARS", "1500"))
 )
 RESEARCH_DETAILED_RETRY_MIN_CHARS = max(
     RESEARCH_BALANCED_RETRY_MIN_CHARS,
-    int(os.getenv("RESEARCH_DETAILED_RETRY_MIN_CHARS", "1800")),
+    int(os.getenv("RESEARCH_DETAILED_RETRY_MIN_CHARS", "5000")),
 )
 
 
@@ -192,12 +192,18 @@ class AnswerGenerator:
             if self.output_detail_level == "detailed":
                 summary_prompt += (
                     "\n\n研究报告模式（详细档，最高优先级覆盖）：\n"
-                    "1) 覆盖并忽略上文“尽量短/少词/仅数字”的竞赛型约束，本次必须输出完整研究报告正文。\n"
-                    f"2) 正文字数目标：在信息充分时不少于 {RESEARCH_DETAILED_TARGET_MIN_CHARS} 个中文字符。\n"
-                    f"3) 至少包含 {RESEARCH_DETAILED_MIN_SECTIONS} 个一级小节，且每节提供可核验事实、时间锚点与来源线索。\n"
-                    "4) 必须包含：关键结论速览、时间线、关键数字表、已知/不确定/冲突信息、深度背景、风险与后续观察。\n"
-                    "5) 禁止空泛总结；若数据不足，明确缺口、已尝试口径和下一步补证方案。\n"
-                    "6) 结尾额外给出一条 \\boxed{一句话核心结论}，用于结构化提取；但正文必须完整保留。"
+                    "1) 覆盖并忽略上文\u201c尽量短/少词/仅数字\u201d的竞赛型约束，本次必须输出超长完整研究报告。\n"
+                    "2) **核心原则：全量保留，去重整合，禁止压缩。**\n"
+                    "   - 每一轮检索获取的事实、数据、引述、发现都必须在最终报告中体现。\n"
+                    "   - 多轮检索中重复出现的信息进行去重合并，保留描述最完整的版本。\n"
+                    "   - 不同轮次从不同角度获取的互补信息全部保留，按主题组织到同一章节。\n"
+                    "   - 绝对禁止为了控制篇幅而省略、压缩或概括检索到的具体信息。\n"
+                    f"3) 正文字数目标：在信息充分时不少于 {RESEARCH_DETAILED_TARGET_MIN_CHARS} 个中文字符。最终报告必须比任何单轮检索输出都更长、更完整。\n"
+                    f"4) 至少包含 {RESEARCH_DETAILED_MIN_SECTIONS} 个一级小节，且每节提供可核验事实、时间锚点与来源线索。\n"
+                    "5) 必须包含：关键结论速览、详细时间线、关键数字表（含来源）、已知/不确定/冲突信息对照、深度背景分析、风险与后续观察。\n"
+                    "6) 每个要点必须展开论述，包含具体描述、原因背景、数据证据、来源引用，而非一句话带过。\n"
+                    "7) 禁止空泛总结；若数据不足，明确缺口、已尝试口径和下一步补证方案。\n"
+                    "8) 结尾额外给出一条 \\boxed{一句话核心结论}，用于结构化提取；但正文必须完整保留。"
                 )
             elif self.output_detail_level == "balanced":
                 summary_prompt += (
@@ -269,15 +275,18 @@ class AnswerGenerator:
         """
         if self.output_detail_level == "detailed":
             return (
-                "你的上一版总结过短，未充分覆盖多轮检索信息。请重写为更完整的长报告：\n"
-                "1) 必须汇总全部检索轮次中的关键事实，不得只写单轮内容。\n"
-                "2) 明确区分：核心结论、关键数字、来源分歧、不确定项、补充背景。\n"
-                "3) 在信息充分时，正文至少达到更高信息密度，不要只给概述。\n"
-                "4) 结尾保留 \\boxed{一句话核心结论}。"
+                "你的上一版总结严重过短，丢失了大量检索信息。必须完全重写：\n"
+                "1) 逐一检查每轮检索结果，确保每轮中的每个独立事实、数据、引述都在报告中体现。\n"
+                "2) 全量保留所有信息，通过去重整合（而非压缩精简）来组织内容。\n"
+                "3) 多轮重复信息合并为最完整版本，不同角度的互补信息全部保留。\n"
+                "4) 明确区分：核心结论、关键数字（含来源）、来源分歧、不确定项、深度背景。\n"
+                "5) 每个要点展开论述，包含具体描述、原因背景、数据证据，而非一句话概括。\n"
+                "6) 最终报告必须比任何单轮检索输出都更长、更完整。\n"
+                "7) 结尾保留 \\boxed{一句话核心结论}。"
             )
         return (
             "你的上一版总结偏短，请在保持结构清晰的前提下补充关键信息：\n"
-            "1) 覆盖多轮检索得到的主要事实与数字；\n"
+            "1) 覆盖多轮检索得到的主要事实与数字，不得遗漏；\n"
             "2) 补齐必要的来源分歧与不确定项说明；\n"
             "3) 结尾保留 \\boxed{一句话核心结论}。"
         )
