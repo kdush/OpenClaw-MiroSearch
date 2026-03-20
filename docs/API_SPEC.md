@@ -44,6 +44,10 @@
 }
 ```
 
+参数生效约束：
+
+- `verification_min_search_rounds` 仅在 `mode=verified` 时生效；其它模式按服务默认门槛处理
+
 ## 2) 轮询结果
 
 `GET /gradio_api/call/run_research_once/{event_id}`
@@ -56,6 +60,11 @@
 
 - 任务完成以 `event: complete` 为准
 - 若 `complete` 内容为 `No \boxed{} content found in the final answer.`，表示本轮未收敛，建议按降级策略重试
+
+心跳约定：
+
+- 期间会持续发送 `event: heartbeat`
+- `heartbeat.data.stage` 包含 `phase/turn/search_round/detail/agent_name`，用于展示“当前处于哪一阶段”
 
 ## 3) stop_current
 
@@ -112,6 +121,7 @@
 - `422`：参数格式错误（通常是 `data` 数组长度或字段类型不匹配）
 - `429`：上游限流，建议按 `retry_after` 或指数退避重试
 - 超时：建议先调用 `stop_current` 清理挂起任务后再重试
+- 任务日志中的陈旧 `running` 状态会被后台巡检自动收敛为 `failed`，避免长期假运行
 
 ## 面向 AI Agent 的接入说明
 

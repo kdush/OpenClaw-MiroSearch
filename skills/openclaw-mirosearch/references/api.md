@@ -41,6 +41,7 @@
 
 - 以 `event: complete` 作为结束信号
 - 若 `complete` 正文为 `No \boxed{} content found in the final answer.`，表示本轮未收敛，建议执行降级重试，而不是判定服务宕机
+- `heartbeat` 事件仅用于进度展示；以终态 `complete` 为准
 
 ## 2. 停止当前任务
 
@@ -120,3 +121,5 @@ python3 scripts/call_openclaw_mirosearch.py \
 - `No \\boxed{} content found in the final answer.` 代表未收敛，不代表服务故障
 - 推荐将 `output_detail_level` 显式传入，避免依赖服务端默认值
 - 若超时或卡住，先 `stop_current` 再发起新任务，避免挂起任务累积
+- 可读取 `heartbeat.data.stage` 展示阶段进度（检索/推理/校验/总结、回合、检索轮次）
+- 陈旧 `running` 任务会被后台巡检自动收敛为 `failed`，避免长期卡在运行中

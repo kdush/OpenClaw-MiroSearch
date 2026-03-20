@@ -6,6 +6,8 @@
 
 OpenClaw-MiroSearch 是一个面向智能体场景的开源联网检索工程，目标是提供可控成本、可配置路由与可编程调用接口。
 
+> 📄 English version: [README_en.md](./README_en.md)
+
 ## 项目目标
 
 - 降低检索成本：支持本地 SearXNG 与可选商业搜索源
@@ -67,6 +69,12 @@ OpenClaw-MiroSearch 是一个面向智能体场景的开源联网检索工程，
 
 - 研究调用统一为一个标准接口：`run_research_once`
 - 不再维护历史双接口分支
+
+### 运行态可观测与自愈
+
+- 阶段心跳：前端“生成中”状态会显示当前阶段（检索/推理/校验/总结）、回合与检索轮次
+- 陈旧任务收敛：后台周期巡检会将长时间未更新且进程不活跃的 `running` 自动收敛为 `failed`
+- 参数生效约束：`verification_min_search_rounds` 仅在 `mode=verified` 时显示并生效
 
 ## 代码结构
 

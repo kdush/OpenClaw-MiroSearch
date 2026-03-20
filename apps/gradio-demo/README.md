@@ -5,6 +5,8 @@
 - Web 界面：用于交互式提问与调参
 - API：用于其他智能体/脚本程序化调用
 
+> 📄 English version: [README_en.md](./README_en.md)
+
 ## 1. 安装
 
 ```bash
@@ -38,6 +40,11 @@ SERPER_API_KEY="<your_serper_key>"
 DEFAULT_RESEARCH_MODE="balanced"
 DEFAULT_SEARCH_PROFILE="parallel-trusted"
 ```
+
+说明：
+
+- Demo 页面默认检索模式为 `balanced`
+- 搜索历史会在浏览器本地保存“问题 + 结果详情”，点击历史可回填并回显结果
 
 ## 3. 启动
 
@@ -87,7 +94,8 @@ docker compose --env-file .env.compose up -d --build
 ### 新增控制项
 
 - `search_result_num`：单轮检索条数（10/20/30）
-- `verification_min_search_rounds`：最少检索轮次（verified 模式生效）
+- `verification_min_search_rounds`：最少检索轮次（仅 `verified` 模式显示且生效）
+- `output_detail_level`：输出篇幅（`compact/balanced/detailed`）
 
 ## 5. API 调用
 
@@ -109,14 +117,10 @@ curl -sS -H 'Content-Type: application/json' \
 curl -sS "http://127.0.0.1:8080/gradio_api/call/run_research_once/<event_id>"
 ```
 
-### 5.1.1 扩展接口（可控检索深度）
+统一接口为 6 参数：
 
-`run_research_once_v2` 支持传入 `search_result_num` 与 `verification_min_search_rounds`：
-
-```bash
-curl -sS -H 'Content-Type: application/json' \
-  -d '{"data":["中国大陆有哪些厂商推出了 OpenClaw 变体？","verified","parallel-trusted",30,4]}' \
-  'http://127.0.0.1:8080/gradio_api/call/run_research_once_v2'
+```json
+{"data":["<query>","<mode>","<search_profile>",20,3,"<output_detail_level>"]}
 ```
 
 ### 5.2 停止当前任务
@@ -124,7 +128,7 @@ curl -sS -H 'Content-Type: application/json' \
 ```bash
 curl -sS -H 'Content-Type: application/json' \
   -d '{"data":[]}' \
-  'http://127.0.0.1:8080/gradio_api/run/stop_current'
+  'http://127.0.0.1:8080/gradio_api/call/stop_current'
 ```
 
 ### 5.3 查看 API 元信息
@@ -143,6 +147,12 @@ curl -sS 'http://127.0.0.1:8080/gradio_api/info'
 - 页面长时间 `Waiting to start research...`：
   - 先调用 `stop_current` 清理挂起任务
   - 检查 `.env` 中的 LLM 与搜索引擎配置
+- 页面显示“生成中”较久：
+  - 观察“最近心跳”与阶段提示（检索/推理/校验/总结）判断是否在推进
+  - 若任务异常中断，陈旧 `running` 会由后台巡检自动收敛为 `failed`
+- 搜索历史里只有标题，没有结果详情：
+  - 已支持从同步输出与可见结果区双通道采集结果，通常会自动写入详情
+  - 若浏览器本地存储空间不足，会自动压缩历史内容并优先保留最新一条结果详情
 - 结果噪声大：
   - 使用 `verified` 或 `balanced`
   - `search_profile` 选择 `parallel-trusted`

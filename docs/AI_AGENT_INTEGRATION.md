@@ -13,6 +13,8 @@
 - 仅使用 `POST /gradio_api/call/run_research_once`
 - 通过 `GET /gradio_api/call/run_research_once/{event_id}` 获取终态结果
 - `event: complete` 才是唯一完成信号
+- `verification_min_search_rounds` 仅在 `mode=verified` 生效
+- 中间 `heartbeat` 可用于显示阶段进度，不可替代终态判断
 
 ## 请求参数
 
@@ -60,9 +62,11 @@
 - 轮询超时：调用 `stop_current` 后再发起新任务
 - 返回 `No \\boxed{} content found in the final answer.`：按“未收敛”处理并重试
 - 限流 `429`：指数退避，必要时降级到 `mode=quota`
+- 若看到长期 `running` 但无推进：检查最新 `heartbeat.data.stage`；系统会自动回收陈旧 `running` 为 `failed`
 
 ## 输出消费建议
 
 - 只消费 `complete` 事件首项 Markdown
 - 若需要机器二次处理，先保留原文，再做结构化抽取
 - 对时效问题，优先保留“时间锚点 + 关键数字 + 来源”三要素
+- 进度展示建议读取 `heartbeat.data.stage.phase`（检索/推理/校验/总结）与 `search_round`

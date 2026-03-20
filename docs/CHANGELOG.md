@@ -13,24 +13,30 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - 规划：模型级 failback（主模型失败自动切换备用模型）
 - 规划：结构化冲突检测报告与专项评测集
 
-## [0.1.3] - 2026-03-20
+## [0.1.4] - 2026-03-20
 
 ### Added
 
 - 统一接口 `run_research_once` 新增第 6 个参数：`output_detail_level`（`compact/balanced/detailed`）
 - 总结阶段新增“研究报告模式”提示词覆盖策略，按档位约束输出长度与结构密度
 - OpenClaw 技能文档与调用脚本支持 `output_detail_level` 参数
+- 新增“阶段日志心跳”透传与前端展示：阶段（检索/推理/校验/总结）、回合、检索轮次
+- 新增陈旧任务巡检线程：长时间未更新的 `running` 自动收敛为 `failed`
 
 ### Changed
 
 - 三档输出语义明确化：`compact=精简` / `balanced=适中` / `detailed=超长报告`
 - `detailed` 档默认上调总结与校验 token 上限，提升长文承载能力
 - `run_research_once` 的默认渲染策略改为跟随 `output_detail_level`
+- Demo 默认检索模式为 `balanced`
+- UI 中“最少检索轮次（verified 生效）”默认隐藏，且仅在 `verified` 模式显示并生效
+- 文档全面收敛为统一接口描述，移除 demo 文档中的 `run_research_once_v2` 残留
 
 ### Fixed
 
 - 修复“详细档仍偏短”的上限约束问题（`summary_max_tokens` 被 `max_tokens` 隐式限制）
 - 修复研究类场景被短答案模板约束压缩输出的问题
+- 修复浏览器本地搜索历史偶发仅保存标题、未保存结果详情的问题（增加可见结果区兜底采集与分级压缩持久化）
 
 ### Security
 
