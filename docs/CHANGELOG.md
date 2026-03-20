@@ -13,6 +13,20 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - 规划：模型级 failback（主模型失败自动切换备用模型）
 - 规划：结构化冲突检测报告与专项评测集
 
+## [0.1.5] - 2026-03-20
+
+### Added
+
+- 根 README 默认切换为英文入口，并新增 `README_zh.md` 中文切换文档
+- 根 README 新增模型配置说明，补充 `DEFAULT_LLM_PROVIDER` 与分角色模型变量
+- OpenClaw 技能文档拆分为安装 / 使用两部分，并补充简单搜索与深度检索分流建议
+- 根 README 新增 changelog 摘要区，并链接完整变更记录
+
+### Changed
+
+- 统一整理文档入口，默认面向英文读者，中文文档作为单独切换页
+- 技能调用说明从安装文档中剥离，降低安装与使用混淆
+
 ## [0.1.4] - 2026-03-20
 
 ### Added

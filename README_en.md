@@ -6,7 +6,7 @@
 
 OpenClaw-MiroSearch is an open-source联网检索 (web search) engineering project for agent scenarios, providing controllable cost, configurable routing, and programmable API interfaces.
 
-> 📄 中文文档：[README.md](./README.md)
+> 📄 中文文档：[README_zh.md](./README_zh.md)
 
 ## Project Goals
 
@@ -96,6 +96,12 @@ Minimal `.env` example:
 # OpenAI-compatible LLM gateway
 BASE_URL="https://api.longcat.chat/openai"
 API_KEY="<your_longcat_key>"
+DEFAULT_LLM_PROVIDER="openai" # openai / anthropic / qwen
+DEFAULT_MODEL_NAME="gpt-4o-mini"
+MODEL_TOOL_NAME="gpt-4o-mini"
+MODEL_FAST_NAME="gpt-4o-mini"
+MODEL_THINKING_NAME="gpt-4o-mini"
+MODEL_SUMMARY_NAME="gpt-4o-mini"
 
 # Search sources (configure at least one)
 SEARXNG_BASE_URL="http://127.0.0.1:27080"
@@ -106,6 +112,19 @@ SERPER_API_KEY="<your_serper_key>"
 DEFAULT_RESEARCH_MODE="balanced"
 DEFAULT_SEARCH_PROFILE="parallel-trusted"
 ```
+
+Model configuration notes:
+
+- `DEFAULT_LLM_PROVIDER` controls provider routing (`openai` / `anthropic` / `qwen`).
+- `DEFAULT_MODEL_NAME` is the default primary model.
+- Per-stage model variables:
+  - `MODEL_TOOL_NAME`: tool-calling stage
+  - `MODEL_FAST_NAME`: fast stage
+  - `MODEL_THINKING_NAME`: deep-thinking stage
+  - `MODEL_SUMMARY_NAME`: summarization stage
+- Fallback rules:
+  - If `MODEL_TOOL_NAME` / `MODEL_FAST_NAME` / `MODEL_THINKING_NAME` is unset, it falls back to `DEFAULT_MODEL_NAME`
+  - If `MODEL_SUMMARY_NAME` is unset, it falls back to `MODEL_FAST_NAME`
 
 ### 3. Start Service
 

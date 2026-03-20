@@ -4,28 +4,26 @@
   <img src="assets/mirologo.png" alt="OpenClaw-MiroSearch Logo" width="320" />
 </p>
 
-OpenClaw-MiroSearch 是一个面向智能体场景的开源联网检索工程，目标是提供可控成本、可配置路由与可编程调用接口。
+OpenClaw-MiroSearch is an open-source web retrieval engineering project for agent scenarios, designed to provide controllable cost, configurable routing, and programmable API interfaces.
 
-> 📄 English version: [README_en.md](./README_en.md)
+> 📄 中文文档：[README_zh.md](./README_zh.md)
 
-## 项目目标
+## Project Goals
 
-- 降低检索成本：支持本地 SearXNG 与可选商业搜索源
-- 提升结果稳定性：支持并发检索、置信度评估与高信源补检
-- 便于系统集成：提供统一 API，便于 OpenClaw 与其他智能体接入
+- Lower search cost with local SearXNG and optional commercial search sources
+- Improve result stability with parallel search, confidence evaluation, and high-trust supplemental search
+- Make system integration easier with a unified API for OpenClaw and other agents
 
-## 上游归属与许可证
+## Upstream & License
 
-本项目基于 [MiroMindAI/MiroThinker](https://github.com/MiroMindAI/MiroThinker) 改造。
+This project is modified from [MiroMindAI/MiroThinker](https://github.com/MiroMindAI/MiroThinker).
 
-- 归属声明：[`docs/OPEN_SOURCE_ATTRIBUTION.md`](docs/OPEN_SOURCE_ATTRIBUTION.md)
-- 许可证：[`LICENSE`](LICENSE)
+- Attribution: [`docs/OPEN_SOURCE_ATTRIBUTION.md`](docs/OPEN_SOURCE_ATTRIBUTION.md)
+- License: [`LICENSE`](LICENSE)
 
-## 已实现功能
+## Implemented Features
 
-### 研究模式（`mode`）
-
-系统支持以下研究模式：
+### Research Modes (`mode`)
 
 - `production-web`
 - `verified`
@@ -34,11 +32,9 @@ OpenClaw-MiroSearch 是一个面向智能体场景的开源联网检索工程，
 - `quota`
 - `thinking`
 
-推荐默认：`balanced`
+Default recommendation: `balanced`
 
-### 检索路由（`search_profile`）
-
-系统支持以下检索路由策略：
+### Search Profiles (`search_profile`)
 
 - `searxng-first`
 - `serp-first`
@@ -47,96 +43,102 @@ OpenClaw-MiroSearch 是一个面向智能体场景的开源联网检索工程，
 - `parallel-trusted`
 - `searxng-only`
 
-关键策略说明：
+Key strategy notes:
 
-- `parallel`：多路并发检索后聚合去重
-- `parallel-trusted`：并发检索后执行置信度评估；若不足则按高信源顺序串行补检
+- `parallel`: multi-route parallel search with deduplication
+- `parallel-trusted`: parallel search with confidence evaluation; if insufficient, sequential supplemental search follows the high-trust source order
 
-### 搜索源兼容
+### Search Source Compatibility
 
 - SearXNG
 - SerpAPI
 - Serper
 
-### 对外接口
+### API Endpoints
 
 - `POST /gradio_api/call/run_research_once`
 - `GET /gradio_api/call/run_research_once/{event_id}`
 - `POST /gradio_api/call/stop_current`
 - `GET /gradio_api/info`
 
-接口标准说明：
+### Runtime Observability & Self-Healing
 
-- 研究调用统一为一个标准接口：`run_research_once`
-- 不再维护历史双接口分支
+- Stage heartbeat: the "Generating..." UI shows the active phase (search/reasoning/verification/summary), turn, and search round
+- Stale-task reconciliation: a background checker converges long-stale inactive `running` tasks to `failed`
+- Parameter scope: `verification_min_search_rounds` is shown and effective only when `mode=verified`
 
-### 运行态可观测与自愈
+## Quick Start
 
-- 阶段心跳：前端“生成中”状态会显示当前阶段（检索/推理/校验/总结）、回合与检索轮次
-- 陈旧任务收敛：后台周期巡检会将长时间未更新且进程不活跃的 `running` 自动收敛为 `failed`
-- 参数生效约束：`verification_min_search_rounds` 仅在 `mode=verified` 时显示并生效
-
-## 代码结构
-
-- `apps/gradio-demo/`：Web 入口与 API 服务
-- `apps/miroflow-agent/`：Agent 运行与配置
-- `libs/miroflow-tools/`：MCP 工具与检索路由实现
-- `assets/`：品牌与静态资源
-- `skills/openclaw-mirosearch/`：面向 OpenClaw 的调用技能包
-
-## 快速部署
-
-### 1. 安装依赖
+### 1. Install Dependencies
 
 ```bash
 cd apps/gradio-demo
 uv sync
 ```
 
-### 2. 初始化配置
+### 2. Initialize Configuration
 
 ```bash
 cp .env.example .env
 ```
 
-`.env` 最小示例：
+Minimal `.env` example:
 
 ```bash
-# OpenAI 兼容 LLM 网关
+# OpenAI-compatible LLM gateway
 BASE_URL="https://api.longcat.chat/openai"
 API_KEY="<your_longcat_key>"
+DEFAULT_LLM_PROVIDER="openai" # openai / anthropic / qwen
+DEFAULT_MODEL_NAME="gpt-4o-mini"
+MODEL_TOOL_NAME="gpt-4o-mini"
+MODEL_FAST_NAME="gpt-4o-mini"
+MODEL_THINKING_NAME="gpt-4o-mini"
+MODEL_SUMMARY_NAME="gpt-4o-mini"
 
-# 搜索源（至少配置一个）
+# Search sources (configure at least one)
 SEARXNG_BASE_URL="http://127.0.0.1:27080"
 SERPAPI_API_KEY="<your_serpapi_key>"
 SERPER_API_KEY="<your_serper_key>"
 
-# 默认运行策略
+# Default execution strategy
 DEFAULT_RESEARCH_MODE="balanced"
 DEFAULT_SEARCH_PROFILE="parallel-trusted"
 ```
 
-### 3. 启动服务
+Model configuration notes:
+
+- `DEFAULT_LLM_PROVIDER` controls provider routing (`openai` / `anthropic` / `qwen`)
+- `DEFAULT_MODEL_NAME` is the default primary model
+- Per-stage model variables:
+  - `MODEL_TOOL_NAME`: tool-calling stage
+  - `MODEL_FAST_NAME`: fast stage
+  - `MODEL_THINKING_NAME`: deep-thinking stage
+  - `MODEL_SUMMARY_NAME`: summarization stage
+- Fallback rules:
+  - If `MODEL_TOOL_NAME`, `MODEL_FAST_NAME`, or `MODEL_THINKING_NAME` is unset, it falls back to `DEFAULT_MODEL_NAME`
+  - If `MODEL_SUMMARY_NAME` is unset, it falls back to `MODEL_FAST_NAME`
+
+### 3. Start Service
 
 ```bash
 uv run main.py
 ```
 
-默认地址：`http://127.0.0.1:8080`
+Default address: `http://127.0.0.1:8080`
 
-### 4. 健康检查
+### 4. Health Check
 
 ```bash
 curl -sS 'http://127.0.0.1:8080/gradio_api/info'
 ```
 
-## API 调用示例
+## API Usage Example
 
-统一接口（6 参数）：
+Unified interface with 6 parameters:
 
 ```bash
 BASE_URL="http://127.0.0.1:8080"
-QUERY="中国大陆有哪些厂商推出了 OpenClaw 变体？"
+QUERY="Which Chinese companies have released OpenClaw variants?"
 MODE="verified"
 PROFILE="parallel-trusted"
 RESULT_NUM=30
@@ -150,7 +152,7 @@ EVENT_ID=$(curl -sS -H 'Content-Type: application/json' \
 curl -sS "$BASE_URL/gradio_api/call/run_research_once/$EVENT_ID"
 ```
 
-终止当前任务：
+Stop current task:
 
 ```bash
 curl -sS -H 'Content-Type: application/json' \
@@ -158,35 +160,43 @@ curl -sS -H 'Content-Type: application/json' \
   "$BASE_URL/gradio_api/call/stop_current"
 ```
 
-## 面向 OpenClaw / AI Agent
+## For OpenClaw / AI Agents
 
-这个项目的定位：
+Project positioning:
 
-- 提供可被上层智能体调用的联网研究能力
-- 支持模式、路由、检索深度与输出篇幅四维可控
-- 通过 SSE 终态事件，保证智能体编排时可判断任务完成
+- Provides web research capability callable by upper-layer agents
+- Supports four-dimensional control: mode, routing, search depth, and output detail
+- Uses SSE terminal events so agents can determine task completion
 
-推荐给 AI Agent 的调用闭环：
+Recommended agent calling loop:
 
-1. 先调 `GET /gradio_api/info` 探活
-1. 发起 `run_research_once`
-1. 轮询 `event: complete`
-1. 只消费 `complete` 的最终 Markdown
+1. Call `GET /gradio_api/info` for health check
+1. Initiate `run_research_once`
+1. Poll for `event: complete`
+1. Consume only final Markdown from `complete`
 
-Skill 获取与安装：
+Skill guidance:
 
-- 仓库目录：`skills/openclaw-mirosearch/`
-- 打包文件：`skills/openclaw-mirosearch.zip`
-- 安装说明：[`skills/openclaw-mirosearch/references/skill-install.md`](skills/openclaw-mirosearch/references/skill-install.md)
-- API 说明：[`skills/openclaw-mirosearch/references/api.md`](skills/openclaw-mirosearch/references/api.md)
-- AI Agent 接入详解：[`docs/AI_AGENT_INTEGRATION.md`](docs/AI_AGENT_INTEGRATION.md)
+- Simple search, single-fact lookup, and cost-first usage: use the `searxng` skill
+  - Link: <https://clawhub.ai/abk234/searxng>
+- Deep research or high-quality retrieval: use the `openclaw-mirosearch` skill
+  - Skill docs: [`skills/openclaw-mirosearch/SKILL.md`](skills/openclaw-mirosearch/SKILL.md)
+  - Usage docs: [`skills/openclaw-mirosearch/references/usage.md`](skills/openclaw-mirosearch/references/usage.md)
 
-## 路由参数说明
+Skill acquisition and installation:
 
-以下环境变量用于控制检索行为：
+- Repository: `skills/openclaw-mirosearch/`
+- Packaged file: `skills/openclaw-mirosearch.zip`
+- Installation guide: [`skills/openclaw-mirosearch/references/skill-install.md`](skills/openclaw-mirosearch/references/skill-install.md)
+- API docs: [`skills/openclaw-mirosearch/references/api.md`](skills/openclaw-mirosearch/references/api.md)
+- AI Agent integration: [`docs/AI_AGENT_INTEGRATION.md`](docs/AI_AGENT_INTEGRATION.md)
+
+## Routing Parameter Reference
+
+Environment variables controlling search behavior:
 
 - `SEARCH_PROVIDER_ORDER`
-- `SEARCH_PROVIDER_MODE`：`fallback | merge | parallel | parallel_conf_fallback`
+- `SEARCH_PROVIDER_MODE`: `fallback | merge | parallel | parallel_conf_fallback`
 - `SEARCH_PROVIDER_TRUSTED_ORDER`
 - `SEARCH_PROVIDER_PARALLEL_MAX_WAIT_MS`
 - `SEARCH_PROVIDER_PARALLEL_MIN_SUCCESS`
@@ -200,56 +210,66 @@ Skill 获取与安装：
 - `SEARCH_CONFIDENCE_MIN_HIGH_CONF_HITS`
 - `SEARCH_CONFIDENCE_HIGH_CONF_DOMAINS`
 
-## 建议配置基线
+## Recommended Configuration Baseline
 
-- 默认生产基线：`mode=balanced` + `search_profile=parallel-trusted`
-- 高风险事实核查：`mode=verified` + `search_profile=parallel-trusted`
-- 额度优先场景：`mode=quota` + `search_profile=searxng-only`
-- 核查深度建议：`search_result_num=30` + `verification_min_search_rounds=4`
+- Default production baseline: `mode=balanced` + `search_profile=parallel-trusted`
+- High-risk fact-checking: `mode=verified` + `search_profile=parallel-trusted`
+- Quota-priority scenario: `mode=quota` + `search_profile=searxng-only`
+- Verification depth recommendation: `search_result_num=30` + `verification_min_search_rounds=4`
 
-## 文档索引
+## Changelog
 
-- 文档总览：[`docs/README.md`](docs/README.md)
-- Docker Compose 独立部署：[`docs/DEPLOY_DOCKER_COMPOSE.md`](docs/DEPLOY_DOCKER_COMPOSE.md)
-- Demo 说明：[`apps/gradio-demo/README.md`](apps/gradio-demo/README.md)
-- Agent 说明：[`apps/miroflow-agent/README.md`](apps/miroflow-agent/README.md)
-- 工具层说明：[`libs/miroflow-tools/README.md`](libs/miroflow-tools/README.md)
-- 本地工具部署：[`docs/LOCAL-TOOL-DEPLOYMENT.md`](docs/LOCAL-TOOL-DEPLOYMENT.md)
-- OpenClaw 技能包：[`skills/openclaw-mirosearch/SKILL.md`](skills/openclaw-mirosearch/SKILL.md)
-- 路线图：[`docs/ROADMAP.md`](docs/ROADMAP.md)
-- API 规格：[`docs/API_SPEC.md`](docs/API_SPEC.md)
+- Release `0.1.5` highlights:
+  - Default homepage now opens in English with a direct link to the Chinese document
+  - Skill docs now separate installation from usage
+  - README documents now include model configuration and fallback rules
+  - Root docs now link to the changelog with a release summary
+- Full history: [`docs/CHANGELOG.md`](docs/CHANGELOG.md)
 
-## 开源协作文档
+## Documentation Index
 
-- 贡献指南：[`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md)
-- 安全策略：[`docs/SECURITY.md`](docs/SECURITY.md)
-- 行为准则：[`docs/CODE_OF_CONDUCT.md`](docs/CODE_OF_CONDUCT.md)
-- 变更记录：[`docs/CHANGELOG.md`](docs/CHANGELOG.md)
-- 支持说明：[`docs/SUPPORT.md`](docs/SUPPORT.md)
-- 治理说明：[`docs/GOVERNANCE.md`](docs/GOVERNANCE.md)
-- 发布流程：[`docs/RELEASE.md`](docs/RELEASE.md)
+- Overview: [`docs/README.md`](docs/README.md)
+- Changelog: [`docs/CHANGELOG.md`](docs/CHANGELOG.md)
+- Docker Compose deployment: [`docs/DEPLOY_DOCKER_COMPOSE.md`](docs/DEPLOY_DOCKER_COMPOSE.md)
+- Demo docs: [`apps/gradio-demo/README.md`](apps/gradio-demo/README.md)
+- Agent docs: [`apps/miroflow-agent/README.md`](apps/miroflow-agent/README.md)
+- Tools docs: [`libs/miroflow-tools/README.md`](libs/miroflow-tools/README.md)
+- Local tool deployment: [`docs/LOCAL-TOOL-DEPLOYMENT.md`](docs/LOCAL-TOOL-DEPLOYMENT.md)
+- OpenClaw skill package: [`skills/openclaw-mirosearch/SKILL.md`](skills/openclaw-mirosearch/SKILL.md)
+- Roadmap: [`docs/ROADMAP.md`](docs/ROADMAP.md)
+- API spec: [`docs/API_SPEC.md`](docs/API_SPEC.md)
 
-## 开发校验
+## Open Source Collaboration
+
+- Contributing guide: [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md)
+- Security policy: [`docs/SECURITY.md`](docs/SECURITY.md)
+- Code of conduct: [`docs/CODE_OF_CONDUCT.md`](docs/CODE_OF_CONDUCT.md)
+- Changelog: [`docs/CHANGELOG.md`](docs/CHANGELOG.md)
+- Support: [`docs/SUPPORT.md`](docs/SUPPORT.md)
+- Governance: [`docs/GOVERNANCE.md`](docs/GOVERNANCE.md)
+- Release process: [`docs/RELEASE.md`](docs/RELEASE.md)
+
+## Development Validation
 
 ```bash
-# 仓库根目录
+# Repository root
 just format
 just lint
 
-# Demo 启动
+# Demo startup
 cd apps/gradio-demo && uv sync && uv run main.py
 
-# Agent 侧测试
+# Agent tests
 cd apps/miroflow-agent && uv run pytest
 ```
 
-## 路线图
+## Roadmap
 
-路线图详见：[`docs/ROADMAP.md`](docs/ROADMAP.md)
+See: [`docs/ROADMAP.md`](docs/ROADMAP.md)
 
-当前规划分为四个阶段：
+Current planning is divided into four phases:
 
-- 阶段 A（可发布基线）：接口定版、最小回归测试、发布 `v0.1.0`
-- 阶段 B（生产化）：多 Key 轮转、模型 failback、观测指标、发布 `v0.2.0`
-- 阶段 C（质量增强）：数字事实交叉校验与口径统一、发布 `v0.3.0`
-- 阶段 D（生态分发）：OpenClaw 技能发布与一键化部署模板、发布 `v1.0.0`
+- Phase A (releasable baseline): API finalization, minimal regression testing, release `v0.1.0`
+- Phase B (production-ready): Multi-key rotation, model fallback, observability metrics, release `v0.2.0`
+- Phase C (quality enhancement): Digital fact cross-validation and wording unification, release `v0.3.0`
+- Phase D (ecosystem distribution): OpenClaw skill release and one-click deployment template, release `v1.0.0`
