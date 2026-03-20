@@ -287,6 +287,10 @@ class OpenAIClient(BaseClient):
             if "deepseek-v3-1" in self.model_name:
                 params["extra_body"]["thinking"] = {"type": "enabled"}
 
+            # summary/fast 场景不需要深度推理，显式禁用 thinking 以加速响应
+            if agent_type in SUMMARY_AGENT_TYPES or agent_type in FAST_AGENT_TYPES:
+                params["extra_body"]["thinking"] = {"type": "disabled"}
+
             # auto-detect if we need to continue from the last assistant message
             if messages_for_llm and messages_for_llm[-1].get("role") == "assistant":
                 params["extra_body"]["continue_final_message"] = True
