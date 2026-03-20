@@ -59,10 +59,14 @@ OpenClaw-MiroSearch 是一个面向智能体场景的开源联网检索工程，
 ### 对外接口
 
 - `POST /gradio_api/call/run_research_once`
-- `POST /gradio_api/call/run_research_once_v2`
 - `GET /gradio_api/call/run_research_once/{event_id}`
-- `POST /gradio_api/run/stop_current`
+- `POST /gradio_api/call/stop_current`
 - `GET /gradio_api/info`
+
+接口标准说明：
+
+- 研究调用统一为一个标准接口：`run_research_once`
+- 不再维护历史双接口分支
 
 ## 代码结构
 
@@ -120,22 +124,7 @@ curl -sS 'http://127.0.0.1:8080/gradio_api/info'
 
 ## API 调用示例
 
-兼容接口（v1，三参数）：
-
-```bash
-BASE_URL="http://127.0.0.1:8080"
-QUERY="中国大陆有哪些厂商推出了 OpenClaw 变体？"
-MODE="balanced"
-PROFILE="parallel-trusted"
-
-EVENT_ID=$(curl -sS -H 'Content-Type: application/json' \
-  -d "{\"data\":[\"$QUERY\",\"$MODE\",\"$PROFILE\"]}" \
-  "$BASE_URL/gradio_api/call/run_research_once" | python3 -c 'import sys,json;print(json.load(sys.stdin)["event_id"])')
-
-curl -sS "$BASE_URL/gradio_api/call/run_research_once/$EVENT_ID"
-```
-
-扩展接口（v2，推荐）：
+统一接口（6 参数）：
 
 ```bash
 BASE_URL="http://127.0.0.1:8080"
@@ -144,12 +133,13 @@ MODE="verified"
 PROFILE="parallel-trusted"
 RESULT_NUM=30
 MIN_ROUNDS=4
+DETAIL_LEVEL="balanced" # compact / balanced / detailed
 
 EVENT_ID=$(curl -sS -H 'Content-Type: application/json' \
-  -d "{\"data\":[\"$QUERY\",\"$MODE\",\"$PROFILE\",$RESULT_NUM,$MIN_ROUNDS]}" \
-  "$BASE_URL/gradio_api/call/run_research_once_v2" | python3 -c 'import sys,json;print(json.load(sys.stdin)["event_id"])')
+  -d "{\"data\":[\"$QUERY\",\"$MODE\",\"$PROFILE\",$RESULT_NUM,$MIN_ROUNDS,\"$DETAIL_LEVEL\"]}" \
+  "$BASE_URL/gradio_api/call/run_research_once" | python3 -c 'import sys,json;print(json.load(sys.stdin)["event_id"])')
 
-curl -sS "$BASE_URL/gradio_api/call/run_research_once_v2/$EVENT_ID"
+curl -sS "$BASE_URL/gradio_api/call/run_research_once/$EVENT_ID"
 ```
 
 终止当前任务：
@@ -157,8 +147,31 @@ curl -sS "$BASE_URL/gradio_api/call/run_research_once_v2/$EVENT_ID"
 ```bash
 curl -sS -H 'Content-Type: application/json' \
   -d '{"data":[]}' \
-  "$BASE_URL/gradio_api/run/stop_current"
+  "$BASE_URL/gradio_api/call/stop_current"
 ```
+
+## 面向 OpenClaw / AI Agent
+
+这个项目的定位：
+
+- 提供可被上层智能体调用的联网研究能力
+- 支持模式、路由、检索深度与输出篇幅四维可控
+- 通过 SSE 终态事件，保证智能体编排时可判断任务完成
+
+推荐给 AI Agent 的调用闭环：
+
+1. 先调 `GET /gradio_api/info` 探活
+1. 发起 `run_research_once`
+1. 轮询 `event: complete`
+1. 只消费 `complete` 的最终 Markdown
+
+Skill 获取与安装：
+
+- 仓库目录：`skills/openclaw-mirosearch/`
+- 打包文件：`skills/openclaw-mirosearch.zip`
+- 安装说明：[`skills/openclaw-mirosearch/references/skill-install.md`](skills/openclaw-mirosearch/references/skill-install.md)
+- API 说明：[`skills/openclaw-mirosearch/references/api.md`](skills/openclaw-mirosearch/references/api.md)
+- AI Agent 接入详解：[`docs/AI_AGENT_INTEGRATION.md`](docs/AI_AGENT_INTEGRATION.md)
 
 ## 路由参数说明
 

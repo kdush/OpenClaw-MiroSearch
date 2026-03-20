@@ -1,8 +1,8 @@
 # API 规格说明
 
-本文档定义 OpenClaw-MiroSearch 对外 API 的调用约定（单一版本）。
+本文档定义 OpenClaw-MiroSearch 对外 API 的调用约定（统一标准接口）。
 
-> 版本约束：研究接口仅保留 `run_research_once`，不再区分 `v1/v2` 双接口。
+> 接口约束：研究接口仅保留 `run_research_once`，历史双接口已收敛为统一标准。
 
 ## 基础地址
 
@@ -15,7 +15,7 @@
 1. `POST /gradio_api/call/stop_current`
 1. `GET /gradio_api/info`
 
-## 1) run_research_once（统一单次研究接口）
+## 1) run_research_once（统一标准接口）
 
 ### 请求
 
