@@ -13,7 +13,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - 规划：模型级 failback（主模型失败自动切换备用模型）
 - 规划：结构化冲突检测报告与专项评测集
 
-## [0.1.7] - 2026-03-20
+## [0.1.7] - 2025-03-20
 
 ### Added
 
