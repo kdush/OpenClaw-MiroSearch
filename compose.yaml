@@ -7,6 +7,9 @@ services:
       dockerfile: apps/gradio-demo/Dockerfile
     image: openclaw-mirosearch:latest
     restart: unless-stopped
+    # 如果容器无法访问外网（常见于 Unraid / 部分 NAS 的 bridge 网络），
+    # 取消下行注释并注释掉 ports 段，改用 host 网络模式：
+    # network_mode: host
     env_file:
       - .env.compose
     environment:

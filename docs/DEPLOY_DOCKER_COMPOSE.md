@@ -129,3 +129,41 @@ docker compose --env-file .env.compose up -d --build
 docker compose pull
 docker compose --env-file .env.compose up -d --build
 ```
+
+### 容器无法访问外网（Unraid / NAS 常见）
+
+**现象**：LLM 调用全部返回 `Connection error`，SearXNG 预检失败；但宿主机本身可正常访问外网。
+
+**原因**：部分 NAS 系统（如 Unraid）的 Docker bridge 网络 NAT 转发异常，导致容器内部无法建立到外网的 TCP 连接。
+
+**解决方案**：将 `app` 服务切换为 host 网络模式。
+
+1. 编辑 `compose.yaml`，在 `app` 服务中取消 `network_mode: host` 的注释并注释掉 `ports` 段：
+
+```yaml
+services:
+  app:
+    # ...
+    network_mode: host
+    # ports:
+    #   - "${APP_PORT:-8080}:8080"
+```
+
+2. 使用 host 模式后，`app` 容器内通过 `localhost` 访问 SearXNG，需在 `.env.compose` 中设置：
+
+```bash
+SEARXNG_BASE_URL=http://127.0.0.1:${SEARXNG_HOST_PORT:-27080}
+```
+
+3. 重建容器：
+
+```bash
+docker compose --env-file .env.compose up -d --build
+```
+
+**验证**：
+
+```bash
+# 检查容器内外网连通性
+docker exec <container_name> python3 -c "import urllib.request; print(urllib.request.urlopen('https://httpbin.org/ip', timeout=10).read())"
+```
