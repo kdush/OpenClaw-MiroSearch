@@ -10,7 +10,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
-from typing import AsyncGenerator, Dict, List, Optional, Tuple
+from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 from urllib.parse import quote, urlparse
 
 import gradio as gr
@@ -182,6 +182,14 @@ DEFAULT_MODEL_FAST_NAME = os.getenv("MODEL_FAST_NAME", DEFAULT_MODEL_NAME)
 DEFAULT_MODEL_THINKING_NAME = os.getenv("MODEL_THINKING_NAME", DEFAULT_MODEL_NAME)
 DEFAULT_MODEL_SUMMARY_NAME = os.getenv("MODEL_SUMMARY_NAME", DEFAULT_MODEL_FAST_NAME)
 ENABLE_TIMING_DIAGNOSTICS = _env_flag("ENABLE_TIMING_DIAGNOSTICS", True)
+STALE_TASK_REAPER_ENABLED = _env_flag("STALE_TASK_REAPER_ENABLED", True)
+STALE_TASK_REAPER_INTERVAL_SECONDS = max(
+    30, _env_int("STALE_TASK_REAPER_INTERVAL_SECONDS", 120)
+)
+STALE_TASK_RUNNING_TIMEOUT_SECONDS = max(
+    120, _env_int("STALE_TASK_RUNNING_TIMEOUT_SECONDS", 900)
+)
+STALE_TASK_REAPER_SCAN_LIMIT = max(10, _env_int("STALE_TASK_REAPER_SCAN_LIMIT", 500))
 LOCAL_FONT_FAMILY_STACK = (
     "'Inter', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', "
     "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
@@ -359,6 +367,14 @@ SEARCH_HISTORY_RESULT_CAPTURE_DEBOUNCE_MS = max(
     100, _env_int("SEARCH_HISTORY_RESULT_CAPTURE_DEBOUNCE_MS", 350)
 )
 SEARCH_HISTORY_PLACEHOLDER_KEYWORDS = ("等待开始研究", "等待开始")
+SEARCH_STAGE_TOOL_NAMES = {
+    "google_search",
+    "sogou_search",
+    "scrape",
+    "scrape_website",
+    "scrape_webpage",
+    "scrape_and_extract_info",
+}
 
 RENDER_MODE_CHOICES = {"full", "summary_with_details", "summary_only"}
 DEFAULT_UI_RENDER_MODE = os.getenv("DEFAULT_UI_RENDER_MODE", "summary_with_details")
@@ -575,6 +591,22 @@ def _normalize_verification_min_search_rounds(min_rounds: Optional[int]) -> int:
     except (TypeError, ValueError):
         parsed = DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS
     return max(1, min(MAX_VERIFICATION_MIN_SEARCH_ROUNDS, parsed))
+
+
+def _resolve_effective_verification_min_search_rounds(
+    mode: Optional[str],
+    min_rounds: Optional[int],
+) -> int:
+    """仅在 verified 模式启用最少检索轮次，其它模式固定为默认值。"""
+    if _normalize_research_mode(mode) != "verified":
+        return _normalize_verification_min_search_rounds(
+            DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS
+        )
+    return _normalize_verification_min_search_rounds(min_rounds)
+
+
+def _is_verified_mode(mode: Optional[str]) -> bool:
+    return _normalize_research_mode(mode) == "verified"
 
 
 def _normalize_render_mode(render_mode: Optional[str], default_mode: str) -> str:
@@ -814,6 +846,8 @@ def load_miroflow_config(config_overrides: Optional[object] = None) -> DictConfi
 # 按检索模式缓存，支持通过参数动态切换
 _preload_cache = {}
 _preload_lock = threading.Lock()
+_stale_task_reaper_started = False
+_stale_task_reaper_lock = threading.Lock()
 
 
 def _ensure_preloaded(
@@ -826,13 +860,15 @@ def _ensure_preloaded(
     """按检索模式与检索源策略懒加载 pipeline 组件。"""
     global _preload_cache
     preload_start_time = time.perf_counter()
+    resolved_mode = _normalize_research_mode(mode)
     resolved_result_num = _normalize_search_result_num(search_result_num)
-    resolved_min_rounds = _normalize_verification_min_search_rounds(
-        verification_min_search_rounds
+    resolved_min_rounds = _resolve_effective_verification_min_search_rounds(
+        resolved_mode,
+        verification_min_search_rounds,
     )
     resolved_output_detail_level = _normalize_output_detail_level(output_detail_level)
     cache_key = _compose_profile_cache_key(
-        mode,
+        resolved_mode,
         search_profile,
         resolved_result_num,
         resolved_min_rounds,
@@ -873,17 +909,19 @@ def _ensure_preloaded(
             )
         )
         search_env["SEARCH_RESULT_NUM"] = str(resolved_result_num)
-        mode_overrides = list(MODE_OVERRIDE_MAP.get(mode, MODE_OVERRIDE_MAP["balanced"]))
+        mode_overrides = list(
+            MODE_OVERRIDE_MAP.get(resolved_mode, MODE_OVERRIDE_MAP["balanced"])
+        )
         mode_overrides.extend(
             _get_mode_overrides_for_output_detail(resolved_output_detail_level)
         )
-        if mode == "verified":
+        if resolved_mode == "verified":
             mode_overrides.append(
                 f"agent.verification.min_search_rounds={resolved_min_rounds}"
             )
         logger.info(
             "Loading pipeline components | mode=%s | search_profile=%s | result_num=%s | min_rounds=%s | detail_level=%s | provider_order=%s | provider_mode=%s",
-            mode,
+            resolved_mode,
             search_profile,
             resolved_result_num,
             resolved_min_rounds,
@@ -921,7 +959,7 @@ def _ensure_preloaded(
         }
         logger.info(
             "Pipeline components loaded successfully | mode=%s | search_profile=%s | result_num=%s | min_rounds=%s",
-            mode,
+            resolved_mode,
             search_profile,
             resolved_result_num,
             resolved_min_rounds,
@@ -1066,8 +1104,9 @@ async def stream_events_optimized(
     resolved_mode = _normalize_research_mode(mode)
     resolved_search_profile = _normalize_search_profile(search_profile)
     resolved_search_result_num = _normalize_search_result_num(search_result_num)
-    resolved_verification_min_rounds = _normalize_verification_min_search_rounds(
-        verification_min_search_rounds
+    resolved_verification_min_rounds = _resolve_effective_verification_min_search_rounds(
+        resolved_mode,
+        verification_min_search_rounds,
     )
     resolved_output_detail_level = _normalize_output_detail_level(output_detail_level)
     last_send_time = time.time()
@@ -1080,6 +1119,86 @@ async def stream_events_optimized(
     cancel_event = threading.Event()
     first_non_heartbeat_logged = False
     event_counts: Dict[str, int] = {}
+    stage_state: Dict[str, Any] = {
+        "phase": "初始化",
+        "turn": 0,
+        "search_round": 0,
+        "agent_name": "",
+        "detail": "等待开始",
+        "last_tool": "",
+        "updated_at": time.time(),
+    }
+
+    def _touch_stage(
+        phase: Optional[str] = None,
+        *,
+        turn: Optional[int] = None,
+        detail: Optional[str] = None,
+        agent_name: Optional[str] = None,
+        last_tool: Optional[str] = None,
+        search_round_increment: bool = False,
+    ) -> None:
+        if phase:
+            stage_state["phase"] = phase
+        if turn is not None:
+            stage_state["turn"] = max(0, int(turn))
+        if detail is not None:
+            stage_state["detail"] = str(detail)
+        if agent_name is not None:
+            stage_state["agent_name"] = str(agent_name)
+        if last_tool is not None:
+            stage_state["last_tool"] = str(last_tool)
+        if search_round_increment:
+            stage_state["search_round"] = int(stage_state.get("search_round", 0)) + 1
+        stage_state["updated_at"] = time.time()
+
+    def _update_stage_by_message(message: Dict[str, Any]) -> None:
+        event_type = str(message.get("event", ""))
+        data = message.get("data") or {}
+        if event_type == "stage_heartbeat":
+            _touch_stage(
+                data.get("phase"),
+                turn=data.get("turn"),
+                detail=data.get("detail"),
+                agent_name=data.get("agent_name"),
+            )
+            if data.get("search_round") is not None:
+                stage_state["search_round"] = int(data.get("search_round") or 0)
+            return
+        if event_type == "start_of_agent":
+            current_agent = str(data.get("agent_name") or "")
+            phase = "总结" if current_agent == "Final Summary" else "推理"
+            _touch_stage(
+                phase,
+                detail=f"{current_agent or 'Agent'} 已启动",
+                agent_name=current_agent,
+            )
+            return
+        if event_type == "start_of_llm":
+            current_agent = str(data.get("agent_name") or stage_state.get("agent_name"))
+            phase = "总结" if current_agent == "Final Summary" else "推理"
+            _touch_stage(phase, detail="模型推理中", agent_name=current_agent)
+            return
+        if event_type == "tool_call":
+            tool_name = str(data.get("tool_name") or "")
+            if not tool_name:
+                return
+            tool_payload = data.get("tool_input")
+            is_search_output = bool(
+                isinstance(tool_payload, dict)
+                and "result" in tool_payload
+                and tool_name in {"google_search", "sogou_search"}
+            )
+            phase = "检索" if tool_name in SEARCH_STAGE_TOOL_NAMES else "工具调用"
+            _touch_stage(
+                phase,
+                detail=f"{tool_name} 执行中",
+                last_tool=tool_name,
+                search_round_increment=is_search_output,
+            )
+            return
+        if event_type == "error":
+            _touch_stage("异常", detail="执行出现错误")
 
     def run_pipeline_in_thread():
         try:
@@ -1198,6 +1317,7 @@ async def stream_events_optimized(
                 if message is None:
                     logger.info("Pipeline completed")
                     break
+                _update_stage_by_message(message)
                 event_type = str(message.get("event", "unknown"))
                 event_counts[event_type] = event_counts.get(event_type, 0) + 1
                 if (
@@ -1230,7 +1350,11 @@ async def stream_events_optimized(
                 if current_time - last_heartbeat_time >= 15:
                     yield {
                         "event": "heartbeat",
-                        "data": {"timestamp": current_time, "workflow_id": workflow_id},
+                        "data": {
+                            "timestamp": current_time,
+                            "workflow_id": workflow_id,
+                            "stage": dict(stage_state),
+                        },
                     }
                     last_heartbeat_time = current_time
     except Exception as e:
@@ -1265,7 +1389,37 @@ def _init_render_state():
         "agents": {},  # agent_id -> {"agent_name": str, "tool_call_order": [], "tools": {tool_call_id: {...}}}
         "current_agent_id": None,
         "errors": [],
+        "runtime_stage": {
+            "phase": "初始化",
+            "turn": 0,
+            "search_round": 0,
+            "detail": "等待开始",
+            "agent_name": "",
+            "last_tool": "",
+            "updated_at": 0.0,
+        },
     }
+
+
+def _format_runtime_status_label(state: dict, heartbeat_ts: Optional[float] = None) -> str:
+    runtime_stage = state.get("runtime_stage") or {}
+    phase = str(runtime_stage.get("phase") or "执行中")
+    turn = int(runtime_stage.get("turn") or 0)
+    search_round = int(runtime_stage.get("search_round") or 0)
+    detail = str(runtime_stage.get("detail") or "").strip()
+    parts = [f"生成中 · 阶段:{phase}"]
+    if turn > 0:
+        parts.append(f"回合:{turn}")
+    if search_round > 0:
+        parts.append(f"检索轮次:{search_round}")
+    if heartbeat_ts:
+        parts.append(
+            f"最近心跳 {time.strftime('%H:%M:%S', time.localtime(float(heartbeat_ts)))}"
+        )
+    label = " | ".join(parts)
+    if detail:
+        label = f"{label} | {detail}"
+    return label
 
 
 def _format_think_content(text: str) -> str:
@@ -1806,9 +1960,21 @@ def _update_state_with_event(state: dict, message: dict):
             }
             state["agent_order"].append(agent_id)
         state["current_agent_id"] = agent_id
+        runtime_stage = state.setdefault("runtime_stage", {})
+        runtime_stage["agent_name"] = agent_name
+        runtime_stage["phase"] = "总结" if agent_name == "Final Summary" else "推理"
+        runtime_stage["detail"] = f"{agent_name} 已启动"
+        runtime_stage["updated_at"] = time.time()
     elif event == "end_of_agent":
         # End marker, no special handling needed, keep structure
         state["current_agent_id"] = None
+    elif event == "start_of_llm":
+        agent_name = str((data or {}).get("agent_name") or "")
+        runtime_stage = state.setdefault("runtime_stage", {})
+        runtime_stage["agent_name"] = agent_name or runtime_stage.get("agent_name", "")
+        runtime_stage["phase"] = "总结" if agent_name == "Final Summary" else "推理"
+        runtime_stage["detail"] = "模型推理中"
+        runtime_stage["updated_at"] = time.time()
     elif event == "tool_call":
         tool_call_id = data.get("tool_call_id")
         tool_name = data.get("tool_name", "unknown_tool")
@@ -1824,6 +1990,13 @@ def _update_state_with_event(state: dict, message: dict):
         if tool_call_id not in tools:
             tools[tool_call_id] = {"tool_name": tool_name}
             agent["tool_call_order"].append(tool_call_id)
+        runtime_stage = state.setdefault("runtime_stage", {})
+        runtime_stage["phase"] = (
+            "检索" if tool_name in SEARCH_STAGE_TOOL_NAMES else "工具调用"
+        )
+        runtime_stage["last_tool"] = tool_name
+        runtime_stage["detail"] = f"{tool_name} 执行中"
+        runtime_stage["updated_at"] = time.time()
         entry = tools[tool_call_id]
         if tool_name == "show_text" and "delta_input" in data:
             delta = data.get("delta_input", {}).get("text", "")
@@ -1849,6 +2022,13 @@ def _update_state_with_event(state: dict, message: dict):
                 # If contains result, assign to output; otherwise assign to input
                 if isinstance(ti, dict) and "result" in ti:
                     entry["output"] = ti
+                    if tool_name in {"google_search", "sogou_search"}:
+                        runtime_stage["search_round"] = int(
+                            runtime_stage.get("search_round", 0)
+                        ) + 1
+                        runtime_stage["detail"] = (
+                            f"{tool_name} 已完成（第 {runtime_stage['search_round']} 轮）"
+                        )
                 else:
                     # Only update input if we don't already have valid input data, or if the new data is not empty
                     if "input" not in entry or not _is_empty_payload(ti):
@@ -1872,6 +2052,36 @@ def _update_state_with_event(state: dict, message: dict):
         delta_content = (data.get("delta") or {}).get("content", "")
         if isinstance(delta_content, str) and delta_content:
             _append_show_text(entry, delta_content)
+        runtime_stage = state.setdefault("runtime_stage", {})
+        runtime_stage["phase"] = (
+            "总结" if agent.get("agent_name") == "Final Summary" else "推理"
+        )
+        runtime_stage["detail"] = "内容生成中"
+        runtime_stage["updated_at"] = time.time()
+    elif event == "stage_heartbeat":
+        runtime_stage = state.setdefault("runtime_stage", {})
+        phase = str((data or {}).get("phase") or "").strip()
+        if phase:
+            runtime_stage["phase"] = phase
+        if (data or {}).get("turn") is not None:
+            try:
+                runtime_stage["turn"] = max(0, int((data or {}).get("turn") or 0))
+            except (TypeError, ValueError):
+                pass
+        if (data or {}).get("search_round") is not None:
+            try:
+                runtime_stage["search_round"] = max(
+                    0, int((data or {}).get("search_round") or 0)
+                )
+            except (TypeError, ValueError):
+                pass
+        detail = str((data or {}).get("detail") or "").strip()
+        if detail:
+            runtime_stage["detail"] = detail
+        agent_name = str((data or {}).get("agent_name") or "").strip()
+        if agent_name:
+            runtime_stage["agent_name"] = agent_name
+        runtime_stage["updated_at"] = time.time()
     elif event == "error":
         # Collect errors, display uniformly during rendering
         err_text = data.get("error") if isinstance(data, dict) else None
@@ -1881,9 +2091,17 @@ def _update_state_with_event(state: dict, message: dict):
             except Exception:
                 err_text = str(data)
         state.setdefault("errors", []).append(err_text)
+        runtime_stage = state.setdefault("runtime_stage", {})
+        runtime_stage["phase"] = "异常"
+        runtime_stage["detail"] = "执行出现错误"
+        runtime_stage["updated_at"] = time.time()
     else:
-        # Ignore heartbeat or other events
-        pass
+        if event == "heartbeat":
+            runtime_stage = state.setdefault("runtime_stage", {})
+            stage_payload = (data or {}).get("stage")
+            if isinstance(stage_payload, dict):
+                runtime_stage.update(stage_payload)
+                runtime_stage["updated_at"] = time.time()
 
     return state
 
@@ -1959,8 +2177,9 @@ async def gradio_run(
     resolved_mode = _normalize_research_mode(mode)
     resolved_search_profile = _normalize_search_profile(search_profile)
     resolved_search_result_num = _normalize_search_result_num(search_result_num)
-    resolved_verification_min_rounds = _normalize_verification_min_search_rounds(
-        verification_min_search_rounds
+    resolved_verification_min_rounds = _resolve_effective_verification_min_search_rounds(
+        resolved_mode,
+        verification_min_search_rounds,
     )
     resolved_output_detail_level = _normalize_output_detail_level(output_detail_level)
     resolved_ui_render_mode = _normalize_render_mode(
@@ -2005,7 +2224,7 @@ async def gradio_run(
         )
         # Initial: disable Run, enable Stop, and show spinner at bottom of text
         yield (
-            initial_markdown + _spinner_markup(True),
+            initial_markdown + _spinner_markup(True, _format_runtime_status_label(state)),
             gr.update(interactive=False),
             gr.update(interactive=True),
             ui_state,
@@ -2023,12 +2242,9 @@ async def gradio_run(
         ):
             event_type = message.get("event", "unknown")
             if event_type == "heartbeat":
+                state = _update_state_with_event(state, message)
                 heartbeat_ts = (message.get("data") or {}).get("timestamp")
-                heartbeat_label = "生成中..."
-                if heartbeat_ts:
-                    heartbeat_label = (
-                        f"生成中... 最近心跳 {time.strftime('%H:%M:%S', time.localtime(heartbeat_ts))}"
-                    )
+                heartbeat_label = _format_runtime_status_label(state, heartbeat_ts)
                 heartbeat_markdown = _render_markdown(
                     state,
                     render_mode=resolved_ui_render_mode,
@@ -2050,7 +2266,7 @@ async def gradio_run(
                 final_summary_merge_strategy=resolved_summary_merge_strategy,
             )
             yield (
-                md + _spinner_markup(True),
+                md + _spinner_markup(True, _format_runtime_status_label(state)),
                 gr.update(interactive=False),
                 gr.update(interactive=True),
                 ui_state,
@@ -2087,13 +2303,14 @@ async def run_research_once(
     output_detail_level: str = DEFAULT_OUTPUT_DETAIL_LEVEL,
     render_mode: Optional[str] = None,
 ) -> str:
-    """统一 API：支持按请求控制检索条数与最少检索轮次，返回最终 Markdown。"""
+    """统一 API：支持按请求控制检索条数，最少检索轮次仅在 verified 模式生效。"""
     query = replace_chinese_punctuation(query or "")
     resolved_mode = _normalize_research_mode(mode)
     resolved_search_profile = _normalize_search_profile(search_profile)
     resolved_search_result_num = _normalize_search_result_num(search_result_num)
-    resolved_verification_min_rounds = _normalize_verification_min_search_rounds(
-        verification_min_search_rounds
+    resolved_verification_min_rounds = _resolve_effective_verification_min_search_rounds(
+        resolved_mode,
+        verification_min_search_rounds,
     )
     resolved_output_detail_level = _normalize_output_detail_level(output_detail_level)
     resolved_api_render_mode = _normalize_render_mode(
@@ -2157,6 +2374,147 @@ def restore_history_entry(
     restored_markdown = result_markdown or "*该条历史暂无可回显结论，请重新运行一次。*"
     next_ui_state = dict(ui_state or {})
     return restored_query, restored_markdown, restored_markdown, next_ui_state
+
+
+def _resolve_task_log_dir() -> Path:
+    configured_log_dir = os.getenv("LOG_DIR", "logs/api-server")
+    log_dir_path = Path(configured_log_dir)
+    if not log_dir_path.is_absolute():
+        log_dir_path = (Path(__file__).resolve().parent / log_dir_path).resolve()
+    return log_dir_path
+
+
+def _mark_stale_running_task(task_file_path: Path, stale_age_seconds: int) -> bool:
+    try:
+        task_payload = json.loads(task_file_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.warning("读取任务日志失败，跳过: %s | %s", task_file_path, exc)
+        return False
+
+    if str(task_payload.get("status", "")).lower() != "running":
+        return False
+
+    task_id = str(task_payload.get("task_id", "")).strip()
+    if task_id and task_id in _get_active_task_ids():
+        return False
+
+    now_ts = time.time()
+    try:
+        file_age_seconds = int(now_ts - task_file_path.stat().st_mtime)
+    except OSError:
+        return False
+    if file_age_seconds < stale_age_seconds:
+        return False
+
+    now_text = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now_ts))
+    task_payload["status"] = "failed"
+    if not task_payload.get("end_time"):
+        task_payload["end_time"] = now_text
+    if not task_payload.get("error"):
+        task_payload["error"] = (
+            "任务长时间未更新且进程状态未知，已自动从 running 收敛为 failed。"
+        )
+
+    step_logs = task_payload.get("step_logs")
+    if not isinstance(step_logs, list):
+        step_logs = []
+    step_logs.append(
+        {
+            "step_name": "task_auto_reconcile",
+            "message": (
+                "检测到陈旧 running 任务，已自动收敛为 failed，"
+                f"最后活动距今约 {file_age_seconds}s。"
+            ),
+            "timestamp": now_text,
+            "info_level": "warning",
+            "metadata": {
+                "stale_age_seconds": file_age_seconds,
+                "reconciler": "gradio-demo-stale-task-reaper",
+            },
+        }
+    )
+    task_payload["step_logs"] = step_logs
+
+    temp_file_path = task_file_path.with_suffix(f"{task_file_path.suffix}.tmp")
+    try:
+        temp_file_path.write_text(
+            json.dumps(task_payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        temp_file_path.replace(task_file_path)
+    except Exception as exc:
+        logger.warning("写回任务日志失败，跳过: %s | %s", task_file_path, exc)
+        try:
+            temp_file_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        return False
+
+    logger.warning(
+        "已自动收敛陈旧 running 任务为 failed | task_id=%s | file=%s | stale_age_seconds=%s",
+        task_id or "unknown",
+        task_file_path.name,
+        file_age_seconds,
+    )
+    return True
+
+
+def _reconcile_stale_running_tasks_once() -> int:
+    if not STALE_TASK_REAPER_ENABLED:
+        return 0
+    log_dir_path = _resolve_task_log_dir()
+    if not log_dir_path.exists():
+        return 0
+
+    task_files = sorted(
+        log_dir_path.glob("task_*.json"),
+        key=lambda item: item.stat().st_mtime,
+        reverse=True,
+    )[:STALE_TASK_REAPER_SCAN_LIMIT]
+    reconciled_count = 0
+    for task_file_path in task_files:
+        if _mark_stale_running_task(
+            task_file_path,
+            stale_age_seconds=STALE_TASK_RUNNING_TIMEOUT_SECONDS,
+        ):
+            reconciled_count += 1
+    if reconciled_count > 0:
+        logger.info("陈旧任务自动收敛完成，本轮处理 %s 条。", reconciled_count)
+    return reconciled_count
+
+
+def _stale_task_reaper_loop():
+    logger.info(
+        "陈旧任务巡检线程已启动 | interval=%ss | stale_timeout=%ss | enabled=%s",
+        STALE_TASK_REAPER_INTERVAL_SECONDS,
+        STALE_TASK_RUNNING_TIMEOUT_SECONDS,
+        STALE_TASK_REAPER_ENABLED,
+    )
+    while STALE_TASK_REAPER_ENABLED:
+        try:
+            _reconcile_stale_running_tasks_once()
+        except Exception as exc:
+            logger.warning("陈旧任务巡检异常: %s", exc, exc_info=True)
+        time.sleep(STALE_TASK_REAPER_INTERVAL_SECONDS)
+
+
+def _start_stale_task_reaper():
+    global _stale_task_reaper_started
+    if not STALE_TASK_REAPER_ENABLED:
+        return
+    with _stale_task_reaper_lock:
+        if _stale_task_reaper_started:
+            return
+        _stale_task_reaper_started = True
+        threading.Thread(
+            target=_stale_task_reaper_loop,
+            name="stale-task-reaper",
+            daemon=True,
+        ).start()
+
+
+def _update_verification_rounds_visibility(mode: str):
+    return gr.update(visible=_is_verified_mode(mode))
 
 
 def build_demo():
@@ -3166,6 +3524,7 @@ def build_demo():
             historyPanel: "#search-history-panel",
             clearButton: "#search-history-clear",
             historyWrapper: "#search-history-wrapper",
+            markdownOutput: "#log-view",
             rawOutput: "#history-raw-output textarea, #history-raw-output input, #history-raw-output",
             restoreQuery: "#history-restore-query textarea, #history-restore-query input, #history-restore-query",
             restoreResult: "#history-restore-result textarea, #history-restore-result input, #history-restore-result",
@@ -3209,33 +3568,73 @@ def build_demo():
                 return normalizedValue.slice(0, maxLength);
             }};
             const slicedItems = historyItems.slice(0, MAX_ITEMS);
+            const persistItems = (items) => {{
+                window.localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
+            }};
+            const toCompactItems = (items, markdownLimit, textLimit) =>
+                items.map((item) => ({{
+                    ...item,
+                    result_markdown: trimText(item.result_markdown, markdownLimit),
+                    result_text: trimText(item.result_text, textLimit),
+                }}));
+            const compactPolicies = [
+                {{
+                    maxItems: MAX_ITEMS,
+                    markdownLimit: RESULT_MAX_TEXT_CHARS,
+                    textLimit: Math.max(1000, Math.floor(RESULT_MAX_TEXT_CHARS * 0.5)),
+                }},
+                {{
+                    maxItems: Math.max(3, Math.floor(MAX_ITEMS * 0.75)),
+                    markdownLimit: Math.max(1500, Math.floor(RESULT_MAX_TEXT_CHARS * 0.4)),
+                    textLimit: Math.max(800, Math.floor(RESULT_MAX_TEXT_CHARS * 0.3)),
+                }},
+                {{
+                    maxItems: Math.max(2, Math.floor(MAX_ITEMS * 0.5)),
+                    markdownLimit: Math.max(800, Math.floor(RESULT_MAX_TEXT_CHARS * 0.25)),
+                    textLimit: Math.max(500, Math.floor(RESULT_MAX_TEXT_CHARS * 0.2)),
+                }},
+            ];
             try {{
-                window.localStorage.setItem(
-                    STORAGE_KEY,
-                    JSON.stringify(slicedItems)
-                );
+                persistItems(slicedItems);
             }} catch (error) {{
+                let saved = false;
+                for (const policy of compactPolicies) {{
+                    if (saved) {{
+                        break;
+                    }}
                     try {{
-                        const compactItems = slicedItems.map((item) => ({{
-                            ...item,
-                            result_markdown: trimText(item.result_markdown, RESULT_MAX_TEXT_CHARS),
-                            result_text: trimText(item.result_text, 8000),
-                        }}));
-                        window.localStorage.setItem(STORAGE_KEY, JSON.stringify(compactItems));
-                }} catch (compactError) {{
-                    try {{
-                        const minimalItems = slicedItems.map((item) => ({{
+                        const compactItems = toCompactItems(
+                            slicedItems.slice(0, policy.maxItems),
+                            policy.markdownLimit,
+                            policy.textLimit
+                        );
+                        persistItems(compactItems);
+                        saved = true;
+                    }} catch (compactError) {{
+                        void compactError;
+                    }}
+                }}
+                if (saved) {{
+                    return;
+                }}
+                try {{
+                    const minimalItems = slicedItems.slice(0, 1).map((item) => {{
+                        const fallbackText = trimText(
+                            item.result_text || item.result_markdown || "",
+                            Math.max(300, Math.floor(RESULT_MAX_TEXT_CHARS * 0.1))
+                        );
+                        return {{
                             id: item.id,
                             query: item.query,
                             saved_at: item.saved_at,
-                            result_markdown: "",
-                            result_text: "",
+                            result_markdown: fallbackText,
+                            result_text: fallbackText,
                             result_saved_at: item.result_saved_at || "",
-                        }}));
-                        window.localStorage.setItem(STORAGE_KEY, JSON.stringify(minimalItems));
-                    }} catch (minimalError) {{
-                        console.warn("保存搜索历史失败", minimalError || compactError || error);
-                    }}
+                        }};
+                    }});
+                    persistItems(minimalItems);
+                }} catch (minimalError) {{
+                    console.warn("保存搜索历史失败", minimalError || error);
                 }}
             }}
         }};
@@ -3493,8 +3892,23 @@ def build_demo():
         }};
 
         const getCurrentResultSnapshot = () => {{
+            const getRenderedOutputText = () => {{
+                const outputRootElement = document.querySelector(SELECTORS.markdownOutput);
+                if (!outputRootElement) {{
+                    return "";
+                }}
+                const contentElement = outputRootElement.querySelector(
+                    ".prose, .md, .markdown-body, [data-testid='markdown']"
+                );
+                const sourceElement = contentElement || outputRootElement;
+                return String(
+                    sourceElement.innerText || sourceElement.textContent || ""
+                ).trim();
+            }};
+            const rawOutputValue = getInputLikeValue(SELECTORS.rawOutput).trim();
+            const renderedOutputValue = getRenderedOutputText();
             const resultMarkdown = trimToLength(
-                getInputLikeValue(SELECTORS.rawOutput).trim(),
+                rawOutputValue || renderedOutputValue,
                 RESULT_MAX_TEXT_CHARS
             );
             const resultText = normalizeResultText(resultMarkdown);
@@ -3809,6 +4223,7 @@ def build_demo():
                     DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS
                 ),
                 info="仅在 verified 模式下用于强制多轮检索门槛。",
+                visible=_is_verified_mode(DEFAULT_RESEARCH_MODE),
             )
             output_detail_level_selector = gr.Dropdown(
                 label="输出篇幅",
@@ -3913,6 +4328,12 @@ def build_demo():
             outputs=[out_md, run_btn, stop_btn, ui_state, history_raw_output],
             api_name="run_research_stream",
         )
+        mode_selector.change(
+            fn=_update_verification_rounds_visibility,
+            inputs=[mode_selector],
+            outputs=[verification_min_rounds_selector],
+            api_name=False,
+        )
         stop_btn.click(
             fn=stop_current_ui,
             inputs=[ui_state],
@@ -3956,6 +4377,7 @@ def build_demo():
 
 
 if __name__ == "__main__":
+    _start_stale_task_reaper()
     demo = build_demo()
     host = os.getenv("HOST", "0.0.0.0")
     port = int(os.getenv("PORT", "8080"))

@@ -883,7 +883,7 @@ wheels = [
 
 [[package]]
 name = "gradio-demo"
-version = "0.1.0"
+version = "0.1.4"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
@@ -1514,7 +1514,7 @@ wheels = [
 
 [[package]]
 name = "miroflow-agent"
-version = "0.1.0"
+version = "0.1.4"
 source = { editable = "../miroflow-agent" }
 dependencies = [
     { name = "aiohttp" },
