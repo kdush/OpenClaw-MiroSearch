@@ -29,7 +29,7 @@ description: 用于 OpenClaw 或其他智能体执行深度检索与高质量联
 1. 使用统一接口 `run_research_once` 发起研究并轮询结果：`references/api.md`
 1. 根据问题类型选择模式：`references/modes.md`
 1. 根据交付需求选择篇幅：`detailed`（超长）/`balanced`（适中）/`compact`（精简）
-1. 若卡住，先调用 `stop_current` 再重试
+1. 若卡住，先调用 `stop_current` 再重试（v0.1.9+ 支持传入 `caller_id` 定向取消，不影响其他并发任务）
 
 ## 默认策略
 

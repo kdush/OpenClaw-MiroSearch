@@ -1,7 +1,7 @@
 # OpenClaw-MiroSearch 路线图（版本化）
 
-更新时间：2026-03-20  
-当前版本：`v0.1.8`  
+更新时间：2026-03-21  
+当前版本：`v0.1.9`  
 说明：已完成能力前置到已发布版本，未完成能力后移到后续版本。
 
 ## 已发布
@@ -69,24 +69,21 @@
 
 - 输出质量修复版本，强调"全量信息保留 + 总结区域正确渲染 + detailed 档位真正超长输出"
 
-## 后续版本
-
 ### `v0.1.9`（配额韧性 · Key 层）
 
-核心主题：在不动 API 层架构的前提下，先解决最高频的生产痛点——配额耗尽与全局取消广播
-
-目标能力：
+已纳入能力：
 
 - **LLM Key 池轮转**：支持 `OPENAI_API_KEYS=key1,key2,key3` 环境变量，round-robin 分配；429 时自动切换到下一个 Key 重试，不再等待固定 `retry_wait_seconds`
 - **429 感知退避增强**：在 `openai_client.py` 中识别 `openai.RateLimitError`，读取 `Retry-After` response header 作为等待时长；Key 全部耗尽才走指数退避兜底
-- **搜索工具 Key 轮转**：`libs/miroflow-tools` 中 google_search / sogou 等搜索工具支持 `GOOGLE_API_KEYS` 多 Key 列表轮转，行为与 LLM Key 池一致
+- **搜索工具 Key 轮转**：`libs/miroflow-tools` 中 `search_and_scrape_webpage.py`、`serper_mcp_server.py`、`searching_google_mcp_server.py` 支持 `SERPER_API_KEYS` / `SERPAPI_API_KEYS` 多 Key 列表轮转
 - **会话级 API 任务隔离**：`stop_current_api` 支持可选 `caller_id` 参数，按调用方定向取消；活动任务表从 `Set[task_id]` 改为 `{task_id: caller_id}` 映射，不再全局广播取消
+- **KeyPool 通用模块**：`libs/miroflow-tools` 新增 `KeyPool` 类，线程安全的 API Key 轮转池，支持 round-robin、429 限速标记与冷却、全部耗尽时返回最短剩余冷却时间
 
-验收标准：
+版本定位：
 
-- 单 Key 返回 429 时自动切换到下一 Key 并成功重试（单元测试 mock 验证）
-- Key 全部耗尽时优雅报错，不无限循环
-- `stop_current_api(caller_id=X)` 只取消该 caller 的任务，不影响其他并发任务
+- 配额韧性增强版本，强调"多 Key 自动轮转 + 429 感知退避 + 会话级定向取消"
+
+## 后续版本
 
 ### `v0.1.10`（可观测性基础 + 回归门禁）
 

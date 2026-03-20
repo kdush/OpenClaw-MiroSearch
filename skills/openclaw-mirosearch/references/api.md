@@ -24,6 +24,8 @@
 - 第 4 项：`search_result_num`（`10/20/30`）
 - 第 5 项：`verification_min_search_rounds`（仅 `verified` 模式生效）
 - 第 6 项：`output_detail_level`（`compact/balanced/detailed`）
+- 第 7 项：`render_mode`（可选，通常省略）
+- 第 8 项：`caller_id`（可选，v0.1.9+；调用方标识，配合 `stop_current` 定向取消）
 
 返回：
 
@@ -47,11 +49,21 @@
 
 `POST /gradio_api/call/stop_current`
 
-请求体：
+请求体（取消所有活跃任务）：
 
 ```json
 {"data": []}
 ```
+
+### 2.1) 按调用方定向取消（v0.1.9+）
+
+`POST /gradio_api/call/stop_current_by_caller`
+
+```json
+{"data": ["my-session-001"]}
+```
+
+仅取消该 `caller_id` 发起的任务，不影响其他并发任务。
 
 ## 3. 查询接口信息
 

@@ -17,6 +17,7 @@ from mcp.client.stdio import stdio_client
 from .utils import strip_markdown_links
 
 SERPER_API_KEY = os.environ.get("SERPER_API_KEY", "")
+SERPER_API_KEYS = os.environ.get("SERPER_API_KEYS", "")
 SERPER_BASE_URL = os.environ.get("SERPER_BASE_URL", "https://google.serper.dev")
 JINA_API_KEY = os.environ.get("JINA_API_KEY", "")
 JINA_BASE_URL = os.environ.get("JINA_BASE_URL", "https://r.jina.ai")
@@ -106,7 +107,7 @@ async def google_search(
     Returns:
         The search results.
     """
-    if SERPER_API_KEY == "":
+    if not SERPER_API_KEY and not SERPER_API_KEYS:
         return (
             "[ERROR]: SERPER_API_KEY is not set, google_search tool is not available."
         )
@@ -124,10 +125,15 @@ async def google_search(
         arguments["location"] = location
     if tbs:
         arguments["tbs"] = tbs
+    _subprocess_env = {"SERPER_BASE_URL": SERPER_BASE_URL}
+    if SERPER_API_KEYS:
+        _subprocess_env["SERPER_API_KEYS"] = SERPER_API_KEYS
+    if SERPER_API_KEY:
+        _subprocess_env["SERPER_API_KEY"] = SERPER_API_KEY
     server_params = StdioServerParameters(
         command=sys.executable,
         args=["-m", "miroflow_tools.mcp_servers.serper_mcp_server"],
-        env={"SERPER_API_KEY": SERPER_API_KEY, "SERPER_BASE_URL": SERPER_BASE_URL},
+        env=_subprocess_env,
     )
     result_content = ""
 

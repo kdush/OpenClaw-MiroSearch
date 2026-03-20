@@ -9,9 +9,26 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Added
 
-- 规划：同服务多 Key 轮转（LLM 与搜索源）
 - 规划：模型级 failback（主模型失败自动切换备用模型）
 - 规划：结构化冲突检测报告与专项评测集
+
+## [0.1.9] - 2026-03-21
+
+### Added
+
+- 新增 `KeyPool` 通用模块（`libs/miroflow-tools`）：线程安全的 API Key 轮转池，支持 round-robin 分配、429 限速标记与冷却、全部耗尽时返回最短剩余冷却时间
+- LLM Key 池轮转：`openai_client.py` 支持 `OPENAI_API_KEYS=key1,key2,key3` 环境变量，429 时自动切换到下一 Key 重试
+- 429 感知退避增强：识别 `openai.RateLimitError`，读取 `Retry-After` header；Key 全部耗尽才走指数退避兜底
+- 搜索工具 Key 轮转：`search_and_scrape_webpage.py`、`serper_mcp_server.py`、`searching_google_mcp_server.py` 支持 `SERPER_API_KEYS` / `SERPAPI_API_KEYS` 多 Key 环境变量
+- 会话级 API 任务隔离：`stop_current_api` 支持可选 `caller_id` 参数，按调用方定向取消；`run_research_once` 新增可选 `caller_id` 参数
+- 活动任务表从 `Set[task_id]` 改为 `{task_id: caller_id}` 映射，不再全局广播取消
+
+### Changed
+
+- `.env.example`（miroflow-agent / gradio-demo）及 `.env.compose.example` 新增多 Key 配置说明
+- Skill 文档（SKILL.md / api.md / usage.md）同步更新 `caller_id` 定向取消说明
+- 调用脚本 `call_openclaw_mirosearch.py` 新增 `--caller-id` 参数
+- Skill 包 `openclaw-mirosearch.zip` 重新打包
 
 ## [0.1.8] - 2026-03-20
 

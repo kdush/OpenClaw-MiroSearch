@@ -2122,7 +2122,7 @@ def _update_state_with_event(state: dict, message: dict):
 
 
 _CANCEL_FLAGS = {}
-_ACTIVE_TASK_IDS = set()
+_ACTIVE_TASK_IDS: dict[str, str] = {}  # {task_id: caller_id}
 _CANCEL_LOCK = threading.Lock()
 
 
@@ -2136,21 +2136,23 @@ def _reset_cancel_flag(task_id: str):
         _CANCEL_FLAGS[task_id] = False
 
 
-def _register_active_task(task_id: str):
+def _register_active_task(task_id: str, caller_id: str = ""):
     with _CANCEL_LOCK:
-        _ACTIVE_TASK_IDS.add(task_id)
+        _ACTIVE_TASK_IDS[task_id] = caller_id
         _CANCEL_FLAGS.setdefault(task_id, False)
 
 
 def _unregister_active_task(task_id: str):
     with _CANCEL_LOCK:
-        _ACTIVE_TASK_IDS.discard(task_id)
+        _ACTIVE_TASK_IDS.pop(task_id, None)
         _CANCEL_FLAGS.pop(task_id, None)
 
 
-def _get_active_task_ids() -> List[str]:
+def _get_active_task_ids(caller_id: Optional[str] = None) -> List[str]:
     with _CANCEL_LOCK:
-        return list(_ACTIVE_TASK_IDS)
+        if caller_id is not None:
+            return [tid for tid, cid in _ACTIVE_TASK_IDS.items() if cid == caller_id]
+        return list(_ACTIVE_TASK_IDS.keys())
 
 
 def _cancel_task_ids(task_ids: List[str]) -> int:
@@ -2317,6 +2319,7 @@ async def run_research_once(
     verification_min_search_rounds: int = DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS,
     output_detail_level: str = DEFAULT_OUTPUT_DETAIL_LEVEL,
     render_mode: Optional[str] = None,
+    caller_id: Optional[str] = None,
 ) -> str:
     """统一 API：支持按请求控制检索条数，最少检索轮次仅在 verified 模式生效。"""
     query = replace_chinese_punctuation(query or "")
@@ -2337,7 +2340,7 @@ async def run_research_once(
     )
     task_id = str(uuid.uuid4())
     _reset_cancel_flag(task_id)
-    _register_active_task(task_id)
+    _register_active_task(task_id, caller_id=caller_id or "")
     state = _init_render_state()
     try:
         async for message in stream_events_optimized(
@@ -2370,8 +2373,9 @@ def stop_current_ui(ui_state: Optional[dict] = None):
     )
 
 
-def stop_current_api():
-    active_task_ids = _get_active_task_ids()
+def stop_current_api(caller_id: Optional[str] = None):
+    caller_id = caller_id or None
+    active_task_ids = _get_active_task_ids(caller_id=caller_id)
     cancelled = _cancel_task_ids(active_task_ids)
     return {
         "cancelled": cancelled,
@@ -4292,6 +4296,8 @@ def build_demo():
         # 供统一 API 调用的隐藏输出
         api_output = gr.Markdown(visible=False)
         api_btn = gr.Button(value="api-run", visible=False)
+        api_render_mode = gr.Textbox(visible=False, value="")
+        api_caller_id = gr.Textbox(visible=False, value="")
         api_stop_output = gr.JSON(visible=False)
         api_stop_btn = gr.Button(value="api-stop", visible=False)
         history_restore_query = gr.Textbox(
@@ -4371,6 +4377,8 @@ def build_demo():
                 search_result_num_selector,
                 verification_min_rounds_selector,
                 output_detail_level_selector,
+                api_render_mode,
+                api_caller_id,
             ],
             outputs=[api_output],
             api_name="run_research_once",
@@ -4380,6 +4388,14 @@ def build_demo():
             inputs=[],
             outputs=[api_stop_output],
             api_name="stop_current",
+        )
+        api_stop_by_caller_btn = gr.Button(value="api-stop-caller", visible=False)
+        api_stop_by_caller_output = gr.JSON(visible=False)
+        api_stop_by_caller_btn.click(
+            fn=stop_current_api,
+            inputs=[api_caller_id],
+            outputs=[api_stop_by_caller_output],
+            api_name="stop_current_by_caller",
         )
         history_restore_btn.click(
             fn=restore_history_entry,

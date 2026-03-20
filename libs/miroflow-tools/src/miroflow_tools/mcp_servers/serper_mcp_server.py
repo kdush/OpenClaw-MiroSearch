@@ -20,9 +20,16 @@ from tenacity import (
 )
 
 from .utils import decode_http_urls_in_dict
+from .utils.key_pool import KeyPool
 
 SERPER_BASE_URL = os.getenv("SERPER_BASE_URL", "https://google.serper.dev")
 SERPER_API_KEY = os.getenv("SERPER_API_KEY", "")
+
+# Key 池轮转：优先从 SERPER_API_KEYS 读取多 Key，回退到单 Key
+try:
+    _serper_key_pool = KeyPool.from_env("SERPER_API_KEYS", fallback_key=SERPER_API_KEY or None)
+except ValueError:
+    _serper_key_pool = None
 
 # Initialize FastMCP server
 mcp = FastMCP("serper-mcp-server")
@@ -87,7 +94,7 @@ def google_search(
         Dictionary containing search results and metadata.
     """
     # Check for API key
-    if not SERPER_API_KEY:
+    if not _serper_key_pool and not SERPER_API_KEY:
         return json.dumps(
             {
                 "success": False,
@@ -131,7 +138,8 @@ def google_search(
             payload["autocorrect"] = autocorrect
 
         # Set up headers
-        headers = {"X-API-KEY": SERPER_API_KEY, "Content-Type": "application/json"}
+        active_key = _serper_key_pool.current_key() if _serper_key_pool else SERPER_API_KEY
+        headers = {"X-API-KEY": active_key, "Content-Type": "application/json"}
 
         # Make the API request
         response = make_serper_request(payload, headers)

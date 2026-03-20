@@ -13,6 +13,7 @@
 1. `POST /gradio_api/call/run_research_once`
 1. `GET /gradio_api/call/run_research_once/{event_id}`
 1. `POST /gradio_api/call/stop_current`
+1. `POST /gradio_api/call/stop_current_by_caller`（v0.1.9+）
 1. `GET /gradio_api/info`
 
 ## 1) run_research_once（统一标准接口）
@@ -35,6 +36,8 @@
 - `search_result_num`：单轮检索条数（可选，`10/20/30`）
 - `verification_min_search_rounds`：最少检索轮次（可选，仅 `verified` 生效）
 - `output_detail_level`：输出篇幅档位（可选，`compact/balanced/detailed`）
+- `render_mode`：渲染模式（可选，通常无需手动指定）
+- `caller_id`：调用方标识（可选，v0.1.9+；用于会话级任务隔离，配合 `stop_current` 定向取消）
 
 ### 响应
 
@@ -76,7 +79,19 @@
 }
 ```
 
-作用：请求终止当前任务。
+作用：请求终止所有活跃任务（向后兼容，0 参数）。
+
+### 3.1) stop_current_by_caller（v0.1.9+）
+
+`POST /gradio_api/call/stop_current_by_caller`
+
+```json
+{
+  "data": ["<caller_id>"]
+}
+```
+
+作用：按 `caller_id` 定向取消。仅终止该调用方发起的任务，不影响其他并发任务。
 
 ## 4) info
 

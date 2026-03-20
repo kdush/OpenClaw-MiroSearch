@@ -25,6 +25,7 @@ from tencentcloud.common.exception.tencent_cloud_sdk_exception import (
 from tencentcloud.common.profile.client_profile import ClientProfile
 from tencentcloud.common.profile.http_profile import HttpProfile
 
+from ..mcp_servers.utils.key_pool import KeyPool
 from ..mcp_servers.utils.url_unquote import decode_http_urls_in_dict
 
 # Configure logging
@@ -33,6 +34,16 @@ logger = logging.getLogger("miroflow")
 SERPER_BASE_URL = os.getenv("SERPER_BASE_URL", "https://google.serper.dev")
 SERPER_API_KEY = os.getenv("SERPER_API_KEY", "")
 SERPAPI_API_KEY = os.getenv("SERPAPI_API_KEY", "")
+
+# Key 池轮转：优先从 *_API_KEYS 读取多 Key，回退到单 Key
+try:
+    _serper_key_pool = KeyPool.from_env("SERPER_API_KEYS", fallback_key=SERPER_API_KEY or None)
+except ValueError:
+    _serper_key_pool = None
+try:
+    _serpapi_key_pool = KeyPool.from_env("SERPAPI_API_KEYS", fallback_key=SERPAPI_API_KEY or None)
+except ValueError:
+    _serpapi_key_pool = None
 SEARXNG_BASE_URL = os.getenv("SEARXNG_BASE_URL", "")
 DEFAULT_SEARCH_PROVIDER_ORDER = "searxng,serpapi,serper"
 SEARCH_PROVIDER_ORDER = os.getenv(
@@ -648,8 +659,9 @@ async def google_search(
                 if autocorrect is not None:
                     payload["autocorrect"] = autocorrect
 
+                _active_serper_key = _serper_key_pool.current_key() if _serper_key_pool else SERPER_API_KEY
                 headers = {
-                    "X-API-KEY": SERPER_API_KEY,
+                    "X-API-KEY": _active_serper_key,
                     "Content-Type": "application/json",
                 }
                 response = await make_serper_request(payload, headers)
@@ -676,7 +688,7 @@ async def google_search(
                 params: Dict[str, Any] = {
                     "engine": "google",
                     "q": search_query.strip(),
-                    "api_key": SERPAPI_API_KEY,
+                    "api_key": _serpapi_key_pool.current_key() if _serpapi_key_pool else SERPAPI_API_KEY,
                     "hl": serpapi_hl,
                     "gl": gl,
                     "num": result_num,
@@ -777,8 +789,8 @@ async def google_search(
             """执行搜索并返回结果，支持串行回退、并发聚合和置信度不足串行补检。"""
             nonlocal search_provider
             available_providers = {
-                "serper": bool(SERPER_API_KEY),
-                "serpapi": bool(SERPAPI_API_KEY),
+                "serper": bool(_serper_key_pool or SERPER_API_KEY),
+                "serpapi": bool(_serpapi_key_pool or SERPAPI_API_KEY),
                 "searxng": bool(SEARXNG_BASE_URL),
             }
             configured_mode = SEARCH_PROVIDER_MODE.strip().lower()

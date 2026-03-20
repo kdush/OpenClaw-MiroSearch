@@ -23,7 +23,9 @@ import time
 from typing import Any, Dict, List, Tuple, Union
 
 import tiktoken
-from openai import AsyncOpenAI, DefaultAsyncHttpxClient, DefaultHttpxClient, OpenAI
+from openai import AsyncOpenAI, DefaultAsyncHttpxClient, DefaultHttpxClient, OpenAI, RateLimitError
+
+from miroflow_tools.mcp_servers.utils.key_pool import KeyPool
 
 from ...utils.prompt_utils import generate_mcp_system_prompt, generate_no_mcp_system_prompt
 from ..base_client import BaseClient
@@ -97,6 +99,18 @@ class OpenAIClient(BaseClient):
                 "LLM_VERIFICATION_MAX_TOKENS", DEFAULT_VERIFICATION_MAX_TOKENS
             )
         )
+        # Key 池轮转：优先从 OPENAI_API_KEYS 读取多 Key，回退到单 Key
+        try:
+            self._key_pool = KeyPool.from_env("OPENAI_API_KEYS", fallback_key=self.api_key)
+        except ValueError:
+            # 兜底：用 cfg 中的单 key 构建池
+            self._key_pool = KeyPool([self.api_key or "EMPTY"])
+        if self._key_pool.size > 1:
+            self.task_log.log_step(
+                "info",
+                "LLM | Key Pool",
+                f"已加载 {self._key_pool.size} 个 API Key，启用 round-robin 轮转",
+            )
 
     @staticmethod
     def _read_env_int(name: str, default: int) -> int:
@@ -136,6 +150,19 @@ class OpenAIClient(BaseClient):
             return normalized_text
         return normalized_text[: self.tool_result_max_chars] + "...(truncated)"
 
+    @staticmethod
+    def _extract_retry_after(error: RateLimitError, default: float = 10.0) -> float:
+        """从 RateLimitError 的 response header 中提取 Retry-After 秒数。"""
+        try:
+            response = getattr(error, "response", None)
+            if response is not None:
+                raw = response.headers.get("Retry-After") or response.headers.get("retry-after")
+                if raw:
+                    return max(1.0, float(raw))
+        except (ValueError, TypeError, AttributeError):
+            pass
+        return default
+
     def _create_client(self) -> Union[AsyncOpenAI, OpenAI]:
         """Create LLM client"""
         timeout_seconds = self._read_env_float(
@@ -145,15 +172,16 @@ class OpenAIClient(BaseClient):
             "headers": {"x-upstream-session-id": self.task_id},
             "timeout": timeout_seconds,
         }
+        active_key = self._key_pool.current_key() if hasattr(self, "_key_pool") else self.api_key
         if self.async_client:
             return AsyncOpenAI(
-                api_key=self.api_key,
+                api_key=active_key,
                 base_url=self.base_url,
                 http_client=DefaultAsyncHttpxClient(**http_client_args),
             )
         else:
             return OpenAI(
-                api_key=self.api_key,
+                api_key=active_key,
                 base_url=self.base_url,
                 http_client=DefaultHttpxClient(**http_client_args),
             )
@@ -260,7 +288,9 @@ class OpenAIClient(BaseClient):
                     f"Convert tool definitions failed: {str(e)}",
                 )
 
-        for attempt in range(max_retries):
+        attempt = 0
+        _429_streak = 0  # 连续 429 计数，达到 pool.size 时视为一轮完整失败
+        while attempt < max_retries:
             params = {
                 "model": request_model_name,
                 "temperature": self.temperature,
@@ -354,6 +384,7 @@ class OpenAIClient(BaseClient):
                             f"Response was truncated due to length limit (attempt {attempt + 1}/{max_retries}). Increasing max_tokens to {current_max_tokens} and retrying...",
                         )
                         await asyncio.sleep(base_wait_time)
+                        attempt += 1
                         continue
                     else:
                         # Last retry, return the truncated response instead of raising exception
@@ -386,6 +417,7 @@ class OpenAIClient(BaseClient):
                                 f"Severe repeat: the last 50 chars appeared over 5 times (attempt {attempt + 1}/{max_retries}), retrying...",
                             )
                             await asyncio.sleep(base_wait_time)
+                            attempt += 1
                             continue
                         else:
                             # Last retry, return anyway
@@ -407,6 +439,7 @@ class OpenAIClient(BaseClient):
                         f"Timeout error (attempt {attempt + 1}/{max_retries}): {str(e)}, retrying...",
                     )
                     await asyncio.sleep(base_wait_time)
+                    attempt += 1
                     continue
                 else:
                     self.task_log.log_step(
@@ -422,6 +455,50 @@ class OpenAIClient(BaseClient):
                     f"Request was cancelled: {str(e)}",
                 )
                 raise e
+            except RateLimitError as e:
+                # 429 感知退避：提取 Retry-After，标记当前 Key，尝试切换
+                _429_streak += 1
+                retry_after = self._extract_retry_after(e)
+                current_key = self._key_pool.current_key()
+                self._key_pool.mark_rate_limited(current_key, retry_after)
+
+                if _429_streak < self._key_pool.size:
+                    # 本轮还有未试过的 Key：立即切换，不消耗重试次数
+                    next_key = self._key_pool.next_available_key()
+                    if next_key:
+                        self.client.api_key = next_key
+                        self.task_log.log_step(
+                            "warning",
+                            "LLM | Key Rotated (429)",
+                            f"RateLimitError (Retry-After={retry_after:.0f}s), "
+                            f"switched to next key ({_429_streak}/{self._key_pool.size})",
+                        )
+                        continue
+
+                # 一轮完整遍历后所有 Key 均 429，视为一次失败
+                _429_streak = 0
+                attempt += 1
+                wait_time = self._key_pool.min_cooldown_remaining()
+                if wait_time > 0 and attempt < max_retries:
+                    capped_wait = min(wait_time, 120.0)
+                    self.task_log.log_step(
+                        "warning",
+                        "LLM | All Keys Rate Limited",
+                        f"All {self._key_pool.size} keys rate-limited (attempt {attempt}/{max_retries}), "
+                        f"waiting {capped_wait:.1f}s for cooldown",
+                    )
+                    await asyncio.sleep(capped_wait)
+                    recovered_key = self._key_pool.next_available_key()
+                    if recovered_key:
+                        self.client.api_key = recovered_key
+                    continue
+                if attempt >= max_retries:
+                    self.task_log.log_step(
+                        "error",
+                        "LLM | Rate Limit Exhausted",
+                        f"All keys exhausted after {max_retries} attempts: {str(e)}",
+                    )
+                    raise e
             except Exception as e:
                 if "Error code: 400" in str(e) and "longer than the model" in str(e):
                     self.task_log.log_step(
@@ -438,6 +515,7 @@ class OpenAIClient(BaseClient):
                             f"Error (attempt {attempt + 1}/{max_retries}): {str(e)}, retrying...",
                         )
                         await asyncio.sleep(base_wait_time)
+                        attempt += 1
                         continue
                     else:
                         self.task_log.log_step(

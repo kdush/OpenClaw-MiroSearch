@@ -219,9 +219,9 @@ cd apps/miroflow-agent && uv run pytest
 
 See: [`docs/ROADMAP.md`](docs/ROADMAP.md)
 
-Current planning is divided into four phases:
+Current planning is divided into five phases:
 
-- Phase A (releasable baseline): API finalization, minimal regression testing, release `v0.1.0`
-- Phase B (production-ready): Multi-key rotation, model fallback, observability metrics, release `v0.2.0`
-- Phase C (quality enhancement): Digital fact cross-validation and wording unification, release `v0.3.0`
-- Phase D (ecosystem distribution): OpenClaw skill release and one-click deployment template, release `v1.0.0`
+- `v0.2.0` (production-ready): Standalone API layer (decoupled from Gradio), auth & rate limiting, result caching, SearchProvider protocol, multi-key rotation, model failback, Prometheus observability, async task queue
+- `v0.2.5` (MCP standard): Expose `run_research_once` as a standard MCP tool (stdio + SSE transport) for native AI IDE integration
+- `v0.3.0` (quality enhancement): Eval pipeline in CI, multi-source RRF ranking, multilingual retrieval optimization, research result persistence, structured conflict detection
+- `v1.0.0` (ecosystem distribution): Helm Chart / one-click cloud deploy, skill versioned release, compatibility matrix auto-verification

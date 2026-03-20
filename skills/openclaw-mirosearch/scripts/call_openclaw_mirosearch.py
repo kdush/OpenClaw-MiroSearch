@@ -104,6 +104,7 @@ def run_research_once(
     verification_min_search_rounds: int,
     output_detail_level: str,
     timeout: int,
+    caller_id: str | None = None,
 ) -> str:
     base_url = _normalize_base_url(base_url)
     start_url = f"{base_url}/gradio_api/call/{parse.quote(UNIFIED_API_NAME)}"
@@ -117,6 +118,8 @@ def run_research_once(
                 search_result_num,
                 verification_min_search_rounds,
                 output_detail_level,
+                None,  # render_mode
+                caller_id,
             ]
         },
         timeout=timeout,
@@ -180,6 +183,11 @@ def main() -> int:
         choices=VALID_OUTPUT_DETAIL_LEVELS,
         help="输出篇幅档位：compact/balanced/detailed",
     )
+    parser.add_argument(
+        "--caller-id",
+        default=None,
+        help="调用方标识（v0.1.9+，配合 stop_current 定向取消）",
+    )
     parser.add_argument("--timeout", type=int, default=240, help="总超时秒数")
     args = parser.parse_args()
 
@@ -193,6 +201,7 @@ def main() -> int:
             verification_min_search_rounds=args.verification_min_search_rounds,
             output_detail_level=args.output_detail_level,
             timeout=args.timeout,
+            caller_id=args.caller_id,
         )
     except Exception as exc:
         print(f"调用失败: {exc}", file=sys.stderr)

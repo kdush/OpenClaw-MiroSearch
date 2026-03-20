@@ -218,9 +218,9 @@ cd apps/miroflow-agent && uv run pytest
 
 路线图详见：[`docs/ROADMAP.md`](docs/ROADMAP.md)
 
-当前规划分为四个阶段：
+当前规划分为五个阶段：
 
-- 阶段 A（可发布基线）：接口定版、最小回归测试、发布 `v0.1.0`
-- 阶段 B（生产化）：多 Key 轮转、模型 failback、观测指标、发布 `v0.2.0`
-- 阶段 C（质量增强）：数字事实交叉校验与口径统一、发布 `v0.3.0`
-- 阶段 D（生态分发）：OpenClaw 技能发布与一键化部署模板、发布 `v1.0.0`
+- `v0.2.0`（生产化）：API 层独立（脱离 Gradio）、认证限流、结果缓存、SearchProvider 协议化、多 Key 轮转、模型 failback、Prometheus 可观测性、异步任务队列
+- `v0.2.5`（MCP 标准暴露）：将 `run_research_once` 暴露为标准 MCP tool（stdio + SSE transport），支持 AI IDE 原生接入
+- `v0.3.0`（质量增强）：Eval Pipeline CI 化、多源 RRF 融合排序、多语言检索优化、研究结果持久化、结构化冲突检测
+- `v1.0.0`（生态分发）：Helm Chart / 一键云部署、技能包版本化发布、兼容矩阵自动验证

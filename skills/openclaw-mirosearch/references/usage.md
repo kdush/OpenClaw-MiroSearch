@@ -18,7 +18,7 @@
 1. 发起：`POST /gradio_api/call/run_research_once`
 1. 轮询：`GET /gradio_api/call/run_research_once/{event_id}`
 1. 终态：只以 SSE `event: complete` 为准
-1. 失败或卡住：`POST /gradio_api/call/stop_current` 后重试
+1. 失败或卡住：`POST /gradio_api/call/stop_current` 后重试（v0.1.9+ 可传 `caller_id` 定向取消，不影响其他并发任务）
 
 ## 3. 参数推荐模板
 

@@ -77,9 +77,9 @@
 
 ## 稳定性与重试
 
-- 轮询超时：调用 `stop_current` 后再发起新任务
+- 轮询超时：调用 `stop_current` 后再发起新任务（v0.1.9+ 支持传入 `caller_id` 定向取消，不影响其他并发任务）
 - 返回 `No \\boxed{} content found in the final answer.`：按“未收敛”处理并重试
-- 限流 `429`：指数退避，必要时降级到 `mode=quota`
+- 限流 `429`：服务端已支持多 Key 自动轮转（v0.1.9+），单 Key 限流时自动切换；调用方仍建议指数退避，必要时降级到 `mode=quota`
 - 若看到长期 `running` 但无推进：检查最新 `heartbeat.data.stage`；系统会自动回收陈旧 `running` 为 `failed`
 
 ## 输出消费建议
