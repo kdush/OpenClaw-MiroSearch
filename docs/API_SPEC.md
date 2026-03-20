@@ -1,6 +1,8 @@
 # API 规格说明
 
-本文档定义 OpenClaw-MiroSearch 对外 API 的调用约定（统一版本）。
+本文档定义 OpenClaw-MiroSearch 对外 API 的调用约定（单一版本）。
+
+> 版本约束：研究接口仅保留 `run_research_once`，不再区分 `v1/v2` 双接口。
 
 ## 基础地址
 
@@ -110,6 +112,27 @@
 - `422`：参数格式错误（通常是 `data` 数组长度或字段类型不匹配）
 - `429`：上游限流，建议按 `retry_after` 或指数退避重试
 - 超时：建议先调用 `stop_current` 清理挂起任务后再重试
+
+## 面向 AI Agent 的接入说明
+
+### 最小调用闭环
+
+1. `GET /gradio_api/info` 确认服务在线与参数签名
+2. `POST /gradio_api/call/run_research_once` 发起任务，保存 `event_id`
+3. `GET /gradio_api/call/run_research_once/{event_id}` 轮询 SSE，直到 `event: complete`
+4. 仅将 `complete` 的第一项 Markdown 作为最终结论输入下游推理
+
+### 参数建议（按任务意图）
+
+- 快速问答：`mode=balanced` + `search_profile=parallel-trusted` + `output_detail_level=compact`
+- 普通研究：`mode=balanced` + `search_profile=parallel-trusted` + `output_detail_level=balanced`
+- 高核查/长文：`mode=verified` + `search_profile=parallel-trusted` + `search_result_num=30` + `verification_min_search_rounds=4` + `output_detail_level=detailed`
+
+### 失败处理建议
+
+- 若 SSE 未出现 `complete`：先调 `stop_current`，再重试
+- 若返回 `No \\boxed{} content found in the final answer.`：视为“未收敛”，不是服务不可用
+- 若出现 429：指数退避并降级 `mode`（`thinking -> balanced -> quota`）
 
 ## 可观测性说明（google_search）
 

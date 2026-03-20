@@ -17,6 +17,7 @@
 - [上游归属声明](./OPEN_SOURCE_ATTRIBUTION.md)
 - [路线图](./ROADMAP.md)
 - [API 规格](./API_SPEC.md)
+- [AI Agent 接入指引](./AI_AGENT_INTEGRATION.md)
 - [Docker Compose 独立部署](./DEPLOY_DOCKER_COMPOSE.md)
 - [本地工具部署](./LOCAL-TOOL-DEPLOYMENT.md)
 - [质量校验记录](./QA.md)

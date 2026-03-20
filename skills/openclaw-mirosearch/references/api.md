@@ -2,7 +2,9 @@
 
 默认地址：`http://127.0.0.1:8080`
 
-## 1. 单次研究接口（统一版本）
+## 1. 单次研究接口（单一版本）
+
+> 版本约束：仅保留 `run_research_once`，不再区分 `v1/v2` 双接口。
 
 ### 1) 发起任务
 
@@ -111,3 +113,10 @@ python3 scripts/call_openclaw_mirosearch.py \
   2. `thinking -> balanced`
   3. `balanced -> quota`
   4. `search_profile` 切换为 `searxng-only`（省额度）或 `parallel-trusted`（提质量）
+
+## 9. 面向 AI Agent 的调用约定
+
+- 必须等待 SSE 的 `event: complete`，不能把中间事件当作终态
+- `No \\boxed{} content found in the final answer.` 代表未收敛，不代表服务故障
+- 推荐将 `output_detail_level` 显式传入，避免依赖服务端默认值
+- 若超时或卡住，先 `stop_current` 再发起新任务，避免挂起任务累积

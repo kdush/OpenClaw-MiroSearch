@@ -40,7 +40,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Changed
 
-- 对外研究接口统一为单端点：`run_research_once`（移除 `run_research_once_v2`）
+- 对外研究接口统一为单端点：`run_research_once`（历史双端点已收敛）
 - `run_research_once` 统一采用五参数输入：`query/mode/search_profile/search_result_num/verification_min_search_rounds`
 - UI 默认渲染为“综合结果优先 + 过程折叠”，API 默认渲染为“仅综合结果”
 - OpenClaw 技能文档与调用脚本更新为统一单接口规范

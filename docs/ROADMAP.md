@@ -23,7 +23,7 @@
 
 已纳入能力：
 
-- 对外研究接口统一：`run_research_once`（移除 `run_research_once_v2`）
+- 对外研究接口统一：`run_research_once`（历史双端点已收敛）
 - 统一单次研究请求参数：`query/mode/search_profile/search_result_num/verification_min_search_rounds`
 - UI 输出默认“综合结果优先 + 过程折叠”，降低多轮中间稿干扰
 - API 输出支持按篇幅档位控制渲染粒度，更适合程序化消费
