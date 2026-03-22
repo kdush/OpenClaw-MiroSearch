@@ -11,6 +11,7 @@ search:
   default_lang: "auto"
   formats:
     - html
+    - json
 
 outgoing:
   request_timeout: 6.0
