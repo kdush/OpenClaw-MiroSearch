@@ -191,8 +191,8 @@ STALE_TASK_RUNNING_TIMEOUT_SECONDS = max(
 )
 STALE_TASK_REAPER_SCAN_LIMIT = max(10, _env_int("STALE_TASK_REAPER_SCAN_LIMIT", 500))
 LOCAL_FONT_FAMILY_STACK = (
-    "'Inter', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', "
-    "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+    "'Avenir Next', 'SF Pro Display', 'PingFang SC', 'Hiragino Sans GB', "
+    "'Microsoft YaHei', -apple-system, BlinkMacSystemFont, sans-serif"
 )
 SKILLS_PACKAGE_SAFE_DIR = Path(__file__).resolve().parents[2] / "skills"
 SKILLS_PACKAGE_DEFAULT_FILENAME = "openclaw-mirosearch.zip"
@@ -344,29 +344,6 @@ SEARCH_PROFILE_CHOICES = [
     "searxng-only",
 ]
 
-SEARCH_HISTORY_STORAGE_KEY = os.getenv(
-    "SEARCH_HISTORY_STORAGE_KEY", "mirothinker.demo.search_history"
-)
-SEARCH_HISTORY_MAX_ITEMS = max(1, _env_int("SEARCH_HISTORY_MAX_ITEMS", 8))
-SEARCH_HISTORY_TITLE = "最近搜索"
-SEARCH_HISTORY_HINT = "仅保存在当前浏览器，点击可回填并回显结果，删除不影响当前结果。"
-SEARCH_HISTORY_EMPTY_TEXT = "还没有搜索历史，开始一次研究后会显示在这里。"
-SEARCH_HISTORY_RESULT_MAX_HTML_CHARS = max(
-    2000, _env_int("SEARCH_HISTORY_RESULT_MAX_HTML_CHARS", 120000)
-)
-SEARCH_HISTORY_RESULT_MAX_TEXT_CHARS = max(
-    1000, _env_int("SEARCH_HISTORY_RESULT_MAX_TEXT_CHARS", 40000)
-)
-SEARCH_HISTORY_RESULT_CAPTURE_TIMEOUT_MS = max(
-    5000, _env_int("SEARCH_HISTORY_RESULT_CAPTURE_TIMEOUT_MS", 300000)
-)
-SEARCH_HISTORY_RESULT_CAPTURE_INTERVAL_MS = max(
-    200, _env_int("SEARCH_HISTORY_RESULT_CAPTURE_INTERVAL_MS", 600)
-)
-SEARCH_HISTORY_RESULT_CAPTURE_DEBOUNCE_MS = max(
-    100, _env_int("SEARCH_HISTORY_RESULT_CAPTURE_DEBOUNCE_MS", 350)
-)
-SEARCH_HISTORY_PLACEHOLDER_KEYWORDS = ("等待开始研究", "等待开始")
 SEARCH_STAGE_TOOL_NAMES = {
     "google_search",
     "sogou_search",
@@ -2245,7 +2222,6 @@ async def gradio_run(
             gr.update(interactive=False),
             gr.update(interactive=True),
             ui_state,
-            initial_markdown,
         )
         async for message in stream_events_optimized(
             task_id,
@@ -2272,7 +2248,6 @@ async def gradio_run(
                     gr.update(interactive=False),
                     gr.update(interactive=True),
                     ui_state,
-                    heartbeat_markdown,
                 )
                 continue
 
@@ -2287,7 +2262,6 @@ async def gradio_run(
                 gr.update(interactive=False),
                 gr.update(interactive=True),
                 ui_state,
-                md,
             )
             # Small delay to allow Gradio to process the update
             await asyncio.sleep(0.01)
@@ -2301,11 +2275,6 @@ async def gradio_run(
             gr.update(interactive=True),
             gr.update(interactive=False),
             ui_state,
-            _render_markdown(
-                state,
-                render_mode=resolved_ui_render_mode,
-                final_summary_merge_strategy=resolved_summary_merge_strategy,
-            ),
         )
     finally:
         _unregister_active_task(task_id)
@@ -2382,17 +2351,6 @@ def stop_current_api(caller_id: Optional[str] = None):
         "active_task_ids": active_task_ids,
     }
 
-
-def restore_history_entry(
-    query: str,
-    result_markdown: str,
-    ui_state: Optional[dict] = None,
-):
-    """通过 Gradio 受控更新恢复历史查询与结果，避免直接操作前端 DOM。"""
-    restored_query = replace_chinese_punctuation(query or "")
-    restored_markdown = result_markdown or "*该条历史暂无可回显结论，请重新运行一次。*"
-    next_ui_state = dict(ui_state or {})
-    return restored_query, restored_markdown, restored_markdown, next_ui_state
 
 
 def _resolve_task_log_dir() -> Path:
@@ -2541,414 +2499,245 @@ def build_demo():
     fallback_favicon_data_uri = _build_fallback_favicon_data_uri()
 
     custom_css = """
-    /* ========== MiroThinker - Modern Clean Design ========== */
+    /* ========== MiroThinker - Clean Emerald Design ========== */
     
     /* Base */
     .gradio-container {
+        --app-bg: #f9fafb;
+        --panel-bg: #ffffff;
+        --panel-border: rgba(0, 0, 0, 0.06);
+        --panel-shadow: 0 1px 3px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.03);
+        --ink-strong: #111827;
+        --ink-body: #374151;
+        --ink-soft: #6b7280;
+        --accent: #10b981;
+        --accent-strong: #059669;
+        --accent-soft: #d1fae5;
         max-width: 100% !important;
         margin: 0 !important;
         padding: 0 !important;
         font-family: __LOCAL_FONT_FAMILY_STACK__ !important;
         background: #ffffff !important;
+        color: var(--ink-strong);
         min-height: 100vh;
+        position: relative;
     }
 
-    /* 历史回填内部同步组件：需要渲染到 DOM，但不展示 */
-    .history-sync-hidden {
-        display: none !important;
-        visibility: hidden !important;
-        width: 0 !important;
-        height: 0 !important;
-        min-height: 0 !important;
-        margin: 0 !important;
-        padding: 0 !important;
+    .gradio-container::before {
+        display: none;
+    }
+
+    /* 强力清除 Gradio 默认包装盒的丑陋背景与边框 */
+    .gradio-container .form,
+    .gradio-container fieldset,
+    #main-content-column .form,
+    #right-options-column .form,
+    #input-section .block,
+    #input-section .solid,
+    #options-panel .block,
+    #options-panel .solid {
+        background: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
+    }
+
+
+
+    /* ===== Options Panel ===== */
+    #right-options-column {
+        gap: 0 !important;
+    }
+
+    #options-panel {
+        width: 100% !important;
+        background: #ffffff !important;
+        border: 1px solid rgba(0, 0, 0, 0.03) !important;
+        border-radius: 16px !important;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.02) !important;
+        padding: 18px 16px !important;
+    }
+
+    .options-title {
+        font-size: 0.72em;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: #64748b;
+        margin-bottom: 12px;
+    }
+
+    #mode-selector,
+    #search-profile-selector,
+    #search-result-num-selector,
+    #verification-rounds-selector,
+    #output-detail-level-selector {
         border: 0 !important;
-        overflow: hidden !important;
-    }
-    
-    footer { display: none !important; }
-    
-    /* ===== Top Navigation ===== */
-    .top-nav {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 16px;
-        padding: 14px 32px;
-        border-bottom: 1px solid #f0f0f0;
-        background: #ffffff;
-    }
-    
-    .nav-left {
-        display: flex;
-        align-items: center;
-        gap: 20px;
-    }
-    
-    .nav-brand {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        font-weight: 600;
-        font-size: 1.1em;
-        color: #18181b;
+        background: transparent !important;
+        padding: 0 !important;
+        margin-bottom: 14px !important;
+        box-shadow: none !important;
     }
 
-    .brand-logo {
-        height: 32px;
-        width: auto;
-        max-width: 120px;
-        object-fit: contain;
-        display: block;
-        flex-shrink: 0;
+    #mode-selector .container,
+    #search-profile-selector .container,
+    #search-result-num-selector .container,
+    #verification-rounds-selector .container,
+    #output-detail-level-selector .container {
+        background: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
+        padding: 0 !important;
     }
 
-    .nav-brand-text {
-        line-height: 1.2;
-        white-space: nowrap;
+    #mode-selector label,
+    #search-profile-selector label,
+    #search-result-num-selector label,
+    #verification-rounds-selector label,
+    #output-detail-level-selector label {
+        color: var(--ink-strong) !important;
+        font-weight: 600 !important;
     }
 
-    .nav-right {
-        display: flex;
-        align-items: center;
-        justify-content: flex-end;
-        min-width: 280px;
-    }
-
-    .skills-top-link {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        color: #0f766e;
-        font-size: 0.83em;
-        line-height: 1.2;
-        text-decoration: none;
-        border: 1px solid #99d8cb;
-        border-radius: 999px;
-        background: #f3fcfa;
-        padding: 7px 14px;
-        white-space: nowrap;
-        transition: all 0.2s ease;
-        user-select: none;
-    }
-
-    .skills-top-link:hover {
-        border-color: #7ccbbc;
-        background: #ecfaf6;
-        color: #0f766e;
-    }
-
-    .skills-top-link:focus-visible {
-        outline: 2px solid #99f6e4;
-        outline-offset: 2px;
-    }
-
-    .skills-top-link-disabled {
-        border-color: #d1d5db;
-        background: #f8fafc;
-        color: #94a3b8;
-        cursor: not-allowed;
-    }
-    
-    /* ===== Hero Section ===== */
-    .hero-section {
-        text-align: center;
-        padding: 26px 24px 24px;
-        max-width: 900px;
-        margin: 0 auto;
-    }
-
-    .hero-brand {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        gap: 10px;
-        margin-bottom: 18px;
-    }
-
-    .hero-logo {
-        width: min(280px, 68vw);
-        max-height: 104px;
-        height: auto;
-        object-fit: contain;
-        box-shadow: none;
-        border-radius: 0;
-        flex-shrink: 0;
-    }
-
-    .hero-brand-name {
-        font-size: 0.96em;
-        font-weight: 600;
-        color: #0f172a;
+    #mode-selector [data-testid="block-info"],
+    #search-profile-selector [data-testid="block-info"],
+    #search-result-num-selector [data-testid="block-info"],
+    #verification-rounds-selector [data-testid="block-info"],
+    #output-detail-level-selector [data-testid="block-info"] {
+        color: var(--ink-strong) !important;
+        font-weight: 700 !important;
+        font-size: 0.9em !important;
         letter-spacing: 0.01em;
     }
-    
-    .hero-title {
-        font-size: 3em;
-        font-weight: 700;
-        background: linear-gradient(135deg, #10b981 0%, #14b8a6 50%, #06b6d4 100%);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        background-clip: text;
-        margin: 0 0 16px 0;
-        letter-spacing: -0.02em;
-    }
-    
-    .hero-subtitle {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        gap: 16px;
-        color: #71717a;
-        font-size: 1em;
-    }
-    
-    .hero-line {
-        width: 40px;
-        height: 1px;
-        background: #d4d4d8;
+
+    #mode-selector .md p,
+    #search-profile-selector .md p,
+    #search-result-num-selector .md p,
+    #verification-rounds-selector .md p,
+    #output-detail-level-selector .md p {
+        color: #94a3b8 !important;
+        font-size: 0.7em !important;
+        line-height: 1.45 !important;
+        margin: 4px 0 8px !important;
     }
 
-    
-    /* ===== Input Section ===== */
-    #input-section {
-        max-width: 720px !important;
-        margin: 0 auto 40px !important;
-        background: #ffffff;
-        border: 1px solid #e0e0e0;
-        border-radius: 16px;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.04);
-    }
-    
-    #question-input {
-        padding: 20px 24px !important;
+    #mode-selector .wrap,
+    #search-profile-selector .wrap,
+    #search-result-num-selector .wrap,
+    #verification-rounds-selector .wrap,
+    #output-detail-level-selector .wrap {
         background: #ffffff !important;
-        border: none !important;
+        border: 1px solid rgba(0, 0, 0, 0.1) !important;
+        border-radius: 10px !important;
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02) !important;
+        transition: border-color 0.2s ease;
     }
     
-    #question-input textarea {
-        background: #ffffff !important;
-        border: none !important;
-        font-size: 1.05em !important;
-        line-height: 1.7 !important;
-        color: #18181b !important;
-        box-shadow: none !important;
-    }
-    
-    #question-input textarea:focus {
-        outline: none !important;
-        box-shadow: none !important;
-    }
-    
-    #question-input textarea::placeholder {
-        color: #9ca3af !important;
+    #mode-selector .wrap:hover,
+    #search-profile-selector .wrap:hover,
+    #search-result-num-selector .wrap:hover,
+    #verification-rounds-selector .wrap:hover,
+    #output-detail-level-selector .wrap:hover {
+        border-color: rgba(16, 185, 129, 0.4) !important;
     }
 
-    #search-history-shell {
-        padding: 0 24px 12px !important;
+    #mode-selector input,
+    #search-profile-selector input,
+    #search-result-num-selector input,
+    #verification-rounds-selector input,
+    #output-detail-level-selector input {
+        color: var(--ink-strong) !important;
+        font-weight: 600 !important;
     }
 
-    .search-history-card {
-        border: 1px solid #e8ecef;
-        border-radius: 14px;
-        background: linear-gradient(180deg, #fcfffd 0%, #f7fbfa 100%);
-        padding: 14px 16px;
-    }
-
-    .search-history-head {
-        display: flex;
-        align-items: flex-start;
-        justify-content: space-between;
-        gap: 12px;
-        margin-bottom: 10px;
-    }
-
-    .search-history-title {
-        font-size: 0.92em;
-        font-weight: 600;
-        color: #1f2937;
-        margin: 0;
-    }
-
-    .search-history-hint {
-        font-size: 0.78em;
-        color: #6b7280;
-        line-height: 1.5;
-        margin-top: 4px;
-    }
-
-    .search-history-clear {
-        border: 1px solid #dbe3e8;
-        background: #ffffff;
-        color: #4b5563;
-        border-radius: 999px;
-        font-size: 0.78em;
-        font-weight: 500;
-        padding: 6px 12px;
-        cursor: pointer;
-        transition: all 0.2s ease;
-        white-space: nowrap;
-    }
-
-    .search-history-clear:hover {
-        border-color: #c7d2da;
-        background: #f8fafc;
-        color: #111827;
-    }
-
-    .search-history-list {
-        display: flex;
-        flex-direction: column;
-        gap: 8px;
-        max-height: 184px;
-        overflow-y: auto;
-        padding-right: 2px;
-    }
-
-    .search-history-item {
-        display: flex;
-        align-items: stretch;
-        gap: 8px;
-    }
-
-    .search-history-entry {
-        flex: 1;
-        min-width: 0;
-        border: 1px solid #e5eaee;
-        background: #ffffff;
-        border-radius: 12px;
-        padding: 10px 12px;
-        text-align: left;
-        cursor: pointer;
-        transition: all 0.2s ease;
-    }
-
-    .search-history-entry:hover {
-        border-color: #b9e3d4;
-        background: #f9fffc;
-        transform: translateY(-1px);
-    }
-
-    .search-history-query {
-        color: #111827;
-        font-size: 0.9em;
-        line-height: 1.5;
-        display: -webkit-box;
-        -webkit-line-clamp: 2;
-        -webkit-box-orient: vertical;
-        overflow: hidden;
-        word-break: break-word;
-    }
-
-    .search-history-meta {
-        color: #6b7280;
-        font-size: 0.76em;
-        margin-top: 6px;
-    }
-
-    .search-history-delete {
-        width: 38px;
-        flex-shrink: 0;
-        border: 1px solid #e5e7eb;
-        background: #ffffff;
-        color: #9ca3af;
-        border-radius: 12px;
-        cursor: pointer;
-        transition: all 0.2s ease;
-        font-size: 1.05em;
-    }
-
-    .search-history-delete:hover {
-        border-color: #fecaca;
-        background: #fff5f5;
-        color: #dc2626;
-    }
-
-    .search-history-empty {
-        border: 1px dashed #d8e2e8;
-        border-radius: 12px;
-        padding: 14px 12px;
-        color: #6b7280;
-        font-size: 0.82em;
-        text-align: center;
-        background: rgba(255, 255, 255, 0.72);
+    #mode-selector svg,
+    #search-profile-selector svg,
+    #search-result-num-selector svg,
+    #verification-rounds-selector svg,
+    #output-detail-level-selector svg {
+        fill: #475569 !important;
     }
     
     #btn-row {
-        padding: 16px 24px !important;
-        border-top: 1px solid #f0f0f0;
+        padding: 12px 24px 16px !important;
+        border-top: 1px solid rgba(0, 0, 0, 0.04);
         gap: 12px !important;
+        background: #ffffff;
     }
     
     #run-btn {
-        background: linear-gradient(135deg, #10b981 0%, #14b8a6 100%) !important;
+        background: #10b981 !important;
         color: #ffffff !important;
         border: none !important;
-        border-radius: 10px !important;
-        padding: 12px 24px !important;
-        font-size: 0.95em !important;
-        font-weight: 500 !important;
+        border-radius: 12px !important;
+        padding: 12px 20px !important;
+        font-size: 0.92em !important;
+        font-weight: 600 !important;
+        letter-spacing: 0.05em !important;
         cursor: pointer !important;
-        transition: opacity 0.2s, transform 0.2s !important;
+        transition: all 0.2s ease !important;
+        box-shadow: 0 2px 4px rgba(16, 185, 129, 0.15) !important;
     }
     
     #run-btn:hover {
-        opacity: 0.9 !important;
+        background: #059669 !important;
         transform: translateY(-1px) !important;
+        box-shadow: 0 4px 8px rgba(16, 185, 129, 0.25) !important;
     }
     
     #stop-btn {
         background: #ffffff !important;
-        color: #71717a !important;
-        border: 1px solid #e5e5e5 !important;
-        border-radius: 10px !important;
+        color: #64748b !important;
+        border: 1px solid rgba(0, 0, 0, 0.06) !important;
+        border-radius: 12px !important;
         padding: 12px 20px !important;
-        font-size: 0.95em !important;
+        font-size: 0.92em !important;
         font-weight: 500 !important;
         cursor: pointer !important;
-        transition: all 0.2s !important;
+        transition: all 0.2s ease !important;
     }
     
     #stop-btn:hover {
-        color: #ef4444 !important;
-        border-color: #fecaca !important;
+        color: #dc2626 !important;
+        border-color: rgba(220, 38, 38, 0.2) !important;
         background: #fef2f2 !important;
     }
     
     /* ===== Output Section ===== */
     #output-section {
-        max-width: 900px !important;
+        width: 100% !important;
+        max-width: 980px !important;
         margin: 0 auto !important;
-        padding: 0 24px 60px !important;
+        padding: 0 0 60px !important;
     }
     
     .output-label {
-        font-size: 0.85em;
-        font-weight: 500;
-        color: #71717a;
+        font-size: 0.78em;
+        font-weight: 700;
+        color: var(--ink-soft);
         text-transform: uppercase;
-        letter-spacing: 0.05em;
+        letter-spacing: 0.12em;
         margin-bottom: 12px;
-        padding: 0 4px;
+        padding: 0 6px;
     }
     
     #log-view {
-        padding: 24px !important;
-        min-height: 400px;
-        max-height: 70vh;
-        overflow-y: auto;
+        padding: 40px 48px !important;
+        min-height: 420px;
+        height: auto !important;
+        overflow: visible !important;
         background: #ffffff !important;
-        border: 1px solid #e5e5e5 !important;
-        border-radius: 16px !important;
+        border: none !important;
+        border-radius: 28px !important;
+        box-shadow: 0 4px 20px -4px rgba(0, 0, 0, 0.04), 0 0 0 1px rgba(0, 0, 0, 0.03) !important;
     }
     
     #log-view h3 {
-        font-size: 0.95em;
-        font-weight: 600;
-        color: #18181b;
-        margin: 24px 0 16px 0;
-        padding-bottom: 8px;
-        border-bottom: 1px solid #f4f4f5;
+        font-size: 1.02em;
+        font-weight: 700;
+        color: var(--ink-strong);
+        margin: 28px 0 16px 0;
+        padding-bottom: 10px;
+        border-bottom: 1px solid rgba(15, 23, 42, 0.08);
     }
     
     #log-view h3:first-child {
@@ -2957,66 +2746,67 @@ def build_demo():
     
     /* Error block */
     .error-block {
-        background: #fef2f2;
-        border: 1px solid #fecaca;
-        border-radius: 10px;
-        padding: 12px 16px;
+        background: linear-gradient(180deg, #fff6f6 0%, #fff0f0 100%);
+        border: 1px solid rgba(239, 68, 68, 0.18);
+        border-radius: 16px;
+        padding: 14px 16px;
         margin: 12px 0;
-        color: #dc2626;
+        color: #b91c1c;
         font-size: 0.9em;
     }
     
     /* Tool card */
     .tool-card {
-        background: #fafafa;
-        border: 1px solid #e5e5e5;
-        border-radius: 10px;
-        padding: 12px 16px;
-        margin: 12px 0;
+        background: linear-gradient(180deg, rgba(246, 248, 250, 0.94), rgba(255, 255, 255, 0.98));
+        border: 1px solid rgba(15, 23, 42, 0.07);
+        border-radius: 18px;
+        padding: 14px 16px;
+        margin: 14px 0;
+        box-shadow: 0 8px 20px rgba(15, 23, 42, 0.04);
     }
     
     .tool-header {
         font-size: 0.9em;
         font-weight: 500;
-        color: #3f3f46;
+        color: var(--ink-strong);
         margin-bottom: 4px;
     }
     
     .tool-brief {
         font-size: 0.8em;
-        color: #71717a;
+        color: var(--ink-soft);
         margin-top: 4px;
     }
     
     .tool-status {
         font-size: 0.8em;
-        color: #10b981;
+        color: var(--accent);
         margin-top: 6px;
     }
     
     #log-view blockquote {
-        background: linear-gradient(135deg, #f0fdf4 0%, #ecfeff 100%);
+        background: rgba(209, 250, 229, 0.3);
         border: none;
-        border-left: 3px solid #10b981;
-        padding: 16px 20px;
-        margin: 16px 0;
-        border-radius: 0 12px 12px 0;
+        border-left: 3px solid var(--accent);
+        padding: 18px 22px;
+        margin: 18px 0;
+        border-radius: 0 18px 18px 0;
         font-style: normal;
         color: #065f46;
-        font-size: 0.9em;
-        line-height: 1.7;
+        font-size: 0.95em;
+        line-height: 1.8;
     }
     
     #log-view pre {
-        background: #f8f9fa !important;
+        background: #f6f8fb !important;
         color: #1e293b !important;
-        border-radius: 8px !important;
-        padding: 16px !important;
+        border-radius: 18px !important;
+        padding: 18px !important;
         font-size: 0.85em !important;
         line-height: 1.6 !important;
         overflow-x: auto;
-        margin: 12px 0;
-        border: 1px solid #e2e8f0;
+        margin: 14px 0;
+        border: 1px solid rgba(148, 163, 184, 0.2);
     }
     
     #log-view pre code {
@@ -3031,31 +2821,32 @@ def build_demo():
     
     #log-view code {
         font-family: 'SF Mono', 'Fira Code', 'JetBrains Mono', Consolas, monospace !important;
-        background: #f1f5f9 !important;
+        background: #eef4f7 !important;
         color: #1e293b !important;
-        padding: 2px 6px !important;
-        border-radius: 4px !important;
+        padding: 3px 7px !important;
+        border-radius: 6px !important;
         font-size: 0.9em !important;
     }
     
     #log-view p {
-        line-height: 1.7;
-        color: #3f3f46;
+        line-height: 1.85;
+        color: #334155;
+        margin: 0 0 14px;
     }
 
     #log-view .process-details {
-        margin-top: 12px;
-        border: 1px solid #e5e7eb;
-        border-radius: 10px;
-        background: #fafafa;
-        padding: 10px 12px;
+        margin-top: 14px;
+        border: 1px solid rgba(15, 23, 42, 0.08);
+        border-radius: 16px;
+        background: rgba(248, 250, 252, 0.72);
+        padding: 12px 14px;
     }
 
     #log-view .process-details > summary {
         cursor: pointer;
-        color: #374151;
-        font-size: 0.9em;
-        font-weight: 500;
+        color: #334155;
+        font-size: 0.92em;
+        font-weight: 600;
     }
 
     #log-view .process-details[open] > summary {
@@ -3403,10 +3194,137 @@ def build_demo():
         text-align: right;
     }
     
+    /* ===== Top Navigation ===== */
+    .top-nav {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        width: min(1560px, calc(100% - 40px));
+        margin: 12px auto 2px;
+        padding: 10px 20px 8px;
+        border: 0;
+        background: transparent;
+        box-shadow: none;
+        position: relative;
+    }
+
+    .top-nav::after {
+        content: "";
+        position: absolute;
+        bottom: 0;
+        left: 50%;
+        transform: translateX(-50%);
+        width: min(1560px, calc(100% - 40px));
+        height: 1px;
+        background: linear-gradient(90deg, transparent, rgba(16, 185, 129, 0.12), transparent);
+    }
+
+    .nav-left {
+        display: flex;
+        align-items: center;
+        gap: 20px;
+    }
+
+    .nav-brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-weight: 600;
+        font-size: 0.92em;
+        color: var(--ink-strong);
+    }
+
+    .brand-logo {
+        height: 36px !important;
+        width: auto !important;
+        max-width: 140px !important;
+        max-height: 36px !important;
+        object-fit: contain !important;
+        display: block !important;
+        flex-shrink: 0 !important;
+    }
+
+    .nav-brand-text {
+        line-height: 1.2;
+        white-space: nowrap;
+    }
+
+    .nav-right {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 12px;
+    }
+
+    /* ===== Hero Section ===== */
+    .hero-section {
+        text-align: center;
+        padding: 16px 16px 32px;
+        max-width: 1040px;
+        margin: 0 auto 8px;
+        position: relative;
+    }
+
+    .hero-brand {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        margin-bottom: 16px;
+    }
+
+    .hero-logo {
+        width: min(160px, 36vw);
+        max-height: 64px;
+        height: auto;
+        object-fit: contain;
+        box-shadow: none;
+        border-radius: 0;
+        flex-shrink: 0;
+        opacity: 0.9;
+    }
+
+    .hero-brand-name {
+        font-size: 0.96em;
+        font-weight: 700;
+        color: #0f172a;
+        letter-spacing: 0.01em;
+    }
+
+    .hero-title {
+        font-size: clamp(1.8rem, 3.2vw, 3rem);
+        font-weight: 900;
+        background: linear-gradient(135deg, #065f46 0%, #10b981 40%, #059669 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+        margin: 0 0 10px 0;
+        letter-spacing: -0.04em;
+        line-height: 1.15;
+    }
+
+    .hero-subtitle {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 16px;
+        color: #94a3b8;
+        font-size: 0.92em;
+        font-weight: 500;
+        letter-spacing: 0.02em;
+    }
+
+    .hero-line {
+        width: 40px;
+        height: 1px;
+        background: linear-gradient(90deg, transparent, rgba(16, 185, 129, 0.3), transparent);
+    }
+
     /* ===== Responsive ===== */
     @media (max-width: 768px) {
         .hero-title {
-            font-size: 2em;
+            font-size: 2.2em;
         }
 
         .brand-logo {
@@ -3415,7 +3333,9 @@ def build_demo():
         }
 
         .top-nav {
-            padding: 14px 16px;
+            width: calc(100% - 24px);
+            margin: 12px auto 8px;
+            padding: 12px 14px;
             flex-wrap: wrap;
         }
 
@@ -3431,7 +3351,7 @@ def build_demo():
         }
         
         .hero-section {
-            padding: 20px 16px 18px;
+            padding: 8px 16px 16px;
         }
 
         .hero-brand {
@@ -3440,8 +3360,8 @@ def build_demo():
         }
 
         .hero-logo {
-            width: min(220px, 72vw);
-            max-height: 92px;
+            width: min(188px, 68vw);
+            max-height: 72px;
         }
 
         .hero-brand-name {
@@ -3453,24 +3373,31 @@ def build_demo():
             font-size: 0.92em;
         }
 
-        .input-wrapper, .output-wrapper {
-            padding: 0 16px;
+        #layout-shell {
+            padding: 0 16px 28px !important;
+            gap: 16px !important;
         }
 
-        #search-history-shell {
-            padding: 0 16px 12px !important;
+        #main-content-column {
+            order: 1;
+            padding: 0 !important;
         }
 
-        .search-history-head {
-            flex-direction: column;
+        #right-options-column {
+            order: 2;
+            position: static;
         }
 
-        .search-history-clear {
-            width: 100%;
+        #input-section,
+        #options-panel,
+        #log-view {
+            border-radius: 22px !important;
         }
+
         
         #log-view {
-            max-height: 50vh;
+            min-height: 260px;
+            padding: 22px 20px !important;
         }
     }
     """
@@ -3503,678 +3430,61 @@ def build_demo():
             f"{SKILLS_DOWNLOAD_BUTTON_TEXT}</span>"
         )
 
-    history_panel_html = f"""
-        <div id="search-history-wrapper" class="search-history-card">
-            <div class="search-history-head">
-                <div>
-                    <div class="search-history-title">{SEARCH_HISTORY_TITLE}</div>
-                    <div class="search-history-hint">{SEARCH_HISTORY_HINT}</div>
-                </div>
-                <button
-                    id="search-history-clear"
-                    class="search-history-clear"
-                    type="button"
-                    hidden
-                >
-                    清空历史
-                </button>
-            </div>
-            <div id="search-history-panel" class="search-history-list"></div>
-        </div>
-    """
-
-    history_script = f"""
+    skills_bind_script = f"""
     <script>
     (() => {{
-        const STORAGE_KEY = {json.dumps(SEARCH_HISTORY_STORAGE_KEY, ensure_ascii=False)};
-        const MAX_ITEMS = {SEARCH_HISTORY_MAX_ITEMS};
-        const EMPTY_TEXT = {json.dumps(SEARCH_HISTORY_EMPTY_TEXT, ensure_ascii=False)};
-        const RESULT_MAX_TEXT_CHARS = {SEARCH_HISTORY_RESULT_MAX_TEXT_CHARS};
-        const RESULT_CAPTURE_TIMEOUT_MS = {SEARCH_HISTORY_RESULT_CAPTURE_TIMEOUT_MS};
-        const RESULT_CAPTURE_INTERVAL_MS = {SEARCH_HISTORY_RESULT_CAPTURE_INTERVAL_MS};
-        const RESULT_CAPTURE_DEBOUNCE_MS = {SEARCH_HISTORY_RESULT_CAPTURE_DEBOUNCE_MS};
-        const PLACEHOLDER_KEYWORDS = {json.dumps(SEARCH_HISTORY_PLACEHOLDER_KEYWORDS, ensure_ascii=False)};
-        const SKILLS_BUTTON_TEXT = {json.dumps(SKILLS_DOWNLOAD_BUTTON_TEXT, ensure_ascii=False)};
-        const SKILLS_BUTTON_COPIED_TEXT = {json.dumps(SKILLS_DOWNLOAD_COPIED_TEXT, ensure_ascii=False)};
+        const SKILLS_BUTTON_TEXT = {json.dumps('skills下载', ensure_ascii=False)};
+        const SKILLS_BUTTON_COPIED_TEXT = {json.dumps('已复制链接', ensure_ascii=False)};
         const SELECTORS = {{
-            textarea: "#question-input textarea",
-            runButton: "#run-btn",
-            stopButton: "#stop-btn",
-            historyPanel: "#search-history-panel",
-            clearButton: "#search-history-clear",
-            historyWrapper: "#search-history-wrapper",
-            markdownOutput: "#log-view",
-            rawOutput: "#history-raw-output textarea, #history-raw-output input, #history-raw-output",
-            restoreQuery: "#history-restore-query textarea, #history-restore-query input, #history-restore-query",
-            restoreResult: "#history-restore-result textarea, #history-restore-result input, #history-restore-result",
-            restoreButton: "#history-restore-btn button, #history-restore-btn",
-            skillsDownloadLink: "#skills-download-link",
-        }};
-        let activeHistoryCapture = null;
-        let resultCaptureDebounceTimer = null;
-        let outputMutationObserver = null;
-
-        const escapeHtml = (value) => String(value)
-            .replace(/&/g, "&amp;")
-            .replace(/</g, "&lt;")
-            .replace(/>/g, "&gt;")
-            .replace(/"/g, "&quot;")
-            .replace(/'/g, "&#39;");
-
-        const loadHistory = () => {{
-            try {{
-                const rawValue = window.localStorage.getItem(STORAGE_KEY);
-                if (!rawValue) {{
-                    return [];
-                }}
-                const parsedValue = JSON.parse(rawValue);
-                if (!Array.isArray(parsedValue)) {{
-                    return [];
-                }}
-                return parsedValue.filter((item) => item && typeof item.query === "string");
-            }} catch (error) {{
-                console.warn("读取搜索历史失败", error);
-                return [];
-            }}
-        }};
-
-        const saveHistory = (historyItems) => {{
-            const trimText = (value, maxLength) => {{
-                const normalizedValue = typeof value === "string" ? value : "";
-                if (normalizedValue.length <= maxLength) {{
-                    return normalizedValue;
-                }}
-                return normalizedValue.slice(0, maxLength);
-            }};
-            const slicedItems = historyItems.slice(0, MAX_ITEMS);
-            const persistItems = (items) => {{
-                window.localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
-            }};
-            const toCompactItems = (items, markdownLimit, textLimit) =>
-                items.map((item) => ({{
-                    ...item,
-                    result_markdown: trimText(item.result_markdown, markdownLimit),
-                    result_text: trimText(item.result_text, textLimit),
-                }}));
-            const compactPolicies = [
-                {{
-                    maxItems: MAX_ITEMS,
-                    markdownLimit: RESULT_MAX_TEXT_CHARS,
-                    textLimit: Math.max(1000, Math.floor(RESULT_MAX_TEXT_CHARS * 0.5)),
-                }},
-                {{
-                    maxItems: Math.max(3, Math.floor(MAX_ITEMS * 0.75)),
-                    markdownLimit: Math.max(1500, Math.floor(RESULT_MAX_TEXT_CHARS * 0.4)),
-                    textLimit: Math.max(800, Math.floor(RESULT_MAX_TEXT_CHARS * 0.3)),
-                }},
-                {{
-                    maxItems: Math.max(2, Math.floor(MAX_ITEMS * 0.5)),
-                    markdownLimit: Math.max(800, Math.floor(RESULT_MAX_TEXT_CHARS * 0.25)),
-                    textLimit: Math.max(500, Math.floor(RESULT_MAX_TEXT_CHARS * 0.2)),
-                }},
-            ];
-            try {{
-                persistItems(slicedItems);
-            }} catch (error) {{
-                let saved = false;
-                for (const policy of compactPolicies) {{
-                    if (saved) {{
-                        break;
-                    }}
-                    try {{
-                        const compactItems = toCompactItems(
-                            slicedItems.slice(0, policy.maxItems),
-                            policy.markdownLimit,
-                            policy.textLimit
-                        );
-                        persistItems(compactItems);
-                        saved = true;
-                    }} catch (compactError) {{
-                        void compactError;
-                    }}
-                }}
-                if (saved) {{
-                    return;
-                }}
-                try {{
-                    const minimalItems = slicedItems.slice(0, 1).map((item) => {{
-                        const fallbackText = trimText(
-                            item.result_text || item.result_markdown || "",
-                            Math.max(300, Math.floor(RESULT_MAX_TEXT_CHARS * 0.1))
-                        );
-                        return {{
-                            id: item.id,
-                            query: item.query,
-                            saved_at: item.saved_at,
-                            result_markdown: fallbackText,
-                            result_text: fallbackText,
-                            result_saved_at: item.result_saved_at || "",
-                        }};
-                    }});
-                    persistItems(minimalItems);
-                }} catch (minimalError) {{
-                    console.warn("保存搜索历史失败", minimalError || error);
-                }}
-            }}
-        }};
-
-        const formatTime = (isoTime) => {{
-            if (!isoTime) {{
-                return "刚刚";
-            }}
-            const dateValue = new Date(isoTime);
-            if (Number.isNaN(dateValue.getTime())) {{
-                return "刚刚";
-            }}
-            return dateValue.toLocaleString("zh-CN", {{
-                month: "2-digit",
-                day: "2-digit",
-                hour: "2-digit",
-                minute: "2-digit",
-            }});
-        }};
-
-        const renderHistory = () => {{
-            const panelElement = document.querySelector(SELECTORS.historyPanel);
-            const clearButtonElement = document.querySelector(SELECTORS.clearButton);
-            if (!panelElement || !clearButtonElement) {{
-                return false;
-            }}
-
-            const historyItems = loadHistory();
-            clearButtonElement.hidden = historyItems.length === 0;
-
-            if (historyItems.length === 0) {{
-                panelElement.innerHTML = `<div class="search-history-empty">${{escapeHtml(EMPTY_TEXT)}}</div>`;
-                return true;
-            }}
-
-            panelElement.innerHTML = historyItems
-                .map((item) => {{
-                    const query = escapeHtml(item.query);
-                    const itemId = escapeHtml(item.id || item.saved_at || item.query);
-                    const savedAt = escapeHtml(formatTime(item.saved_at));
-                    const resultSavedAt = item.result_saved_at
-                        ? ` · 结果缓存：${{escapeHtml(formatTime(item.result_saved_at))}}`
-                        : "";
-                    return `
-                        <div class="search-history-item">
-                            <button
-                                type="button"
-                                class="search-history-entry"
-                                data-history-action="restore"
-                                data-history-id="${{itemId}}"
-                            >
-                                <div class="search-history-query">${{query}}</div>
-                                <div class="search-history-meta">上次搜索：${{savedAt}}${{resultSavedAt}}</div>
-                            </button>
-                            <button
-                                type="button"
-                                class="search-history-delete"
-                                data-history-action="delete"
-                                data-history-id="${{itemId}}"
-                                aria-label="删除这条搜索历史"
-                                title="删除这条搜索历史"
-                            >
-                                ×
-                            </button>
-                        </div>
-                    `;
-                }})
-                .join("");
-            return true;
-        }};
-
-        const getCurrentQuery = () => {{
-            const textareaElement = document.querySelector(SELECTORS.textarea);
-            if (!textareaElement) {{
-                return "";
-            }}
-            return textareaElement.value.trim();
-        }};
-
-        const setCurrentQuery = (query) => {{
-            const textareaElement = document.querySelector(SELECTORS.textarea);
-            if (!textareaElement) {{
-                return;
-            }}
-
-            const descriptor = Object.getOwnPropertyDescriptor(
-                window.HTMLTextAreaElement.prototype,
-                "value"
-            );
-            if (descriptor && descriptor.set) {{
-                descriptor.set.call(textareaElement, query);
-            }} else {{
-                textareaElement.value = query;
-            }}
-            textareaElement.dispatchEvent(new Event("input", {{ bubbles: true }}));
-            textareaElement.dispatchEvent(new Event("change", {{ bubbles: true }}));
-            textareaElement.focus();
-            textareaElement.setSelectionRange(query.length, query.length);
-        }};
-
-        const getInputLikeElement = (selector) => {{
-            if (!selector) {{
-                return null;
-            }}
-            const element = document.querySelector(selector);
-            if (!element) {{
-                return null;
-            }}
-            if (element.tagName === "TEXTAREA" || element.tagName === "INPUT") {{
-                return element;
-            }}
-            return element.querySelector("textarea") || element.querySelector("input") || null;
-        }};
-
-        const getInputLikeValue = (selector) => {{
-            const inputElement = getInputLikeElement(selector);
-            if (!inputElement) {{
-                return "";
-            }}
-            return String(inputElement.value || "");
-        }};
-
-        const setInputLikeValue = (selector, value) => {{
-            const inputElement = getInputLikeElement(selector);
-            if (!inputElement) {{
-                return false;
-            }}
-            const normalizedValue = String(value || "");
-            const prototype = inputElement.tagName === "TEXTAREA"
-                ? window.HTMLTextAreaElement.prototype
-                : window.HTMLInputElement.prototype;
-            const descriptor = Object.getOwnPropertyDescriptor(prototype, "value");
-            if (descriptor && descriptor.set) {{
-                descriptor.set.call(inputElement, normalizedValue);
-            }} else {{
-                inputElement.value = normalizedValue;
-            }}
-            inputElement.dispatchEvent(new Event("input", {{ bubbles: true }}));
-            inputElement.dispatchEvent(new Event("change", {{ bubbles: true }}));
-            return true;
-        }};
-
-        const getButtonElement = (selector) => {{
-            const rootElement = document.querySelector(selector);
-            if (!rootElement) {{
-                return null;
-            }}
-            if (rootElement.tagName === "BUTTON") {{
-                return rootElement;
-            }}
-            return rootElement.querySelector("button") || rootElement;
+            skillsDownloadLink: '#skills-download-link',
         }};
 
         const copyTextToClipboard = async (text) => {{
-            const normalizedText = String(text || "").trim();
-            if (!normalizedText) {{
-                return false;
-            }}
+            const normalizedText = String(text || '').trim();
+            if (!normalizedText) {{ return false; }}
             if (navigator.clipboard && window.isSecureContext) {{
                 try {{
                     await navigator.clipboard.writeText(normalizedText);
                     return true;
-                }} catch (error) {{
-                    console.warn("Clipboard API 复制失败，尝试降级复制", error);
-                }}
+                }} catch (e) {{ void e; }}
             }}
-            const textareaElement = document.createElement("textarea");
-            textareaElement.value = normalizedText;
-            textareaElement.setAttribute("readonly", "readonly");
-            textareaElement.style.position = "fixed";
-            textareaElement.style.opacity = "0";
-            textareaElement.style.pointerEvents = "none";
-            document.body.appendChild(textareaElement);
-            textareaElement.focus();
-            textareaElement.select();
+            const el = document.createElement('textarea');
+            el.value = normalizedText;
+            el.setAttribute('readonly', '');
+            el.style.cssText = 'position:fixed;opacity:0;pointer-events:none';
+            document.body.appendChild(el);
+            el.focus(); el.select();
             let copied = false;
-            try {{
-                copied = document.execCommand("copy");
-            }} catch (error) {{
-                console.warn("降级复制失败", error);
-            }}
-            document.body.removeChild(textareaElement);
+            try {{ copied = document.execCommand('copy'); }} catch (e) {{ void e; }}
+            document.body.removeChild(el);
             return copied;
         }};
 
         const bindSkillsDownloadAction = () => {{
-            const linkElement = document.querySelector(SELECTORS.skillsDownloadLink);
-            if (!linkElement) {{
-                return;
-            }}
-            if (linkElement.dataset.boundCopyAction === "1") {{
-                return;
-            }}
-            linkElement.dataset.boundCopyAction = "1";
-            linkElement.addEventListener("click", () => {{
-                const rawUrl = linkElement.dataset.copyUrl || linkElement.getAttribute("href") || "";
-                let absoluteUrl = "";
-                try {{
-                    absoluteUrl = new URL(rawUrl, window.location.origin).toString();
-                }} catch (error) {{
-                    console.warn("skills 下载链接格式异常，无法复制", error);
-                    return;
-                }}
+            const linkEl = document.querySelector(SELECTORS.skillsDownloadLink);
+            if (!linkEl || linkEl.dataset.boundCopyAction === '1') {{ return; }}
+            linkEl.dataset.boundCopyAction = '1';
+            linkEl.addEventListener('click', () => {{
+                const rawUrl = linkEl.dataset.copyUrl || linkEl.getAttribute('href') || '';
+                let absoluteUrl = '';
+                try {{ absoluteUrl = new URL(rawUrl, window.location.origin).toString(); }} catch (e) {{ return; }}
                 copyTextToClipboard(absoluteUrl).then((copied) => {{
-                    if (!copied) {{
-                        return;
-                    }}
-                    linkElement.textContent = SKILLS_BUTTON_COPIED_TEXT;
-                    window.setTimeout(() => {{
-                        linkElement.textContent = SKILLS_BUTTON_TEXT;
-                    }}, 1200);
+                    if (!copied) {{ return; }}
+                    linkEl.textContent = SKILLS_BUTTON_COPIED_TEXT;
+                    window.setTimeout(() => {{ linkEl.textContent = SKILLS_BUTTON_TEXT; }}, 1200);
                 }});
             }});
         }};
 
-        const isButtonDisabled = (buttonElement) => {{
-            if (!buttonElement) {{
-                return false;
-            }}
-            if (buttonElement.disabled) {{
-                return true;
-            }}
-            if (buttonElement.getAttribute("aria-disabled") === "true") {{
-                return true;
-            }}
-            return false;
-        }};
-
-        const isResearchRunning = () => {{
-            const stopButtonElement = getButtonElement(SELECTORS.stopButton);
-            if (stopButtonElement) {{
-                return !isButtonDisabled(stopButtonElement);
-            }}
-            const runButtonElement = getButtonElement(SELECTORS.runButton);
-            if (runButtonElement) {{
-                return isButtonDisabled(runButtonElement);
-            }}
-            return false;
-        }};
-
-        const trimToLength = (value, maxLength) => {{
-            const normalizedValue = typeof value === "string" ? value : "";
-            if (normalizedValue.length <= maxLength) {{
-                return normalizedValue;
-            }}
-            return normalizedValue.slice(0, maxLength);
-        }};
-
-        const normalizeResultText = (value) => trimToLength(
-            String(value || "").replace(/\\s+/g, " ").trim(),
-            RESULT_MAX_TEXT_CHARS
-        );
-
-        const isPlaceholderResult = (text) => {{
-            const normalizedText = normalizeResultText(text);
-            if (!normalizedText) {{
-                return true;
-            }}
-            return PLACEHOLDER_KEYWORDS.some((keyword) =>
-                normalizedText.includes(String(keyword || "").trim())
-            );
-        }};
-
-        const getCurrentResultSnapshot = () => {{
-            const getRenderedOutputText = () => {{
-                const outputRootElement = document.querySelector(SELECTORS.markdownOutput);
-                if (!outputRootElement) {{
-                    return "";
-                }}
-                const contentElement = outputRootElement.querySelector(
-                    ".prose, .md, .markdown-body, [data-testid='markdown']"
-                );
-                const sourceElement = contentElement || outputRootElement;
-                return String(
-                    sourceElement.innerText || sourceElement.textContent || ""
-                ).trim();
-            }};
-            const rawOutputValue = getInputLikeValue(SELECTORS.rawOutput).trim();
-            const renderedOutputValue = getRenderedOutputText();
-            const resultMarkdown = trimToLength(
-                rawOutputValue || renderedOutputValue,
-                RESULT_MAX_TEXT_CHARS
-            );
-            const resultText = normalizeResultText(resultMarkdown);
-            if (!resultMarkdown && !resultText) {{
-                return null;
-            }}
-            if (isPlaceholderResult(resultText)) {{
-                return null;
-            }}
-            return {{
-                result_markdown: resultMarkdown,
-                result_text: resultText,
-                result_saved_at: new Date().toISOString(),
-            }};
-        }};
-
-        const updateHistoryItemResult = (historyId, snapshot) => {{
-            if (!historyId || !snapshot) {{
-                return;
-            }}
-            const nextHistory = loadHistory().map((item) => {{
-                const itemId = String(item.id || item.saved_at || item.query);
-                if (itemId !== historyId) {{
-                    return item;
-                }}
-                return {{
-                    ...item,
-                    result_markdown: snapshot.result_markdown,
-                    result_text: snapshot.result_text,
-                    result_saved_at: snapshot.result_saved_at,
-                }};
-            }});
-            saveHistory(nextHistory);
-            renderHistory();
-        }};
-
-        const commitActiveHistorySnapshot = (forceCommit = false) => {{
-            if (!activeHistoryCapture || !activeHistoryCapture.historyId) {{
-                return;
-            }}
-            if (Date.now() - activeHistoryCapture.startedAt > RESULT_CAPTURE_TIMEOUT_MS) {{
-                activeHistoryCapture = null;
-                return;
-            }}
-            const snapshot = getCurrentResultSnapshot();
-            if (!snapshot) {{
-                return;
-            }}
-            if (!forceCommit && snapshot.result_text === activeHistoryCapture.lastResultText) {{
-                return;
-            }}
-            updateHistoryItemResult(activeHistoryCapture.historyId, snapshot);
-            activeHistoryCapture.lastResultText = snapshot.result_text;
-            activeHistoryCapture.lastSavedAt = Date.now();
-            if (forceCommit || !isResearchRunning()) {{
-                activeHistoryCapture = null;
-            }}
-        }};
-
-        const scheduleActiveHistoryCapture = () => {{
-            if (!activeHistoryCapture) {{
-                return;
-            }}
-            if (resultCaptureDebounceTimer) {{
-                window.clearTimeout(resultCaptureDebounceTimer);
-            }}
-            resultCaptureDebounceTimer = window.setTimeout(() => {{
-                resultCaptureDebounceTimer = null;
-                commitActiveHistorySnapshot(false);
-            }}, RESULT_CAPTURE_DEBOUNCE_MS);
-        }};
-
-        const ensureOutputObserverMounted = () => {{
-            const rawOutputElement = getInputLikeElement(SELECTORS.rawOutput);
-            if (!rawOutputElement) {{
-                return false;
-            }}
-            if (outputMutationObserver) {{
-                outputMutationObserver.disconnect();
-            }}
-            outputMutationObserver = new MutationObserver(() => {{
-                scheduleActiveHistoryCapture();
-            }});
-            outputMutationObserver.observe(rawOutputElement, {{
-                attributes: true,
-                attributeFilter: ["value"],
-                childList: true,
-                subtree: true,
-                characterData: true,
-            }});
-            return true;
-        }};
-
-        const startResultCaptureForHistory = (historyId) => {{
-            if (!historyId) {{
-                return;
-            }}
-            activeHistoryCapture = {{
-                historyId,
-                startedAt: Date.now(),
-                lastResultText: "",
-                lastSavedAt: 0,
-            }};
-            scheduleActiveHistoryCapture();
-            window.setTimeout(() => {{
-                commitActiveHistorySnapshot(false);
-            }}, RESULT_CAPTURE_INTERVAL_MS);
-        }};
-
-        const addHistoryItem = (query) => {{
-            const normalizedQuery = query.trim();
-            if (!normalizedQuery) {{
-                return "";
-            }}
-
-            const nextItem = {{
-                id: `${{Date.now()}}-${{Math.random().toString(36).slice(2, 8)}}`,
-                query: normalizedQuery,
-                saved_at: new Date().toISOString(),
-                result_markdown: "",
-                result_text: "",
-                result_saved_at: "",
-            }};
-            const nextHistory = [
-                nextItem,
-                ...loadHistory().filter((item) => item.query !== normalizedQuery),
-            ];
-            saveHistory(nextHistory);
-            renderHistory();
-            return nextItem.id;
-        }};
-
-        const deleteHistoryItem = (historyId) => {{
-            if (activeHistoryCapture && activeHistoryCapture.historyId === historyId) {{
-                activeHistoryCapture = null;
-            }}
-            if (resultCaptureDebounceTimer) {{
-                window.clearTimeout(resultCaptureDebounceTimer);
-                resultCaptureDebounceTimer = null;
-            }}
-            const nextHistory = loadHistory().filter(
-                (item) => String(item.id || item.saved_at || item.query) !== historyId
-            );
-            saveHistory(nextHistory);
-            renderHistory();
-        }};
-
-        const clearHistory = () => {{
-            activeHistoryCapture = null;
-            if (resultCaptureDebounceTimer) {{
-                window.clearTimeout(resultCaptureDebounceTimer);
-                resultCaptureDebounceTimer = null;
-            }}
-            window.localStorage.removeItem(STORAGE_KEY);
-            renderHistory();
-        }};
-
-        const restoreHistoryItem = (historyId) => {{
-            const historyItem = loadHistory().find(
-                (item) => String(item.id || item.saved_at || item.query) === historyId
-            );
-            if (!historyItem) {{
-                return;
-            }}
-            const restoreResult = String(
-                historyItem.result_markdown || historyItem.result_text || ""
-            ).trim();
-            const queryReady = setInputLikeValue(SELECTORS.restoreQuery, historyItem.query);
-            const resultReady = setInputLikeValue(SELECTORS.restoreResult, restoreResult);
-            const restoreButtonElement = getButtonElement(SELECTORS.restoreButton);
-            if (queryReady) {{
-                setCurrentQuery(historyItem.query);
-            }}
-            if (!restoreButtonElement || !queryReady || !resultReady) {{
-                console.info("该条历史暂无可回显结论，请重新运行一次后将自动缓存。");
-                return;
-            }}
-            restoreButtonElement.click();
-        }};
-
-        const handleDocumentClick = (event) => {{
-            const actionElement = event.target.closest("[data-history-action]");
-            if (actionElement && actionElement.closest(SELECTORS.historyWrapper)) {{
-                const actionName = actionElement.dataset.historyAction;
-                const historyId = actionElement.dataset.historyId || "";
-                if (actionName === "restore") {{
-                    event.preventDefault();
-                    restoreHistoryItem(historyId);
-                }}
-                if (actionName === "delete") {{
-                    event.preventDefault();
-                    deleteHistoryItem(historyId);
-                }}
-                return;
-            }}
-
-            const clearButtonElement = event.target.closest(SELECTORS.clearButton);
-            if (clearButtonElement) {{
-                event.preventDefault();
-                clearHistory();
-                return;
-            }}
-
-            const runButtonElement = event.target.closest(SELECTORS.runButton);
-            if (runButtonElement) {{
-                const currentQuery = getCurrentQuery();
-                if (currentQuery) {{
-                    const historyId = addHistoryItem(currentQuery);
-                    startResultCaptureForHistory(historyId);
-                }}
-            }}
-        }};
-
-        const ensureHistoryMounted = () => {{
+        if (document.readyState === 'loading') {{
+            document.addEventListener('DOMContentLoaded', bindSkillsDownloadAction, {{ once: true }});
+        }} else {{
             bindSkillsDownloadAction();
-            if (renderHistory()) {{
-                ensureOutputObserverMounted();
-                return;
-            }}
-            window.setTimeout(ensureHistoryMounted, 120);
-        }};
-
-        if (!window.__miroSearchHistoryInitialized) {{
-            window.__miroSearchHistoryInitialized = true;
-            document.addEventListener("click", handleDocumentClick, true);
-            window.setInterval(() => {{
-                if (activeHistoryCapture) {{
-                    commitActiveHistorySnapshot(false);
-                }}
-            }}, RESULT_CAPTURE_INTERVAL_MS);
-            if (document.readyState === "loading") {{
-                document.addEventListener("DOMContentLoaded", ensureHistoryMounted, {{ once: true }});
-            }} else {{
-                ensureHistoryMounted();
-            }}
         }}
     }})();
     </script>
     """
-    demo_head = f"{favicon_head}{history_script}"
+    demo_head = f"{favicon_head}{skills_bind_script}"
 
     with gr.Blocks(
         css=custom_css,
@@ -4197,101 +3507,111 @@ def build_demo():
             </nav>
         """)
 
-        # Hero Section
-        gr.HTML(f"""
-            <div class="hero-section">
-                <div class="hero-brand">
-                    <img src="{hero_logo_src}" class="hero-logo" alt="OpenClaw-MiroSearch logo" />
-                    {hero_brand_name_html}
-                </div>
-                <h1 class="hero-title">深度研究，洞察未来</h1>
-                <div class="hero-subtitle">
-                    <span class="hero-line"></span>
-                    不止于聊天，用可验证的检索与推理完成研究任务。
-                    <span class="hero-line"></span>
-                </div>
-            </div>
-        """)
+        with gr.Row(elem_id="layout-shell", equal_height=False):
+            with gr.Column(
+                scale=4,
+                min_width=720,
+                elem_id="main-content-column",
+            ):
+                gr.HTML(f"""
+                    <div class="hero-section">
+                        <div class="hero-brand">
+                            <img src="{hero_logo_src}" class="hero-logo" alt="OpenClaw-MiroSearch logo" />
+                            {hero_brand_name_html}
+                        </div>
+                        <h1 class="hero-title">深度研究，洞察未来</h1>
+                        <div class="hero-subtitle">
+                            <span class="hero-line"></span>
+                            不止于聊天，用可验证的检索与推理完成研究任务。
+                            <span class="hero-line"></span>
+                        </div>
+                    </div>
+                """)
+                # Input Section
+                with gr.Column(elem_id="input-section"):
+                    inp = gr.Textbox(
+                        lines=4,
+                        placeholder="请输入你的研究问题...",
+                        show_label=False,
+                        elem_id="question-input",
+                    )
+                    with gr.Row(elem_id="btn-row"):
+                        stop_btn = gr.Button(
+                            "⏹ 停止",
+                            elem_id="stop-btn",
+                            variant="stop",
+                            interactive=False,
+                            scale=1,
+                        )
+                        run_btn = gr.Button(
+                            "开始研究 ➤", elem_id="run-btn", variant="primary", scale=2
+                        )
 
-        # Input Section
-        with gr.Column(elem_id="input-section"):
-            inp = gr.Textbox(
-                lines=4,
-                placeholder="请输入你的研究问题...",
-                show_label=False,
-                elem_id="question-input",
-            )
-            gr.HTML(history_panel_html, elem_id="search-history-shell")
-            mode_selector = gr.Dropdown(
-                label="检索模式",
-                choices=RESEARCH_MODE_CHOICES,
-                value=_normalize_research_mode(DEFAULT_RESEARCH_MODE),
-                info="verified=多轮校验(高质量源) / research=质量优先 / balanced=推荐默认 / quota=额度优先 / thinking=纯思考 / production-web=生产风格",
-            )
-            search_profile_selector = gr.Dropdown(
-                label="检索源策略",
-                choices=SEARCH_PROFILE_CHOICES,
-                value=_normalize_search_profile(DEFAULT_SEARCH_PROFILE),
-                info="searxng-first=默认 / serp-first=Serp优先 / multi-route=串行聚合 / parallel=并发聚合 / parallel-trusted=并发+置信不足串行高信源补检 / searxng-only=仅SearXNG",
-            )
-            search_result_num_selector = gr.Dropdown(
-                label="单轮检索条数",
-                choices=SEARCH_RESULT_NUM_CHOICES,
-                value=_normalize_search_result_num(DEFAULT_SEARCH_RESULT_NUM),
-                info="每次 google_search 聚合返回的结果上限，建议 20 或 30 用于交叉验证。",
-            )
-            verification_min_rounds_selector = gr.Slider(
-                minimum=1,
-                maximum=MAX_VERIFICATION_MIN_SEARCH_ROUNDS,
-                step=1,
-                label="最少检索轮次（verified 生效）",
-                value=_normalize_verification_min_search_rounds(
-                    DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS
-                ),
-                info="仅在 verified 模式下用于强制多轮检索门槛。",
-                visible=_is_verified_mode(DEFAULT_RESEARCH_MODE),
-            )
-            output_detail_level_selector = gr.Dropdown(
-                label="输出篇幅",
-                choices=[
-                    (
-                        OUTPUT_DETAIL_LEVEL_LABELS["compact"],
-                        "compact",
-                    ),
-                    (
-                        OUTPUT_DETAIL_LEVEL_LABELS["balanced"],
-                        "balanced",
-                    ),
-                    (
-                        OUTPUT_DETAIL_LEVEL_LABELS["detailed"],
-                        "detailed",
-                    ),
-                ],
-                value=_normalize_output_detail_level(DEFAULT_OUTPUT_DETAIL_LEVEL),
-                info="精简=当前短篇幅 / 适中=核心结论+必要非核心信息 / 详细=超长报告（默认）",
-            )
-            with gr.Row(elem_id="btn-row"):
-                stop_btn = gr.Button(
-                    "⏹ 停止",
-                    elem_id="stop-btn",
-                    variant="stop",
-                    interactive=False,
-                    scale=1,
-                )
-                run_btn = gr.Button(
-                    "开始研究 ➤", elem_id="run-btn", variant="primary", scale=2
-                )
+                # Output Section
+                with gr.Column(elem_id="output-section"):
+                    gr.HTML('<div class="output-label">研究进度</div>')
+                    out_md = gr.Markdown("*等待开始研究...*", elem_id="log-view")
 
-        # Output Section
-        with gr.Column(elem_id="output-section"):
-            gr.HTML('<div class="output-label">研究进度</div>')
-            out_md = gr.Markdown("*等待开始研究...*", elem_id="log-view")
-            history_raw_output = gr.Textbox(
-                value="*等待开始研究...*",
-                visible=True,
-                elem_id="history-raw-output",
-                elem_classes=["history-sync-hidden"],
-            )
+            with gr.Column(
+                scale=1,
+                min_width=220,
+                elem_id="right-options-column",
+            ):
+                with gr.Column(elem_id="options-panel"):
+                    gr.HTML('<div class="options-title">Options / 高级配置</div>')
+                    mode_selector = gr.Dropdown(
+                        label="检索模式",
+                        choices=RESEARCH_MODE_CHOICES,
+                        value=_normalize_research_mode(DEFAULT_RESEARCH_MODE),
+                        info="verified=多轮校验(高质量源) / research=质量优先 / balanced=推荐默认 / quota=额度优先 / thinking=纯思考 / production-web=生产风格",
+                        elem_id="mode-selector",
+                    )
+                    search_profile_selector = gr.Dropdown(
+                        label="检索源策略",
+                        choices=SEARCH_PROFILE_CHOICES,
+                        value=_normalize_search_profile(DEFAULT_SEARCH_PROFILE),
+                        info="searxng-first=默认 / serp-first=Serp优先 / multi-route=串行聚合 / parallel=并发聚合 / parallel-trusted=并发+置信不足串行高信源补检 / searxng-only=仅SearXNG",
+                        elem_id="search-profile-selector",
+                    )
+                    search_result_num_selector = gr.Dropdown(
+                        label="单轮检索条数",
+                        choices=SEARCH_RESULT_NUM_CHOICES,
+                        value=_normalize_search_result_num(DEFAULT_SEARCH_RESULT_NUM),
+                        info="每次 google_search 聚合返回的结果上限，建议 20 或 30 用于交叉验证。",
+                        elem_id="search-result-num-selector",
+                    )
+                    verification_min_rounds_selector = gr.Slider(
+                        minimum=1,
+                        maximum=MAX_VERIFICATION_MIN_SEARCH_ROUNDS,
+                        step=1,
+                        label="最少检索轮次（verified 生效）",
+                        value=_normalize_verification_min_search_rounds(
+                            DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS
+                        ),
+                        info="仅在 verified 模式下用于强制多轮检索门槛。",
+                        visible=_is_verified_mode(DEFAULT_RESEARCH_MODE),
+                        elem_id="verification-rounds-selector",
+                    )
+                    output_detail_level_selector = gr.Dropdown(
+                        label="输出篇幅",
+                        choices=[
+                            (
+                                OUTPUT_DETAIL_LEVEL_LABELS["compact"],
+                                "compact",
+                            ),
+                            (
+                                OUTPUT_DETAIL_LEVEL_LABELS["balanced"],
+                                "balanced",
+                            ),
+                            (
+                                OUTPUT_DETAIL_LEVEL_LABELS["detailed"],
+                                "detailed",
+                            ),
+                        ],
+                        value=_normalize_output_detail_level(DEFAULT_OUTPUT_DETAIL_LEVEL),
+                        info="精简=当前短篇幅 / 适中=核心结论+必要非核心信息 / 详细=超长报告（默认）",
+                        elem_id="output-detail-level-selector",
+                    )
 
         # 供统一 API 调用的隐藏输出
         api_output = gr.Markdown(visible=False)
@@ -4300,22 +3620,6 @@ def build_demo():
         api_caller_id = gr.Textbox(visible=False, value="")
         api_stop_output = gr.JSON(visible=False)
         api_stop_btn = gr.Button(value="api-stop", visible=False)
-        history_restore_query = gr.Textbox(
-            visible=True,
-            elem_id="history-restore-query",
-            elem_classes=["history-sync-hidden"],
-        )
-        history_restore_result = gr.Textbox(
-            visible=True,
-            elem_id="history-restore-result",
-            elem_classes=["history-sync-hidden"],
-        )
-        history_restore_btn = gr.Button(
-            value="restore-history",
-            visible=True,
-            elem_id="history-restore-btn",
-            elem_classes=["history-sync-hidden"],
-        )
 
         # State
         ui_state = gr.State(
@@ -4353,7 +3657,7 @@ def build_demo():
                 output_detail_level_selector,
                 ui_state,
             ],
-            outputs=[out_md, run_btn, stop_btn, ui_state, history_raw_output],
+            outputs=[out_md, run_btn, stop_btn, ui_state],
             api_name="run_research_stream",
         )
         mode_selector.change(
@@ -4397,13 +3701,6 @@ def build_demo():
             outputs=[api_stop_by_caller_output],
             api_name="stop_current_by_caller",
         )
-        history_restore_btn.click(
-            fn=restore_history_entry,
-            inputs=[history_restore_query, history_restore_result, ui_state],
-            outputs=[inp, out_md, history_raw_output, ui_state],
-            api_name=False,
-        )
-
         # Footer
         gr.HTML("""
             <div class="app-footer">
