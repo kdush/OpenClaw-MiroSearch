@@ -3681,8 +3681,6 @@ def build_demo():
                 search_result_num_selector,
                 verification_min_rounds_selector,
                 output_detail_level_selector,
-                api_render_mode,
-                api_caller_id,
             ],
             outputs=[api_output],
             api_name="run_research_once",
