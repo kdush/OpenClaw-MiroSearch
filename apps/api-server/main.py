@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 
 # 确保 miroflow-agent 的 src 在 import 路径中
 _AGENT_ROOT = Path(__file__).resolve().parents[1] / "miroflow-agent"
@@ -24,6 +24,7 @@ if str(_AGENT_ROOT) not in sys.path:
 
 load_dotenv()
 
+from middleware.rate_limit import check_rate_limit
 from models import HealthResponse
 from routers import metrics, research
 
@@ -39,6 +40,7 @@ app = FastAPI(
     version="0.1.0",
     docs_url="/docs",
     redoc_url="/redoc",
+    dependencies=[Depends(check_rate_limit)],
 )
 
 app.include_router(research.router)

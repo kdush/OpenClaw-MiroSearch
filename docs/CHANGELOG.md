@@ -11,6 +11,17 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 - 规划：结构化冲突检测报告与专项评测集
 
+## [0.1.13] - 2026-04-05
+
+### Added
+
+- api-server 请求限流中间件：基于内存滑动窗口计数器（`SlidingWindowCounter`），按 IP 或 Bearer Token 限流
+- 限流配置：`RATE_LIMIT_ENABLED`（默认开启）、`RATE_LIMIT_RPM`（默认 30 次/分钟）
+- `/health`、`/docs` 等路径自动跳过限流
+- api-server Dockerfile：与 gradio-demo 对齐的容器化配置，HEALTHCHECK 指向 `/health`
+- 6 条限流中间件回归测试（配额内通过、超额 429、bypass 路径、禁用模式、独立 key 计数）
+- `.env.example` 补充限流和缓存配置说明
+
 ## [0.1.12] - 2026-04-05
 
 ### Added
