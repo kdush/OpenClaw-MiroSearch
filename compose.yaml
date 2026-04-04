@@ -27,6 +27,29 @@ services:
       retries: 5
       start_period: 40s
 
+  api:
+    build:
+      context: .
+      dockerfile: apps/api-server/Dockerfile
+    image: openclaw-mirosearch-api:latest
+    restart: unless-stopped
+    env_file:
+      - .env.compose
+    environment:
+      API_HOST: 0.0.0.0
+      API_PORT: 8090
+      SEARXNG_BASE_URL: ${SEARXNG_BASE_URL:-http://searxng:8080}
+    ports:
+      - "${API_PORT:-8090}:8090"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health', timeout=5).read()"
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
   valkey:
     image: valkey/valkey:8-alpine
     restart: unless-stopped

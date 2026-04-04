@@ -11,6 +11,15 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 - 规划：结构化冲突检测报告与专项评测集
 
+## [0.1.14] - 2026-04-05
+
+### Changed
+
+- api-server pipeline 预加载逻辑重写：对齐 gradio-demo 的 `load_miroflow_config` 模式，正确处理 Hydra 全局初始化状态
+- api-server 添加到 `compose.yaml`：`api` 服务监听 8090 端口，与 `app`（Gradio）并行运行
+- `_build_config_overrides` 从环境变量读取 LLM 配置，支持 `DEFAULT_LLM_PROVIDER` / `DEFAULT_MODEL_NAME` / `BASE_URL` / `API_KEY`
+- 子代理工具定义暴露：`_ensure_pipeline_loaded` 自动调用 `expose_sub_agents_as_tools`
+
 ## [0.1.13] - 2026-04-05
 
 ### Added

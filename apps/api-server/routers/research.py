@@ -34,13 +34,53 @@ _result_cache = ResultCache(
 # ---- pipeline 预加载缓存 ----
 _preload_cache = {}
 _preload_lock = threading.Lock()
+_hydra_initialized = False
+
+
+def _load_hydra_config(overrides: list) -> "DictConfig":
+    """使用 Hydra compose API 加载配置，处理全局初始化状态。"""
+    global _hydra_initialized
+    from pathlib import Path
+
+    from hydra import compose, initialize_config_dir
+
+    conf_dir = os.getenv("AGENT_CONF_DIR", "")
+    if not conf_dir:
+        conf_dir = str(Path(__file__).resolve().parents[2] / "miroflow-agent" / "conf")
+
+    if not _hydra_initialized:
+        try:
+            initialize_config_dir(config_dir=conf_dir, version_base=None)
+            _hydra_initialized = True
+        except Exception as e:
+            logger.warning("Hydra 初始化状态: %s", e)
+
+    return compose(config_name="config", overrides=overrides)
+
+
+def _build_config_overrides(req: ResearchRequest) -> list:
+    """根据请求参数构建 Hydra override 列表，对齐 gradio-demo 逻辑。"""
+    llm_provider = os.getenv("DEFAULT_LLM_PROVIDER", "qwen")
+    provider_config_map = {
+        "anthropic": "claude-3-7",
+        "openai": "gpt-5",
+        "qwen": "qwen-3",
+    }
+    llm_config = provider_config_map.get(llm_provider, "qwen-3")
+
+    overrides = [
+        f"llm={llm_config}",
+        f"llm.provider={llm_provider}",
+        f"llm.model_name={os.getenv('DEFAULT_MODEL_NAME', 'LongCat-Flash-Chat')}",
+        f"llm.base_url={os.getenv('BASE_URL', 'http://localhost:11434')}",
+        f"llm.api_key={os.getenv('API_KEY', '')}",
+        f"agent={os.getenv('AGENT_CONFIG', 'demo_search_only')}",
+    ]
+    return overrides
 
 
 def _ensure_pipeline_loaded(req: ResearchRequest) -> dict:
-    """懒加载 pipeline 组件（与 gradio-demo 类似的预加载逻辑）。"""
-    from hydra import compose, initialize_config_dir
-    from omegaconf import OmegaConf
-
+    """懒加载 pipeline 组件（与 gradio-demo 对齐的预加载逻辑）。"""
     from src.core.pipeline import create_pipeline_components
 
     cache_key = f"{req.mode}|{req.search_profile}|{req.search_result_num}|{req.output_detail_level}"
@@ -48,33 +88,26 @@ def _ensure_pipeline_loaded(req: ResearchRequest) -> dict:
         if cache_key in _preload_cache:
             return _preload_cache[cache_key]
 
-    # 构建 Hydra 配置
-    conf_dir = os.getenv("AGENT_CONF_DIR", "")
-    if not conf_dir:
-        from pathlib import Path
-        conf_dir = str(Path(__file__).resolve().parents[2] / "miroflow-agent" / "conf")
-
-    overrides = [
-        f"agent={os.getenv('AGENT_CONFIG', 'mirothinker_v1.5_keep5_max200')}",
-        f"llm={os.getenv('LLM_CONFIG', 'qwen-3')}",
-    ]
-
-    with initialize_config_dir(config_path=conf_dir, version_base=None):
-        cfg = compose(config_name="config", overrides=overrides)
-
+    overrides = _build_config_overrides(req)
+    cfg = _load_hydra_config(overrides)
     main_tm, sub_tms, output_fmt = create_pipeline_components(cfg)
 
     # 获取工具定义
     async def _get_tool_defs():
-        tool_defs = await main_tm.get_tools_definitions()
+        tool_defs = await main_tm.get_all_tool_definitions()
         sub_defs = {}
         for name, tm in sub_tms.items():
-            sub_defs[name] = await tm.get_tools_definitions()
+            sub_defs[name] = await tm.get_all_tool_definitions()
         return tool_defs, sub_defs
 
     loop = asyncio.new_event_loop()
     tool_definitions, sub_agent_tool_definitions = loop.run_until_complete(_get_tool_defs())
     loop.close()
+
+    # 如有子代理，暴露为工具
+    if cfg.agent.sub_agents:
+        from src.core.sub_agent import expose_sub_agents_as_tools
+        tool_definitions += expose_sub_agents_as_tools(cfg.agent.sub_agents)
 
     result = {
         "cfg": cfg,
