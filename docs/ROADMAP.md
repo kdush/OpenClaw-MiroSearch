@@ -1,7 +1,7 @@
 # OpenClaw-MiroSearch 路线图（版本化）
 
-更新时间：2026-03-21  
-当前版本：`v0.1.9`  
+更新时间：2026-04-05  
+当前版本：`v0.1.10`  
 说明：已完成能力前置到已发布版本，未完成能力后移到后续版本。
 
 ## 已发布
@@ -83,23 +83,19 @@
 
 - 配额韧性增强版本，强调"多 Key 自动轮转 + 429 感知退避 + 会话级定向取消"
 
-## 后续版本
-
 ### `v0.1.10`（可观测性基础 + 回归门禁）
 
-核心主题：在日志已有的基础上补充结构化 metrics 聚合，并建立最小自动化回归门禁
+已纳入能力：
 
-目标能力：
+- **结构化运行 metrics**：新增 `RunMetrics` dataclass，任务结束时聚合 429 次数、超时次数、Key 切换次数、模型路由命中、检索轮次、总耗时分段写入 `TaskLog`；暴露为 `GET /api/metrics_last` 端点
+- **最小回归门禁**：新增 `test_output_detail_level_routing.py`（4 条）和 `test_model_failback.py`（4 条）pytest 测试；GitHub Actions `run-tests.yml` 在 PR/push 时自动运行
+- **模型级 failback（轻量版）**：`OpenAIClient` 新增 `model_fallback_name` 配置和 `activate_fallback()` 方法；主模型连续失败达阈值时自动切换备用模型继续执行
 
-- **结构化运行 metrics**：任务结束时聚合输出：429次数、超时次数、Key 切换次数、模型路由命中率（requested vs responded）、检索轮次、总耗时分段；暴露为新 API 端点 `GET /metrics/last`
-- **最小回归门禁**：补充 pytest 覆盖 3 条核心路径——`run_research_once` 全流程不崩溃（mock LLM）、`stop_current_api` 按 caller_id 取消、`output_detail_level` token 参数路由校验；接入 GitHub Actions 自动运行
-- **模型级 failback（轻量版）**：在已有 `max_consecutive_llm_failures` 机制上，新增 `model_fallback_name` 配置项；主模型连续失败达阈值时自动切换到 fallback 模型继续执行
+版本定位：
 
-验收标准：
+- 可观测性与质量门禁版本，强调"结构化 metrics 采集 + 模型容灾 failback + CI 自动化回归"
 
-- `GET /metrics/last` 返回最近一次任务的结构化统计 JSON
-- `uv run pytest` 通过 3 条核心测试
-- GitHub Actions PR 检查自动运行 pytest
+## 后续版本
 
 ### `v0.2.0`（生产化）
 

@@ -9,8 +9,25 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Added
 
-- 规划：模型级 failback（主模型失败自动切换备用模型）
 - 规划：结构化冲突检测报告与专项评测集
+
+## [0.1.10] - 2026-04-05
+
+### Added
+
+- 结构化运行 metrics：新增 `RunMetrics` dataclass，任务结束时聚合 429 次数、超时次数、Key 切换次数、模型路由命中、检索轮次等指标写入 `TaskLog`
+- `OpenAIClient` 埋点：`_create_message` 中自动采集 rate_limit_429、timeout、key_switch、model_route 指标
+- `Orchestrator` 埋点：搜索工具返回有效链接时递增 `search_rounds` 计数
+- `pipeline.py` 任务结束时聚合 `total_duration_ms` 和 `stage_durations` 到 `run_metrics`，并通过 `stream_queue` 发送 `run_metrics` 事件
+- Gradio Demo 新增 `GET /api/metrics_last` 端点，返回最近一次任务的结构化运行指标
+- 模型级 failback（轻量版）：`OpenAIClient` 新增 `model_fallback_name` 配置和 `activate_fallback()` 方法，主模型连续失败时自动切换备用模型
+- `Orchestrator` 主循环和子代理循环：连续 LLM 失败达阈值时优先尝试 failback，成功则重置计数器继续执行
+- 最小回归门禁：新增 `test_output_detail_level_routing.py`（4 条）和 `test_model_failback.py`（4 条）pytest 回归测试
+- GitHub Actions 新增 `run-tests.yml` workflow，PR 和 push 到 main 时自动运行 miroflow-agent 和 gradio-demo 测试
+
+### Changed
+
+- `.env.example`（gradio-demo）及 `.env.compose.example` 新增 `MODEL_FALLBACK_NAME` 配置说明
 
 ## [0.1.9] - 2026-03-21
 

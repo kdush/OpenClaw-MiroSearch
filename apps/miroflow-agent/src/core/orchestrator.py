@@ -341,10 +341,12 @@ class Orchestrator:
         return links
 
     def _record_search_evidence(self, tool_name: str, tool_result: dict):
-        if not self.verification_enabled:
-            return
         links = self._extract_search_links(tool_name, tool_result)
         if not links:
+            return
+        # 无论是否启用验证门控，都递增全局检索轮次
+        self.task_log.run_metrics.search_rounds += 1
+        if not self.verification_enabled:
             return
 
         self.verification_search_rounds += 1
@@ -767,6 +769,11 @@ class Orchestrator:
                     },
                 )
                 if consecutive_llm_failures >= self.max_consecutive_llm_failures:
+                    # 尝试激活 failback 模型；成功则重置计数器继续，否则终止
+                    if self.llm_client.activate_fallback():
+                        consecutive_llm_failures = 0
+                        await asyncio.sleep(self.llm_failure_sleep_seconds)
+                        continue
                     self.task_log.log_step(
                         "error",
                         f"{sub_agent_name} | LLM Failure Guard",
@@ -1227,6 +1234,11 @@ class Orchestrator:
                     },
                 )
                 if consecutive_llm_failures >= self.max_consecutive_llm_failures:
+                    # 尝试激活 failback 模型；成功则重置计数器继续，否则终止
+                    if self.llm_client.activate_fallback():
+                        consecutive_llm_failures = 0
+                        await asyncio.sleep(self.llm_failure_sleep_seconds)
+                        continue
                     self.task_log.log_step(
                         "error",
                         "Main Agent | LLM Failure Guard",

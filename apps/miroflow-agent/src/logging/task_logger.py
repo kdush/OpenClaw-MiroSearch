@@ -113,6 +113,34 @@ def get_utc_plus_8_time() -> str:
 
 
 @dataclass
+class RunMetrics:
+    """任务级结构化运行指标，任务结束时由 pipeline 聚合写入。"""
+
+    # LLM 层
+    rate_limit_429_count: int = 0
+    timeout_count: int = 0
+    key_switch_count: int = 0
+    model_route_hits: Dict[str, Dict[str, int]] = field(default_factory=dict)
+    # 检索层
+    search_rounds: int = 0
+    # 耗时（毫秒）
+    total_duration_ms: int = 0
+    stage_durations: Dict[str, int] = field(default_factory=dict)
+    # 模型 failback
+    failback_activated: bool = False
+    failback_model: str = ""
+
+    # ---- 便捷方法 ----
+
+    def record_model_route(self, requested: str, responded: str) -> None:
+        inner = self.model_route_hits.setdefault(requested, {})
+        inner[responded] = inner.get(responded, 0) + 1
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class LLMCallLog:
     """Record technical details of LLM calls"""
 
@@ -187,6 +215,7 @@ class TaskLog:
 
     step_logs: List[StepLog] = field(default_factory=list)
     trace_data: Dict[str, Any] = field(default_factory=dict)
+    run_metrics: RunMetrics = field(default_factory=RunMetrics)
 
     def record_stage_timing(
         self,
