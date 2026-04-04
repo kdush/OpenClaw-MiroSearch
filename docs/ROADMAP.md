@@ -1,7 +1,7 @@
 # OpenClaw-MiroSearch 路线图（版本化）
 
 更新时间：2026-04-05  
-当前版本：`v0.1.10`  
+当前版本：`v0.1.11`  
 说明：已完成能力前置到已发布版本，未完成能力后移到后续版本。
 
 ## 已发布
@@ -94,6 +94,19 @@
 版本定位：
 
 - 可观测性与质量门禁版本，强调"结构化 metrics 采集 + 模型容灾 failback + CI 自动化回归"
+
+### `v0.1.11`（API 层独立雏形）
+
+已纳入能力：
+
+- **FastAPI API Server**：新增 `apps/api-server/`，独立于 Gradio Demo 的标准 HTTP API 层
+- **标准端点**：`POST /v1/research`（提交任务）、`GET /v1/research/{task_id}/stream`（SSE 流式进度）、`POST /v1/research/{task_id}/cancel`（取消）、`POST /v1/research/cancel`（按 caller_id 批量取消）、`GET /v1/metrics/last`（运行指标）、`GET /health`（健康检查）
+- **Bearer Token 认证**：`API_TOKENS` 环境变量配置，留空跳过认证（开发模式）
+- **回归测试**：9 条 api-server 测试（健康检查、认证、参数校验、404 路径），CI 同步覆盖
+
+版本定位：
+
+- API 层独立前置版本，为 v0.2.0 生产化奠基，Gradio 与 FastAPI 双入口并行
 
 ## 后续版本
 

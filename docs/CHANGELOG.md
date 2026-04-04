@@ -11,6 +11,21 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 - 规划：结构化冲突检测报告与专项评测集
 
+## [0.1.11] - 2026-04-05
+
+### Added
+
+- 新增 `apps/api-server/`：基于 FastAPI 的独立 HTTP API 层，脱离 Gradio 依赖
+- `POST /v1/research`：提交研究任务，返回 task_id
+- `GET /v1/research/{task_id}/stream`：SSE 流式获取任务实时进度
+- `POST /v1/research/{task_id}/cancel`：取消指定任务
+- `POST /v1/research/cancel`：按 caller_id 批量取消
+- `GET /v1/metrics/last`：复用 RunMetrics，返回最近任务运行指标
+- `GET /health`：健康检查端点
+- Bearer Token 认证中间件：`API_TOKENS` 环境变量配置，留空则跳过认证（开发模式）
+- 9 条 api-server 回归测试（健康检查、认证、参数校验、404 路径）
+- GitHub Actions `run-tests.yml` 新增 api-server job
+
 ## [0.1.10] - 2026-04-05
 
 ### Added
