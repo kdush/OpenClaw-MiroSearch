@@ -14,6 +14,8 @@ import os
 import sys
 from pathlib import Path
 
+from contextlib import asynccontextmanager
+
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI
 
@@ -24,7 +26,8 @@ if str(_AGENT_ROOT) not in sys.path:
 
 load_dotenv()
 
-from middleware.rate_limit import check_rate_limit
+from deps import cleanup_stale_tasks
+from middleware.rate_limit import check_rate_limit, cleanup_rate_limit_buckets
 from models import HealthResponse
 from routers import metrics, research
 
@@ -34,6 +37,22 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    """应用生命周期：启动定期清理任务，关闭时取消。"""
+    import asyncio
+
+    async def _cleanup_loop():
+        while True:
+            await asyncio.sleep(60)
+            cleanup_stale_tasks()
+            cleanup_rate_limit_buckets()
+
+    task = asyncio.create_task(_cleanup_loop())
+    yield
+    task.cancel()
+
+
 app = FastAPI(
     title="MiroSearch API",
     description="OpenClaw-MiroSearch 标准 HTTP API，独立于 Gradio Demo",
@@ -41,6 +60,7 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc",
     dependencies=[Depends(check_rate_limit)],
+    lifespan=_lifespan,
 )
 
 app.include_router(research.router)

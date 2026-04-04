@@ -19,6 +19,7 @@ from hydra import compose, initialize_config_dir
 from omegaconf import DictConfig
 from prompt_patch import apply_prompt_patch
 from src.config.settings import expose_sub_agents_as_tools
+from src.cache.result_cache import ResultCache
 from src.core.pipeline import create_pipeline_components, execute_task_pipeline
 from utils import replace_chinese_punctuation
 
@@ -2319,8 +2320,6 @@ _last_run_metrics: Optional[dict] = None
 _last_run_metrics_lock = threading.Lock()
 
 # 研究结果缓存（相同 query+mode+profile+detail_level 命中缓存）
-from src.cache.result_cache import ResultCache
-
 _result_cache = ResultCache(
     max_size=int(os.getenv("RESULT_CACHE_MAX_SIZE", "128")),
     ttl_seconds=int(os.getenv("RESULT_CACHE_TTL_SECONDS", "3600")),

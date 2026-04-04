@@ -2,7 +2,15 @@
 
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+
+VALID_MODES = ("balanced", "verified", "research", "production-web", "quota", "thinking")
+VALID_SEARCH_PROFILES = (
+    "searxng-first", "serp-first", "multi-route",
+    "parallel", "parallel-trusted", "searxng-only",
+)
+VALID_OUTPUT_DETAIL_LEVELS = ("compact", "balanced", "detailed")
 
 
 class ResearchRequest(BaseModel):
@@ -17,6 +25,30 @@ class ResearchRequest(BaseModel):
     )
     output_detail_level: str = Field(default="detailed", description="输出篇幅档位")
     caller_id: Optional[str] = Field(default=None, description="调用方 ID，用于定向取消")
+
+    @field_validator("mode")
+    @classmethod
+    def validate_mode(cls, v: str) -> str:
+        normalized = v.strip().lower()
+        if normalized not in VALID_MODES:
+            raise ValueError(f"mode must be one of {VALID_MODES}, got '{v}'")
+        return normalized
+
+    @field_validator("search_profile")
+    @classmethod
+    def validate_search_profile(cls, v: str) -> str:
+        normalized = v.strip().lower()
+        if normalized not in VALID_SEARCH_PROFILES:
+            raise ValueError(f"search_profile must be one of {VALID_SEARCH_PROFILES}, got '{v}'")
+        return normalized
+
+    @field_validator("output_detail_level")
+    @classmethod
+    def validate_output_detail_level(cls, v: str) -> str:
+        normalized = v.strip().lower()
+        if normalized not in VALID_OUTPUT_DETAIL_LEVELS:
+            raise ValueError(f"output_detail_level must be one of {VALID_OUTPUT_DETAIL_LEVELS}, got '{v}'")
+        return normalized
 
 
 class ResearchResponse(BaseModel):

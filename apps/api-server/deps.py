@@ -74,12 +74,26 @@ def finish_task(task_id: str, status: str, result: Optional[str] = None) -> None
         if task:
             task["status"] = status
             task["result"] = result
+            task["finished_at"] = time.time()
 
 
-def unregister_task(task_id: str) -> None:
-    """清理已完成任务（延迟清理，保留 5 分钟供查询）。"""
-    # 不立即删除，让 /stream 和 /result 可以查询
-    pass
+_TASK_RETAIN_SECONDS = 300  # 已完成任务保留 5 分钟供查询
+
+
+def cleanup_stale_tasks() -> int:
+    """清理已完成且超过保留期的任务，返回清除数量。"""
+    now = time.time()
+    removed = 0
+    with _TASKS_LOCK:
+        stale_ids = [
+            tid for tid, t in _TASKS.items()
+            if t["status"] != "running"
+            and now - t.get("finished_at", t["created_at"]) > _TASK_RETAIN_SECONDS
+        ]
+        for tid in stale_ids:
+            del _TASKS[tid]
+            removed += 1
+    return removed
 
 
 def set_last_run_metrics(metrics: dict) -> None:

@@ -151,7 +151,7 @@ async def create_research(
     queue = register_task(task_id, caller_id=req.caller_id or "")
 
     # 后台启动 pipeline
-    asyncio.get_event_loop().run_in_executor(
+    asyncio.get_running_loop().run_in_executor(
         None, _run_pipeline_background, task_id, req, queue, cache_key
     )
 
@@ -169,7 +169,7 @@ def _run_pipeline_background(task_id: str, req: ResearchRequest, queue: asyncio.
         components = _ensure_pipeline_loaded(req)
     except Exception as e:
         logger.error("Pipeline 预加载失败: %s", e, exc_info=True)
-        queue.put_nowait({"event": "error", "data": {"error": str(e)}})
+        queue.put_nowait({"event": "error", "data": {"error": "Internal server error during pipeline initialization"}})
         queue.put_nowait(None)
         finish_task(task_id, "failed")
         return
@@ -230,7 +230,7 @@ def _run_pipeline_background(task_id: str, req: ResearchRequest, queue: asyncio.
                         pass
         except Exception as e:
             logger.error("Pipeline 执行出错: %s", e, exc_info=True)
-            queue.put_nowait({"event": "error", "data": {"error": str(e)}})
+            queue.put_nowait({"event": "error", "data": {"error": "Internal server error during pipeline execution"}})
 
     try:
         loop.run_until_complete(_run())

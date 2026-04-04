@@ -80,6 +80,11 @@ def _extract_client_key(request: Request) -> str:
     return f"ip:{client.host}" if client else "ip:unknown"
 
 
+def cleanup_rate_limit_buckets() -> int:
+    """清理限流器中的过期数据，返回清理的 key 数量。"""
+    return _limiter.cleanup()
+
+
 async def check_rate_limit(request: Request) -> Optional[str]:
     """限流检查依赖。超出限额时抛出 429。
 
@@ -99,7 +104,7 @@ async def check_rate_limit(request: Request) -> Optional[str]:
         remaining = _limiter.remaining(key)
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=f"Rate limit exceeded ({RATE_LIMIT_RPM} requests/min). Retry later.",
+            detail="Rate limit exceeded. Retry later.",
             headers={"Retry-After": "60", "X-RateLimit-Remaining": str(remaining)},
         )
     return key
