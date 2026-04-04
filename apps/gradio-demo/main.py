@@ -2318,6 +2318,14 @@ _CANCEL_LOCK = threading.Lock()
 _last_run_metrics: Optional[dict] = None
 _last_run_metrics_lock = threading.Lock()
 
+# 研究结果缓存（相同 query+mode+profile+detail_level 命中缓存）
+from src.cache.result_cache import ResultCache
+
+_result_cache = ResultCache(
+    max_size=int(os.getenv("RESULT_CACHE_MAX_SIZE", "128")),
+    ttl_seconds=int(os.getenv("RESULT_CACHE_TTL_SECONDS", "3600")),
+)
+
 
 def _set_cancel_flag(task_id: str):
     with _CANCEL_LOCK:
@@ -2523,6 +2531,16 @@ async def run_research_once(
     resolved_summary_merge_strategy = _normalize_final_summary_merge_strategy(
         _get_summary_merge_for_output_detail(resolved_output_detail_level)
     )
+
+    # 结果缓存：相同 query+mode+profile+detail_level 命中缓存
+    cache_key = ResultCache.make_key(
+        query, resolved_mode, resolved_search_profile, resolved_output_detail_level
+    )
+    cached = _result_cache.get(cache_key)
+    if cached is not None:
+        logger.info("Cache hit | key=%s | query=%s", cache_key, query[:60])
+        return cached
+
     task_id = str(uuid.uuid4())
     _reset_cancel_flag(task_id)
     _register_active_task(task_id, caller_id=caller_id or "")
@@ -2545,11 +2563,15 @@ async def run_research_once(
                     _last_run_metrics = message.get("data")
                 continue
             state = _update_state_with_event(state, message)
-        return _render_markdown(
+        result = _render_markdown(
             state,
             render_mode=resolved_api_render_mode,
             final_summary_merge_strategy=resolved_summary_merge_strategy,
         )
+        # 写入缓存（仅当结果非空时）
+        if result and len(result) > 100:
+            _result_cache.put(cache_key, result)
+        return result
     finally:
         _unregister_active_task(task_id)
 

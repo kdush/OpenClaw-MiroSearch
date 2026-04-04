@@ -1,7 +1,7 @@
 # OpenClaw-MiroSearch 路线图（版本化）
 
 更新时间：2026-04-05  
-当前版本：`v0.1.11`  
+当前版本：`v0.1.12`  
 说明：已完成能力前置到已发布版本，未完成能力后移到后续版本。
 
 ## 已发布
@@ -107,6 +107,19 @@
 版本定位：
 
 - API 层独立前置版本，为 v0.2.0 生产化奠基，Gradio 与 FastAPI 双入口并行
+
+### `v0.1.12`（结果缓存）
+
+已纳入能力：
+
+- **ResultCache**：内存 LRU + TTL 结果缓存（`src/cache/result_cache.py`），相同 query+mode+profile+detail_level 命中缓存避免重复消耗搜索配额与 LLM tokens
+- **双入口集成**：`gradio-demo` `run_research_once` 和 `api-server` `POST /v1/research` 均集成缓存命中逻辑
+- **环境变量配置**：`RESULT_CACHE_MAX_SIZE`（默认 128）、`RESULT_CACHE_TTL_SECONDS`（默认 3600）
+- **回归测试**：11 条 ResultCache 测试覆盖 LRU 淘汰、TTL 过期、key 确定性
+
+版本定位：
+
+- 成本优化版本，强调"重复查询零消耗 + 可配置缓存策略"
 
 ## 后续版本
 

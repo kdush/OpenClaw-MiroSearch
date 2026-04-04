@@ -11,6 +11,16 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 - 规划：结构化冲突检测报告与专项评测集
 
+## [0.1.12] - 2026-04-05
+
+### Added
+
+- 新增 `ResultCache` 类（`src/cache/result_cache.py`）：内存 LRU + TTL 结果缓存，相同 query+mode+profile+detail_level 命中缓存避免重复消耗搜索配额与 LLM tokens
+- `gradio-demo` `run_research_once` 集成结果缓存：入口检查缓存，完成后写回缓存
+- `api-server` `POST /v1/research` 集成结果缓存：命中时立即返回 `status=cached`
+- 缓存配置通过环境变量 `RESULT_CACHE_MAX_SIZE`（默认 128）和 `RESULT_CACHE_TTL_SECONDS`（默认 3600）控制
+- 11 条 ResultCache 回归测试（LRU 淘汰、TTL 过期、key 确定性、invalidate、clear）
+
 ## [0.1.11] - 2026-04-05
 
 ### Added

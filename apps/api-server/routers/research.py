@@ -20,10 +20,16 @@ from deps import (
 )
 from middleware.auth import verify_bearer_token
 from models import CancelResponse, ErrorResponse, ResearchRequest, ResearchResponse
+from src.cache.result_cache import ResultCache
 
 logger = logging.getLogger("api-server")
 
 router = APIRouter(prefix="/v1/research", tags=["research"])
+
+_result_cache = ResultCache(
+    max_size=int(os.getenv("RESULT_CACHE_MAX_SIZE", "128")),
+    ttl_seconds=int(os.getenv("RESULT_CACHE_TTL_SECONDS", "3600")),
+)
 
 # ---- pipeline 预加载缓存 ----
 _preload_cache = {}
@@ -94,18 +100,32 @@ async def create_research(
     req: ResearchRequest,
     _token: Optional[str] = Depends(verify_bearer_token),
 ):
+    # 结果缓存检查
+    cache_key = ResultCache.make_key(
+        req.query, req.mode, req.search_profile, req.output_detail_level
+    )
+    cached = _result_cache.get(cache_key)
+    if cached is not None:
+        task_id = f"cached-{uuid.uuid4().hex[:8]}"
+        logger.info("Cache hit | key=%s | query=%s", cache_key, req.query[:60])
+        queue = register_task(task_id, caller_id=req.caller_id or "")
+        queue.put_nowait({"event": "final_output", "data": {"markdown": cached}})
+        queue.put_nowait(None)
+        finish_task(task_id, "completed")
+        return ResearchResponse(task_id=task_id, status="cached")
+
     task_id = str(uuid.uuid4())
     queue = register_task(task_id, caller_id=req.caller_id or "")
 
     # 后台启动 pipeline
     asyncio.get_event_loop().run_in_executor(
-        None, _run_pipeline_background, task_id, req, queue
+        None, _run_pipeline_background, task_id, req, queue, cache_key
     )
 
     return ResearchResponse(task_id=task_id)
 
 
-def _run_pipeline_background(task_id: str, req: ResearchRequest, queue: asyncio.Queue):
+def _run_pipeline_background(task_id: str, req: ResearchRequest, queue: asyncio.Queue, cache_key: str = ""):
     """在线程中运行 pipeline，事件写入 queue。"""
     from src.core.pipeline import execute_task_pipeline
 
