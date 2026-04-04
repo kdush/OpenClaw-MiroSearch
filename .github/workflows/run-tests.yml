@@ -31,9 +31,9 @@ jobs:
 
       - name: Run tests
         run: |
-          uv run pytest tests/test_model_failback.py tests/test_task_logger_timing.py -v --tb=short 2>&1
+          uv run pytest tests/test_model_failback.py tests/test_task_logger_timing.py tests/test_result_cache.py -v --tb=short 2>&1
           echo '## miroflow-agent test results' >> $GITHUB_STEP_SUMMARY
-          if uv run pytest tests/test_model_failback.py tests/test_task_logger_timing.py -q --tb=line 2>&1 | tee /tmp/test-output.txt; then
+          if uv run pytest tests/test_model_failback.py tests/test_task_logger_timing.py tests/test_result_cache.py -q --tb=line 2>&1 | tee /tmp/test-output.txt; then
             echo '✅ All tests passed.' >> "$GITHUB_STEP_SUMMARY"
           else
             echo '❌ Some tests failed.' >> "$GITHUB_STEP_SUMMARY"
