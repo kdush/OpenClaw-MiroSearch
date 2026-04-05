@@ -20,6 +20,17 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - `_build_config_overrides` 从环境变量读取 LLM 配置，支持 `DEFAULT_LLM_PROVIDER` / `DEFAULT_MODEL_NAME` / `BASE_URL` / `API_KEY`
 - 子代理工具定义暴露：`_ensure_pipeline_loaded` 自动调用 `expose_sub_agents_as_tools`
 
+### Fixed
+
+- api-server 安全审查修复 7 项问题：
+  - 修复任务管理内存泄漏：`cleanup_stale_tasks` 定期清理已完成任务，`finish_task` 记录 `finished_at` 时间戳
+  - 修复异常信息泄漏：pipeline 异常返回通用错误消息，不暴露内部堆栈
+  - 替换废弃 `asyncio.get_event_loop()` 为 `asyncio.get_running_loop()`
+  - 替换废弃 `app.on_event` 为 FastAPI `lifespan` 上下文管理器，集成周期性清理任务
+  - `ResearchRequest` 添加 `mode`、`search_profile`、`output_detail_level` 枚举校验
+  - 限流中间件 429 响应隐藏内部配置（`RATE_LIMIT_RPM`），导出 `cleanup_rate_limit_buckets` 供定期清理
+- Dockerfile（gradio-demo / api-server）CMD 添加 `--frozen`，修复容器无外网时 `uv run` 尝试下载依赖导致启动失败
+
 ## [0.1.13] - 2026-04-05
 
 ### Added
