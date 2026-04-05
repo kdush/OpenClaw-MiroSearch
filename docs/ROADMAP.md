@@ -1,7 +1,7 @@
 # OpenClaw-MiroSearch 路线图（版本化）
 
-更新时间：2026-03-21  
-当前版本：`v0.1.9`  
+更新时间：2026-04-05  
+当前版本：`v0.1.14`  
 说明：已完成能力前置到已发布版本，未完成能力后移到后续版本。
 
 ## 已发布
@@ -83,23 +83,45 @@
 
 - 配额韧性增强版本，强调"多 Key 自动轮转 + 429 感知退避 + 会话级定向取消"
 
-## 后续版本
-
 ### `v0.1.10`（可观测性基础 + 回归门禁）
 
-核心主题：在日志已有的基础上补充结构化 metrics 聚合，并建立最小自动化回归门禁
+已纳入能力：
 
-目标能力：
+- **结构化运行 metrics**：新增 `RunMetrics` dataclass，任务结束时聚合 429 次数、超时次数、Key 切换次数、模型路由命中、检索轮次、总耗时分段写入 `TaskLog`；暴露为 `GET /api/metrics_last` 端点
+- **最小回归门禁**：新增 `test_output_detail_level_routing.py`（4 条）和 `test_model_failback.py`（4 条）pytest 测试；GitHub Actions `run-tests.yml` 在 PR/push 时自动运行
+- **模型级 failback（轻量版）**：`OpenAIClient` 新增 `model_fallback_name` 配置和 `activate_fallback()` 方法；主模型连续失败达阈值时自动切换备用模型继续执行
 
-- **结构化运行 metrics**：任务结束时聚合输出：429次数、超时次数、Key 切换次数、模型路由命中率（requested vs responded）、检索轮次、总耗时分段；暴露为新 API 端点 `GET /metrics/last`
-- **最小回归门禁**：补充 pytest 覆盖 3 条核心路径——`run_research_once` 全流程不崩溃（mock LLM）、`stop_current_api` 按 caller_id 取消、`output_detail_level` token 参数路由校验；接入 GitHub Actions 自动运行
-- **模型级 failback（轻量版）**：在已有 `max_consecutive_llm_failures` 机制上，新增 `model_fallback_name` 配置项；主模型连续失败达阈值时自动切换到 fallback 模型继续执行
+版本定位：
 
-验收标准：
+- 可观测性与质量门禁版本，强调"结构化 metrics 采集 + 模型容灾 failback + CI 自动化回归"
 
-- `GET /metrics/last` 返回最近一次任务的结构化统计 JSON
-- `uv run pytest` 通过 3 条核心测试
-- GitHub Actions PR 检查自动运行 pytest
+### `v0.1.11`（API 层独立雏形）
+
+已纳入能力：
+
+- **FastAPI API Server**：新增 `apps/api-server/`，独立于 Gradio Demo 的标准 HTTP API 层
+- **标准端点**：`POST /v1/research`（提交任务）、`GET /v1/research/{task_id}/stream`（SSE 流式进度）、`POST /v1/research/{task_id}/cancel`（取消）、`POST /v1/research/cancel`（按 caller_id 批量取消）、`GET /v1/metrics/last`（运行指标）、`GET /health`（健康检查）
+- **Bearer Token 认证**：`API_TOKENS` 环境变量配置，留空跳过认证（开发模式）
+- **回归测试**：9 条 api-server 测试（健康检查、认证、参数校验、404 路径），CI 同步覆盖
+
+版本定位：
+
+- API 层独立前置版本，为 v0.2.0 生产化奠基，Gradio 与 FastAPI 双入口并行
+
+### `v0.1.12`（结果缓存）
+
+已纳入能力：
+
+- **ResultCache**：内存 LRU + TTL 结果缓存（`src/cache/result_cache.py`），相同 query+mode+profile+detail_level 命中缓存避免重复消耗搜索配额与 LLM tokens
+- **双入口集成**：`gradio-demo` `run_research_once` 和 `api-server` `POST /v1/research` 均集成缓存命中逻辑
+- **环境变量配置**：`RESULT_CACHE_MAX_SIZE`（默认 128）、`RESULT_CACHE_TTL_SECONDS`（默认 3600）
+- **回归测试**：11 条 ResultCache 测试覆盖 LRU 淘汰、TTL 过期、key 确定性
+
+版本定位：
+
+- 成本优化版本，强调"重复查询零消耗 + 可配置缓存策略"
+
+## 后续版本
 
 ### `v0.2.0`（生产化）
 

@@ -2,7 +2,7 @@ ARG PYTHON_BASE_IMAGE=python:3.12-slim
 FROM ${PYTHON_BASE_IMAGE}
 
 ARG UV_VERSION=0.7.8
-ARG APP_WORKDIR=/workspace/apps/gradio-demo
+ARG APP_WORKDIR=/workspace/apps/api-server
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -20,9 +20,9 @@ COPY . /workspace
 WORKDIR ${APP_WORKDIR}
 RUN uv sync --frozen --no-dev
 
-EXPOSE 8080
+EXPOSE 8090
 
-HEALTHCHECK --interval=30s --timeout=10s --retries=5 --start-period=40s \
-  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/gradio_api/info', timeout=5).read()" || exit 1
+HEALTHCHECK --interval=30s --timeout=10s --retries=5 --start-period=30s \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health', timeout=5).read()" || exit 1
 
-CMD ["uv", "run", "--frozen", "main.py"]
+CMD ["uv", "run", "--frozen", "python", "main.py"]

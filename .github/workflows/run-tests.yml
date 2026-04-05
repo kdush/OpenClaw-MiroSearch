@@ -1,0 +1,122 @@
+name: tests
+
+on:
+  pull_request:
+    branches: [ "main" ]
+  push:
+    branches: [ "main" ]
+
+jobs:
+  test-miroflow-agent:
+    if: github.repository_owner == 'MiroMindAI'
+    name: miroflow-agent tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/miroflow-agent
+    steps:
+      - name: checkout code
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Run tests
+        run: |
+          uv run pytest tests/test_model_failback.py tests/test_task_logger_timing.py tests/test_result_cache.py -v --tb=short 2>&1
+          echo '## miroflow-agent test results' >> $GITHUB_STEP_SUMMARY
+          if uv run pytest tests/test_model_failback.py tests/test_task_logger_timing.py tests/test_result_cache.py -q --tb=line 2>&1 | tee /tmp/test-output.txt; then
+            echo '✅ All tests passed.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo '❌ Some tests failed.' >> "$GITHUB_STEP_SUMMARY"
+            {
+              echo '```'
+              cat /tmp/test-output.txt
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+  test-gradio-demo:
+    if: github.repository_owner == 'MiroMindAI'
+    name: gradio-demo tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/gradio-demo
+    steps:
+      - name: checkout code
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Run tests
+        run: |
+          uv run pytest tests/test_stop_current_api.py tests/test_output_detail_level_routing.py -v --tb=short 2>&1
+          echo '## gradio-demo test results' >> $GITHUB_STEP_SUMMARY
+          if uv run pytest tests/test_stop_current_api.py tests/test_output_detail_level_routing.py -q --tb=line 2>&1 | tee /tmp/test-output.txt; then
+            echo '✅ All tests passed.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo '❌ Some tests failed.' >> "$GITHUB_STEP_SUMMARY"
+            {
+              echo '```'
+              cat /tmp/test-output.txt
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+  test-api-server:
+    if: github.repository_owner == 'MiroMindAI'
+    name: api-server tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/api-server
+    steps:
+      - name: checkout code
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Run tests
+        run: |
+          uv run pytest tests/ -v --tb=short 2>&1
+          echo '## api-server test results' >> $GITHUB_STEP_SUMMARY
+          if uv run pytest tests/ -q --tb=line 2>&1 | tee /tmp/test-output.txt; then
+            echo '✅ All tests passed.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo '❌ Some tests failed.' >> "$GITHUB_STEP_SUMMARY"
+            {
+              echo '```'
+              cat /tmp/test-output.txt
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi

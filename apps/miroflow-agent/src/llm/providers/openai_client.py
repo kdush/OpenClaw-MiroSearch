@@ -61,6 +61,12 @@ class OpenAIClient(BaseClient):
             "model_summary_name",
             os.getenv("MODEL_SUMMARY_NAME", self.model_fast_name),
         )
+        # 模型 failback：主模型连续失败后自动切换的备用模型
+        self.model_fallback_name = self.cfg.llm.get(
+            "model_fallback_name",
+            os.getenv("MODEL_FALLBACK_NAME", ""),
+        )
+        self._fallback_activated = False
         cfg_max_retries = self.cfg.llm.get("max_retries")
         self.max_retries = (
             int(cfg_max_retries)
@@ -131,6 +137,26 @@ class OpenAIClient(BaseClient):
             return float(raw_value)
         except ValueError:
             return default
+
+    def activate_fallback(self) -> bool:
+        """将所有模型名切换为 fallback 模型。返回是否成功激活。"""
+        if self._fallback_activated or not self.model_fallback_name:
+            return False
+        original = self.model_name
+        self.model_name = self.model_fallback_name
+        self.model_tool_name = self.model_fallback_name
+        self.model_fast_name = self.model_fallback_name
+        self.model_thinking_name = self.model_fallback_name
+        self.model_summary_name = self.model_fallback_name
+        self._fallback_activated = True
+        self.task_log.run_metrics.failback_activated = True
+        self.task_log.run_metrics.failback_model = self.model_fallback_name
+        self.task_log.log_step(
+            "warning",
+            "LLM | Failback Activated",
+            f"主模型 {original} 连续失败，已切换至备用模型 {self.model_fallback_name}",
+        )
+        return True
 
     def _resolve_model_name(self, tools_definitions, agent_type: str) -> str:
         if agent_type in VERIFICATION_AGENT_TYPES:
@@ -338,6 +364,7 @@ class OpenAIClient(BaseClient):
                 # Update token count
                 self._update_token_usage(getattr(response, "usage", None))
                 response_model_name = getattr(response, "model", "N/A")
+                self.task_log.run_metrics.record_model_route(request_model_name, response_model_name)
                 self.task_log.log_step(
                     "info",
                     "LLM | Model Route",
@@ -432,6 +459,7 @@ class OpenAIClient(BaseClient):
                 return response, messages_history
 
             except asyncio.TimeoutError as e:
+                self.task_log.run_metrics.timeout_count += 1
                 if attempt < max_retries - 1:
                     self.task_log.log_step(
                         "warning",
@@ -458,6 +486,7 @@ class OpenAIClient(BaseClient):
             except RateLimitError as e:
                 # 429 感知退避：提取 Retry-After，标记当前 Key，尝试切换
                 _429_streak += 1
+                self.task_log.run_metrics.rate_limit_429_count += 1
                 retry_after = self._extract_retry_after(e)
                 current_key = self._key_pool.current_key()
                 self._key_pool.mark_rate_limited(current_key, retry_after)
@@ -467,6 +496,7 @@ class OpenAIClient(BaseClient):
                     next_key = self._key_pool.next_available_key()
                     if next_key:
                         self.client.api_key = next_key
+                        self.task_log.run_metrics.key_switch_count += 1
                         self.task_log.log_step(
                             "warning",
                             "LLM | Key Rotated (429)",

@@ -9,8 +9,81 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Added
 
-- 规划：模型级 failback（主模型失败自动切换备用模型）
 - 规划：结构化冲突检测报告与专项评测集
+
+## [0.1.14] - 2026-04-05
+
+### Changed
+
+- api-server pipeline 预加载逻辑重写：对齐 gradio-demo 的 `load_miroflow_config` 模式，正确处理 Hydra 全局初始化状态
+- api-server 添加到 `compose.yaml`：`api` 服务监听 8090 端口，与 `app`（Gradio）并行运行
+- `_build_config_overrides` 从环境变量读取 LLM 配置，支持 `DEFAULT_LLM_PROVIDER` / `DEFAULT_MODEL_NAME` / `BASE_URL` / `API_KEY`
+- 子代理工具定义暴露：`_ensure_pipeline_loaded` 自动调用 `expose_sub_agents_as_tools`
+
+### Fixed
+
+- api-server 安全审查修复 7 项问题：
+  - 修复任务管理内存泄漏：`cleanup_stale_tasks` 定期清理已完成任务，`finish_task` 记录 `finished_at` 时间戳
+  - 修复异常信息泄漏：pipeline 异常返回通用错误消息，不暴露内部堆栈
+  - 替换废弃 `asyncio.get_event_loop()` 为 `asyncio.get_running_loop()`
+  - 替换废弃 `app.on_event` 为 FastAPI `lifespan` 上下文管理器，集成周期性清理任务
+  - `ResearchRequest` 添加 `mode`、`search_profile`、`output_detail_level` 枚举校验
+  - 限流中间件 429 响应隐藏内部配置（`RATE_LIMIT_RPM`），导出 `cleanup_rate_limit_buckets` 供定期清理
+- Dockerfile（gradio-demo / api-server）CMD 添加 `--frozen`，修复容器无外网时 `uv run` 尝试下载依赖导致启动失败
+
+## [0.1.13] - 2026-04-05
+
+### Added
+
+- api-server 请求限流中间件：基于内存滑动窗口计数器（`SlidingWindowCounter`），按 IP 或 Bearer Token 限流
+- 限流配置：`RATE_LIMIT_ENABLED`（默认开启）、`RATE_LIMIT_RPM`（默认 30 次/分钟）
+- `/health`、`/docs` 等路径自动跳过限流
+- api-server Dockerfile：与 gradio-demo 对齐的容器化配置，HEALTHCHECK 指向 `/health`
+- 6 条限流中间件回归测试（配额内通过、超额 429、bypass 路径、禁用模式、独立 key 计数）
+- `.env.example` 补充限流和缓存配置说明
+
+## [0.1.12] - 2026-04-05
+
+### Added
+
+- 新增 `ResultCache` 类（`src/cache/result_cache.py`）：内存 LRU + TTL 结果缓存，相同 query+mode+profile+detail_level 命中缓存避免重复消耗搜索配额与 LLM tokens
+- `gradio-demo` `run_research_once` 集成结果缓存：入口检查缓存，完成后写回缓存
+- `api-server` `POST /v1/research` 集成结果缓存：命中时立即返回 `status=cached`
+- 缓存配置通过环境变量 `RESULT_CACHE_MAX_SIZE`（默认 128）和 `RESULT_CACHE_TTL_SECONDS`（默认 3600）控制
+- 11 条 ResultCache 回归测试（LRU 淘汰、TTL 过期、key 确定性、invalidate、clear）
+
+## [0.1.11] - 2026-04-05
+
+### Added
+
+- 新增 `apps/api-server/`：基于 FastAPI 的独立 HTTP API 层，脱离 Gradio 依赖
+- `POST /v1/research`：提交研究任务，返回 task_id
+- `GET /v1/research/{task_id}/stream`：SSE 流式获取任务实时进度
+- `POST /v1/research/{task_id}/cancel`：取消指定任务
+- `POST /v1/research/cancel`：按 caller_id 批量取消
+- `GET /v1/metrics/last`：复用 RunMetrics，返回最近任务运行指标
+- `GET /health`：健康检查端点
+- Bearer Token 认证中间件：`API_TOKENS` 环境变量配置，留空则跳过认证（开发模式）
+- 9 条 api-server 回归测试（健康检查、认证、参数校验、404 路径）
+- GitHub Actions `run-tests.yml` 新增 api-server job
+
+## [0.1.10] - 2026-04-05
+
+### Added
+
+- 结构化运行 metrics：新增 `RunMetrics` dataclass，任务结束时聚合 429 次数、超时次数、Key 切换次数、模型路由命中、检索轮次等指标写入 `TaskLog`
+- `OpenAIClient` 埋点：`_create_message` 中自动采集 rate_limit_429、timeout、key_switch、model_route 指标
+- `Orchestrator` 埋点：搜索工具返回有效链接时递增 `search_rounds` 计数
+- `pipeline.py` 任务结束时聚合 `total_duration_ms` 和 `stage_durations` 到 `run_metrics`，并通过 `stream_queue` 发送 `run_metrics` 事件
+- Gradio Demo 新增 `GET /api/metrics_last` 端点，返回最近一次任务的结构化运行指标
+- 模型级 failback（轻量版）：`OpenAIClient` 新增 `model_fallback_name` 配置和 `activate_fallback()` 方法，主模型连续失败时自动切换备用模型
+- `Orchestrator` 主循环和子代理循环：连续 LLM 失败达阈值时优先尝试 failback，成功则重置计数器继续执行
+- 最小回归门禁：新增 `test_output_detail_level_routing.py`（4 条）和 `test_model_failback.py`（4 条）pytest 回归测试
+- GitHub Actions 新增 `run-tests.yml` workflow，PR 和 push 到 main 时自动运行 miroflow-agent 和 gradio-demo 测试
+
+### Changed
+
+- `.env.example`（gradio-demo）及 `.env.compose.example` 新增 `MODEL_FALLBACK_NAME` 配置说明
 
 ## [0.1.9] - 2026-03-21
 

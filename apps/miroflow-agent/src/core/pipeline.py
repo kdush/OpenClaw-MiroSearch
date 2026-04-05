@@ -219,11 +219,18 @@ async def execute_task_pipeline(
                 "Detected non-terminal task status 'running' at pipeline end; force set to 'failed'.",
             )
 
-        task_log.record_stage_timing(
-            "pipeline.total",
-            int((time.perf_counter() - total_start_time) * 1000),
-        )
+        total_ms = int((time.perf_counter() - total_start_time) * 1000)
+        task_log.record_stage_timing("pipeline.total", total_ms)
         task_log.end_time = get_utc_plus_8_time()
+
+        # 聚合结构化 run_metrics
+        task_log.run_metrics.total_duration_ms = total_ms
+        stage_timing_summary = task_log.trace_data.get("stage_timing_summary", {})
+        task_log.run_metrics.stage_durations = {
+            name: data.get("total_duration_ms", 0)
+            for name, data in stage_timing_summary.items()
+        }
+
         timing_summary = task_log.format_stage_timing_summary()
         if timing_summary:
             task_log.log_step(
@@ -231,6 +238,16 @@ async def execute_task_pipeline(
                 "Timing | Summary",
                 timing_summary,
             )
+
+        # 通过 stream_queue 发送结构化 run_metrics 事件供前端/API 消费
+        if stream_queue is not None:
+            try:
+                await stream_queue.put({
+                    "event": "run_metrics",
+                    "data": task_log.run_metrics.to_dict(),
+                })
+            except Exception:
+                pass
 
         # Record task summary to structured log
         task_log.log_step(
