@@ -87,7 +87,6 @@ def test_searxng_only_downgrade_disabled(monkeypatch):
     monkeypatch.setattr(search_mod, "SEARCH_SEARXNG_ONLY_ALLOW_DOWNGRADE", False)
     providers, downgraded, added = search_mod._build_searxng_only_downgrade_providers(
         ["searxng"],
-        {"searxng": True, "serpapi": True, "serper": True},
     )
     assert providers == ["searxng"]
     assert downgraded is False
@@ -98,9 +97,33 @@ def test_searxng_only_downgrade_enabled(monkeypatch):
     search_mod = _load_search_module()
     monkeypatch.setattr(search_mod, "SEARCH_SEARXNG_ONLY_ALLOW_DOWNGRADE", True)
     monkeypatch.setattr(search_mod, "SEARCH_SEARXNG_ONLY_DOWNGRADE_ORDER", "serpapi,serper")
+
+    # 构造 registry：serpapi 可用，serper 不可用
+    from miroflow_tools.dev_mcp_servers.providers.registry import ProviderRegistry
+
+    class _FakeAvailable:
+        @property
+        def name(self):
+            return "serpapi"
+
+        def is_available(self):
+            return True
+
+    class _FakeUnavailable:
+        @property
+        def name(self):
+            return "serper"
+
+        def is_available(self):
+            return False
+
+    fake_registry = ProviderRegistry()
+    fake_registry.register(_FakeAvailable())
+    fake_registry.register(_FakeUnavailable())
+    monkeypatch.setattr(search_mod, "_registry", fake_registry)
+
     providers, downgraded, added = search_mod._build_searxng_only_downgrade_providers(
         ["searxng"],
-        {"searxng": True, "serpapi": True, "serper": False},
     )
     assert providers == ["searxng", "serpapi"]
     assert downgraded is True
@@ -118,28 +141,36 @@ def test_format_provider_error_forbidden_json():
 
 @pytest.mark.asyncio
 async def test_searxng_precheck_raises_on_403(monkeypatch):
-    search_mod = _load_search_module()
-
-    class _FakeClient:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-        async def get(self, *_args, **_kwargs):
-            request = httpx.Request("GET", "http://searxng.local/search")
-            return httpx.Response(403, request=request)
-
-    monkeypatch.setattr(search_mod, "SEARXNG_BASE_URL", "http://searxng.local")
-    monkeypatch.setattr(search_mod, "SEARXNG_PRECHECK_ENABLED", True)
-    monkeypatch.setattr(search_mod, "SEARXNG_PRECHECK_TTL_SECONDS", 10)
-    monkeypatch.setattr(
-        search_mod,
-        "_searxng_precheck_state",
-        {"checked_at": 0.0, "ok": False, "reason": "not_checked"},
+    """预检 403 现在由 SearXNGProvider 内部处理，此处直接测试 Provider。"""
+    from miroflow_tools.dev_mcp_servers.providers.searxng import (
+        SearXNGProvider,
+        SearxngPrecheckError,
     )
-    monkeypatch.setattr(search_mod.httpx, "AsyncClient", lambda *args, **kwargs: _FakeClient())
 
-    with pytest.raises(search_mod.SearxngPrecheckError):
-        await search_mod._ensure_searxng_json_ready()
+    async def _forbidden_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, json={"error": "forbidden"}, request=request)
+
+    mock_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(_forbidden_handler)
+    )
+
+    async def _async_return(value):
+        return value
+
+    monkeypatch.setattr(
+        "miroflow_tools.dev_mcp_servers.providers.searxng.get_shared_client",
+        lambda: _async_return(mock_client),
+    )
+
+    provider = SearXNGProvider(base_url="http://searxng.local")
+    provider._precheck_enabled = True
+    provider._precheck_state = {
+        "checked_at": 0.0,
+        "ok": False,
+        "reason": "not_checked",
+    }
+
+    from miroflow_tools.dev_mcp_servers.providers.base import SearchParams
+
+    with pytest.raises(SearxngPrecheckError):
+        await provider.search(SearchParams(query="test"))

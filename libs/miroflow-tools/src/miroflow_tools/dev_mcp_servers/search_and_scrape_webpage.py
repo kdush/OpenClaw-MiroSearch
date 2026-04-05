@@ -9,7 +9,6 @@ import time
 from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 
-import httpx
 from mcp.server.fastmcp import FastMCP
 from tenacity import (
     retry,
@@ -25,26 +24,23 @@ from tencentcloud.common.exception.tencent_cloud_sdk_exception import (
 from tencentcloud.common.profile.client_profile import ClientProfile
 from tencentcloud.common.profile.http_profile import HttpProfile
 
-from ..mcp_servers.utils.key_pool import KeyPool
 from ..mcp_servers.utils.url_unquote import decode_http_urls_in_dict
+from .providers.base import SearchParams
+from .providers.registry import ProviderRegistry
+from .providers.searxng import SearXNGProvider, SearxngPrecheckError
+from .providers.serpapi import SerpAPIProvider
+from .providers.serper import SerperProvider
 
 # Configure logging
 logger = logging.getLogger("miroflow")
 
-SERPER_BASE_URL = os.getenv("SERPER_BASE_URL", "https://google.serper.dev")
-SERPER_API_KEY = os.getenv("SERPER_API_KEY", "")
-SERPAPI_API_KEY = os.getenv("SERPAPI_API_KEY", "")
-
-# Key 池轮转：优先从 *_API_KEYS 读取多 Key，回退到单 Key
-try:
-    _serper_key_pool = KeyPool.from_env("SERPER_API_KEYS", fallback_key=SERPER_API_KEY or None)
-except ValueError:
-    _serper_key_pool = None
-try:
-    _serpapi_key_pool = KeyPool.from_env("SERPAPI_API_KEYS", fallback_key=SERPAPI_API_KEY or None)
-except ValueError:
-    _serpapi_key_pool = None
-SEARXNG_BASE_URL = os.getenv("SEARXNG_BASE_URL", "")
+# ---------------------------------------------------------------------------
+# Provider 注册中心（模块加载时自动初始化）
+# ---------------------------------------------------------------------------
+_registry = ProviderRegistry()
+_registry.register(SerperProvider())
+_registry.register(SerpAPIProvider())
+_registry.register(SearXNGProvider())
 DEFAULT_SEARCH_PROVIDER_ORDER = "searxng,serpapi,serper"
 SEARCH_PROVIDER_ORDER = os.getenv(
     "SEARCH_PROVIDER_ORDER", DEFAULT_SEARCH_PROVIDER_ORDER
@@ -79,9 +75,6 @@ DEFAULT_SEARCH_CONFIDENCE_HIGH_CONF_DOMAINS = (
     "reuters.com,apnews.com,bbc.com,aljazeera.com,state.gov,un.org,iaea.org,who.int"
 )
 
-DEFAULT_SEARXNG_PRECHECK_ENABLED = True
-DEFAULT_SEARXNG_PRECHECK_TIMEOUT_SECONDS = 6.0
-DEFAULT_SEARXNG_PRECHECK_TTL_SECONDS = 600
 DEFAULT_SEARCH_SEARXNG_ONLY_ALLOW_DOWNGRADE = False
 DEFAULT_SEARCH_SEARXNG_ONLY_DOWNGRADE_ORDER = "serpapi,serper"
 
@@ -183,20 +176,6 @@ SEARCH_CONFIDENCE_HIGH_CONF_DOMAINS = {
     if domain.strip()
 }
 
-SEARXNG_PRECHECK_ENABLED = _read_env_bool(
-    "SEARXNG_PRECHECK_ENABLED",
-    DEFAULT_SEARXNG_PRECHECK_ENABLED,
-)
-SEARXNG_PRECHECK_TIMEOUT_SECONDS = _read_env_float(
-    "SEARXNG_PRECHECK_TIMEOUT_SECONDS",
-    DEFAULT_SEARXNG_PRECHECK_TIMEOUT_SECONDS,
-    min_value=1.0,
-)
-SEARXNG_PRECHECK_TTL_SECONDS = _read_env_int(
-    "SEARXNG_PRECHECK_TTL_SECONDS",
-    DEFAULT_SEARXNG_PRECHECK_TTL_SECONDS,
-    min_value=10,
-)
 SEARCH_SEARXNG_ONLY_ALLOW_DOWNGRADE = _read_env_bool(
     "SEARCH_SEARXNG_ONLY_ALLOW_DOWNGRADE",
     DEFAULT_SEARCH_SEARXNG_ONLY_ALLOW_DOWNGRADE,
@@ -206,45 +185,8 @@ SEARCH_SEARXNG_ONLY_DOWNGRADE_ORDER = os.getenv(
     DEFAULT_SEARCH_SEARXNG_ONLY_DOWNGRADE_ORDER,
 ).strip()
 
-_searxng_precheck_state: dict[str, Any] = {
-    "checked_at": 0.0,
-    "ok": False,
-    "reason": "not_checked",
-}
-_searxng_precheck_lock = asyncio.Lock()
-
-# 全局 httpx 连接池，避免每次请求新建 TCP 连接
-_shared_http_client: Optional[httpx.AsyncClient] = None
-_shared_http_client_lock = asyncio.Lock()
-
-
-async def _get_shared_client() -> httpx.AsyncClient:
-    """获取全局共享的 httpx 连接池客户端。"""
-    global _shared_http_client
-    if _shared_http_client is not None and not _shared_http_client.is_closed:
-        return _shared_http_client
-    async with _shared_http_client_lock:
-        if _shared_http_client is not None and not _shared_http_client.is_closed:
-            return _shared_http_client
-        _shared_http_client = httpx.AsyncClient(
-            timeout=30.0,
-            limits=httpx.Limits(
-                max_connections=20,
-                max_keepalive_connections=10,
-                keepalive_expiry=120,
-            ),
-        )
-        logger.info("已创建全局 httpx 连接池")
-        return _shared_http_client
-
-
-class SearxngPrecheckError(RuntimeError):
-    """SearXNG 预检失败。"""
-
-
 def _build_searxng_only_downgrade_providers(
     providers: list[str],
-    available_providers: dict[str, bool],
 ) -> tuple[list[str], bool, list[str]]:
     """
     当且仅当处于 searxng-only 且开启降级开关时，自动追加可用兜底搜索源。
@@ -256,16 +198,17 @@ def _build_searxng_only_downgrade_providers(
 
     added: list[str] = []
     configured = [
-        provider.strip().lower()
-        for provider in SEARCH_SEARXNG_ONLY_DOWNGRADE_ORDER.split(",")
-        if provider.strip()
+        p.strip().lower()
+        for p in SEARCH_SEARXNG_ONLY_DOWNGRADE_ORDER.split(",")
+        if p.strip()
     ]
-    for provider in configured:
-        if provider == "searxng":
+    for name in configured:
+        if name == "searxng":
             continue
-        if available_providers.get(provider) and provider not in providers:
-            providers.append(provider)
-            added.append(provider)
+        p = _registry.get(name)
+        if p and p.is_available() and name not in providers:
+            providers.append(name)
+            added.append(name)
     return providers, bool(added), added
 
 
@@ -273,6 +216,8 @@ def _format_provider_error(provider: str, exc: Exception) -> str:
     """
     统一错误格式，便于上层区分「实例配置问题」与「暂时性网络问题」。
     """
+    import httpx
+
     if provider == "searxng":
         if isinstance(exc, SearxngPrecheckError):
             return f"{provider}: precheck_failed::{str(exc)}"
@@ -289,186 +234,6 @@ def _format_provider_error(provider: str, exc: Exception) -> str:
     return f"{provider}: {str(exc)}"
 
 
-async def _ensure_searxng_json_ready() -> None:
-    """
-    预检 SearXNG JSON 接口可用性，提前识别 format=json 被禁用等配置错误。
-    首次使用完整搜索请求验证 JSON 格式，后续使用轻量级请求快速检测。
-    """
-    if not SEARXNG_BASE_URL or not SEARXNG_PRECHECK_ENABLED:
-        return
-
-    now = time.monotonic()
-    checked_at = float(_searxng_precheck_state.get("checked_at", 0.0))
-    if (
-        _searxng_precheck_state.get("ok")
-        and (now - checked_at) < SEARXNG_PRECHECK_TTL_SECONDS
-    ):
-        return
-
-    async with _searxng_precheck_lock:
-        now = time.monotonic()
-        checked_at = float(_searxng_precheck_state.get("checked_at", 0.0))
-        if (
-            _searxng_precheck_state.get("ok")
-            and (now - checked_at) < SEARXNG_PRECHECK_TTL_SECONDS
-        ):
-            return
-
-        precheck_start = time.perf_counter()
-        has_passed_before = _searxng_precheck_state.get("_ever_passed", False)
-        try:
-            client = await _get_shared_client()
-            if has_passed_before:
-                # 已验证过 JSON 格式可用，后续只做轻量级连通性检测
-                response = await client.get(
-                    f"{SEARXNG_BASE_URL.rstrip('/')}/healthz",
-                    timeout=3.0,
-                )
-                # healthz 端点不存在时回退到快速搜索
-                if response.status_code == 404:
-                    params = {
-                        "q": "1",
-                        "format": "json",
-                        "pageno": 1,
-                    }
-                    response = await client.get(
-                        f"{SEARXNG_BASE_URL.rstrip('/')}/search",
-                        params=params,
-                        timeout=SEARXNG_PRECHECK_TIMEOUT_SECONDS,
-                    )
-            else:
-                # 首次预检：完整验证 JSON 格式是否启用
-                params = {
-                    "q": "healthcheck",
-                    "format": "json",
-                    "language": "auto",
-                    "categories": "general",
-                    "pageno": 1,
-                }
-                response = await client.get(
-                    f"{SEARXNG_BASE_URL.rstrip('/')}/search",
-                    params=params,
-                    timeout=SEARXNG_PRECHECK_TIMEOUT_SECONDS,
-                )
-
-            if response.status_code == 403:
-                raise SearxngPrecheckError(
-                    "SearXNG 拒绝 JSON 请求（403），请在 search.formats 开启 json。"
-                )
-            response.raise_for_status()
-
-            # 首次需要验证 JSON 结构
-            if not has_passed_before:
-                payload = response.json()
-                if not isinstance(payload, dict) or "results" not in payload:
-                    raise SearxngPrecheckError(
-                        "SearXNG JSON 响应结构异常，缺少 results 字段。"
-                    )
-
-            precheck_ms = int((time.perf_counter() - precheck_start) * 1000)
-            _searxng_precheck_state.update(
-                {
-                    "checked_at": time.monotonic(),
-                    "ok": True,
-                    "reason": "ok",
-                    "_ever_passed": True,
-                }
-            )
-            logger.info(
-                "SearXNG 预检通过 | mode=%s | duration_ms=%d",
-                "lightweight" if has_passed_before else "full",
-                precheck_ms,
-            )
-        except Exception as exc:
-            precheck_ms = int((time.perf_counter() - precheck_start) * 1000)
-            _searxng_precheck_state.update(
-                {
-                    "checked_at": time.monotonic(),
-                    "ok": False,
-                    "reason": str(exc),
-                }
-            )
-            logger.warning(
-                "SearXNG 预检失败 | duration_ms=%d | error=%s",
-                precheck_ms,
-                str(exc),
-            )
-            if isinstance(exc, SearxngPrecheckError):
-                raise
-            raise SearxngPrecheckError(f"SearXNG 预检失败：{str(exc)}") from exc
-
-
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=2, max=8),
-    retry=retry_if_exception_type(
-        (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError)
-    ),
-)
-async def make_serper_request(
-    payload: Dict[str, Any], headers: Dict[str, str]
-) -> httpx.Response:
-    """Make HTTP request to Serper API with retry logic."""
-    client = await _get_shared_client()
-    response = await client.post(
-        f"{SERPER_BASE_URL}/search",
-        json=payload,
-        headers=headers,
-    )
-    response.raise_for_status()
-    return response
-
-
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=2, max=8),
-    retry=retry_if_exception_type(
-        (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError)
-    ),
-)
-async def make_serpapi_request(params: Dict[str, Any]) -> httpx.Response:
-    client = await _get_shared_client()
-    response = await client.get(
-        "https://serpapi.com/search.json",
-        params=params,
-    )
-    response.raise_for_status()
-    return response
-
-
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=1, max=6),
-    retry=retry_if_exception_type(
-        (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError)
-    ),
-)
-async def make_searxng_request(params: Dict[str, Any]) -> httpx.Response:
-    client = await _get_shared_client()
-    response = await client.get(
-        f"{SEARXNG_BASE_URL.rstrip('/')}/search",
-        params=params,
-    )
-    response.raise_for_status()
-    return response
-
-
-def _is_banned_url(url: str) -> bool:
-    """
-    Check if the URL is a banned URL.
-    :param url: The URL to check
-    :return: True if it's a banned URL, False otherwise
-    """
-    banned_list = [
-        "unifuncs",
-        "huggingface.co/datasets",
-        "huggingface.co/spaces",
-    ]
-    if not url:
-        return False
-    return any(banned in url for banned in banned_list)
-
-
 def _normalize_domain(url: str) -> str:
     if not url:
         return ""
@@ -479,22 +244,6 @@ def _normalize_domain(url: str) -> str:
     if domain.startswith("www."):
         domain = domain[4:]
     return domain
-
-
-def _parse_provider_order(
-    order_config: str, available_providers: dict[str, bool]
-) -> list[str]:
-    providers: list[str] = []
-    configured = [
-        provider.strip().lower() for provider in order_config.split(",") if provider.strip()
-    ]
-    for provider in configured:
-        if available_providers.get(provider) and provider not in providers:
-            providers.append(provider)
-    for provider in ("searxng", "serpapi", "serper"):
-        if available_providers.get(provider) and provider not in providers:
-            providers.append(provider)
-    return providers
 
 
 def _merge_provider_results(
@@ -640,171 +389,41 @@ async def google_search(
         search_provider = ""
 
         async def execute_provider_search(
-            provider: str, search_query: str, result_num: int, result_page: int
+            provider_name: str, search_query: str, result_num: int, result_page: int
         ) -> tuple[list, dict]:
-            """执行单一搜索源并返回结果。"""
-            if provider == "serper":
-                payload: dict[str, Any] = {
-                    "q": search_query.strip(),
-                    "gl": gl,
-                    "hl": hl,
-                    "num": result_num,
-                }
-                if location:
-                    payload["location"] = location
-                if tbs:
-                    payload["tbs"] = tbs
-                if page is not None:
-                    payload["page"] = page
-                if autocorrect is not None:
-                    payload["autocorrect"] = autocorrect
-
-                _active_serper_key = _serper_key_pool.current_key() if _serper_key_pool else SERPER_API_KEY
-                headers = {
-                    "X-API-KEY": _active_serper_key,
-                    "Content-Type": "application/json",
-                }
-                response = await make_serper_request(payload, headers)
-                data = response.json()
-                organic_results = []
-                for item in data.get("organic", []):
-                    if _is_banned_url(item.get("link", "")):
-                        continue
-                    organic_results.append(item)
-                search_params = data.get("searchParameters", {})
-                search_params["provider"] = "serper"
-                return organic_results, search_params
-
-            if provider == "serpapi":
-                normalized_hl = (hl or "").strip().lower()
-                if normalized_hl in {"zh", "zh_cn", "zh-hans"}:
-                    serpapi_hl = "zh-cn"
-                elif normalized_hl in {"zh_tw", "zh-hant"}:
-                    serpapi_hl = "zh-tw"
-                else:
-                    serpapi_hl = hl
-
-                start = max(result_page - 1, 0) * result_num
-                params: Dict[str, Any] = {
-                    "engine": "google",
-                    "q": search_query.strip(),
-                    "api_key": _serpapi_key_pool.current_key() if _serpapi_key_pool else SERPAPI_API_KEY,
-                    "hl": serpapi_hl,
-                    "gl": gl,
-                    "num": result_num,
-                    "start": start,
-                }
-                if location:
-                    params["location"] = location
-                if tbs:
-                    params["tbs"] = tbs
-
-                response = await make_serpapi_request(params)
-                data = response.json()
-                organic_results = []
-                for index, item in enumerate(data.get("organic_results", []), start=1):
-                    link = item.get("link", "")
-                    if _is_banned_url(link):
-                        continue
-                    organic_results.append(
-                        {
-                            "position": item.get("position", index),
-                            "title": item.get("title", ""),
-                            "link": link,
-                            "snippet": item.get("snippet", ""),
-                            "source": item.get("source", ""),
-                        }
-                    )
-                search_params = {
-                    "q": search_query.strip(),
-                    "hl": serpapi_hl,
-                    "gl": gl,
-                    "num": result_num,
-                    "page": result_page,
-                    "provider": "serpapi",
-                }
-                return organic_results, search_params
-
-            searxng_time_range = None
-            if tbs == "qdr:d":
-                searxng_time_range = "day"
-            elif tbs == "qdr:w":
-                searxng_time_range = "week"
-            elif tbs == "qdr:m":
-                searxng_time_range = "month"
-            elif tbs == "qdr:y":
-                searxng_time_range = "year"
-
-            params = {
-                "q": search_query.strip(),
-                "format": "json",
-                "language": hl,
-                "pageno": result_page,
-            }
-            if searxng_time_range:
-                params["time_range"] = searxng_time_range
-
-            precheck_t0 = time.perf_counter()
-            await _ensure_searxng_json_ready()
-            precheck_elapsed = int((time.perf_counter() - precheck_t0) * 1000)
-
-            search_t0 = time.perf_counter()
-            response = await make_searxng_request(params)
-            search_elapsed = int((time.perf_counter() - search_t0) * 1000)
-
-            logger.info(
-                "SearXNG 搜索耗时 | precheck_ms=%d | search_ms=%d | total_ms=%d | query=%s",
-                precheck_elapsed,
-                search_elapsed,
-                precheck_elapsed + search_elapsed,
-                search_query.strip()[:60],
+            """通过 Provider 协议执行搜索，返回 (organic_dicts, search_params)。"""
+            provider = _registry.get(provider_name)
+            if not provider:
+                raise ValueError(f"未注册的搜索源: {provider_name}")
+            params = SearchParams(
+                query=search_query,
+                num=result_num,
+                page=result_page,
+                hl=hl,
+                gl=gl,
+                location=location,
+                tbs=tbs,
+                autocorrect=autocorrect,
             )
-            data = response.json()
-            organic_results = []
-            for index, item in enumerate(data.get("results", []), start=1):
-                link = item.get("url", "")
-                if _is_banned_url(link):
-                    continue
-                organic_results.append(
-                    {
-                        "position": index,
-                        "title": item.get("title", ""),
-                        "link": link,
-                        "snippet": item.get("content", ""),
-                    }
-                )
-            organic_results = organic_results[:result_num]
-            search_params = {
-                "q": search_query.strip(),
-                "hl": hl,
-                "gl": gl,
-                "num": result_num,
-                "page": result_page,
-                "provider": "searxng",
-            }
-            return organic_results, search_params
+            results, meta = await provider.search(params)
+            organic_dicts = [r.to_dict() for r in results]
+            return organic_dicts, meta
 
         # Helper function to perform a single search
         async def perform_search(search_query: str) -> tuple[list, dict, list[str]]:
             """执行搜索并返回结果，支持串行回退、并发聚合和置信度不足串行补检。"""
             nonlocal search_provider
-            available_providers = {
-                "serper": bool(_serper_key_pool or SERPER_API_KEY),
-                "serpapi": bool(_serpapi_key_pool or SERPAPI_API_KEY),
-                "searxng": bool(SEARXNG_BASE_URL),
-            }
             configured_mode = SEARCH_PROVIDER_MODE.strip().lower()
             if configured_mode not in VALID_SEARCH_PROVIDER_MODES:
                 configured_mode = DEFAULT_SEARCH_PROVIDER_MODE
 
-            providers = _parse_provider_order(SEARCH_PROVIDER_ORDER, available_providers)
+            providers = _registry.resolve_order(SEARCH_PROVIDER_ORDER)
             (
                 providers,
                 searxng_only_downgraded,
                 searxng_only_downgrade_added,
             ) = _build_searxng_only_downgrade_providers(
                 providers,
-                available_providers,
             )
             if searxng_only_downgraded:
                 logger.warning(
@@ -923,8 +542,8 @@ async def google_search(
                 if confidence_passed and parallel_min_success_passed:
                     return merged_results, search_params, provider_errors
 
-                trusted_order = _parse_provider_order(
-                    SEARCH_PROVIDER_TRUSTED_ORDER, available_providers
+                trusted_order = _registry.resolve_order(
+                    SEARCH_PROVIDER_TRUSTED_ORDER
                 )
                 fallback_steps = 0
                 for provider in trusted_order:
