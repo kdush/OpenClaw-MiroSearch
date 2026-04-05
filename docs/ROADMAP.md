@@ -1,6 +1,6 @@
 # OpenClaw-MiroSearch 路线图（版本化）
 
-更新时间：2026-04-05  
+更新时间：2026-04-06  
 当前版本：`v0.1.14`  
 说明：已完成能力前置到已发布版本，未完成能力后移到后续版本。
 
@@ -161,7 +161,7 @@
 
 目标能力：
 
-- **SearchProvider 协议化**：抽象 `SearchProvider` 协议接口，SearXNG / SerpAPI / Serper / Bing / 搜狗各实现一个 Provider，通过配置注册；新增搜索源不再需要改核心代码
+- ~~**SearchProvider 协议化**~~（✅ 已完成）：`SearchProvider` Protocol + `ProviderRegistry` 注册中心 + Serper/SerpAPI/SearXNG 三个 Provider 独立实现，主路由通过协议调用，新增搜索源只需实现 Protocol 并注册
 - **结构化运行观测**：暴露 Prometheus `/metrics` 端点（请求量、延迟 P50/P99、搜索源命中率、429 频次、LLM token 用量、失败原因分布），附带 Grafana dashboard JSON
 - **异步任务队列**：引入轻量任务队列（如 `arq`），支持并发多任务、任务优先级、超时自动取消与状态持久化
 - **持久化缓存**：ResultCache 从内存升级为 Valkey 后端，支持跨重启缓存保留
@@ -225,6 +225,6 @@
 
 如果资源有限，建议优先投入以下三项：
 
-1. **SearchProvider 协议化**（v0.2.0）— 解耦搜索源是后续多源质量提升的前置条件，当前新增搜索源仍需改核心代码
+1. ~~**SearchProvider 协议化**（v0.2.0）~~ — ✅ 已完成
 2. **Eval Pipeline CI 化**（v0.2.5）— 质量提升的度量基础，没有评测就没有可量化的改进
 3. **Prometheus 可观测性**（v0.2.0）— 生产运行必备，发现瓶颈和异常的基础设施

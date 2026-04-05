@@ -1,6 +1,6 @@
 # SearchProvider 协议化 实现计划
 
-> **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
+> ✅ **已完成** — 2026-04-06
 
 **Goal:** 将搜索源实现从 1264 行巨石文件中解耦为独立的 Provider 类，通过协议接口和注册机制管理，新增搜索源无需修改核心代码。
 

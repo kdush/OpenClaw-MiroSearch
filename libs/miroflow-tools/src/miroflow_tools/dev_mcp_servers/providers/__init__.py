@@ -2,5 +2,16 @@
 
 from .base import SearchParams, SearchProvider, SearchResult
 from .registry import ProviderRegistry
+from .searxng import SearXNGProvider
+from .serpapi import SerpAPIProvider
+from .serper import SerperProvider
 
-__all__ = ["SearchProvider", "SearchResult", "SearchParams", "ProviderRegistry"]
+__all__ = [
+    "SearchProvider",
+    "SearchResult",
+    "SearchParams",
+    "ProviderRegistry",
+    "SerperProvider",
+    "SerpAPIProvider",
+    "SearXNGProvider",
+]
