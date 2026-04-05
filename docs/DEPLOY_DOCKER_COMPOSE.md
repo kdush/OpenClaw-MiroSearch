@@ -2,8 +2,9 @@
 
 本文档用于快速独立部署 OpenClaw-MiroSearch，默认同时启动：
 
-- `app`：Gradio Demo 与 API
-- `searxng`：本地搜索引擎
+- `app`：Gradio Demo（默认端口 8080，可通过 `APP_PORT` 覆盖）
+- `api`：FastAPI API Server（默认端口 8090，可通过 `API_PORT` 覆盖）
+- `searxng`：本地搜索引擎（默认端口 27080）
 - `valkey`：SearXNG 缓存与限流存储
 
 ## 前置条件
@@ -83,16 +84,30 @@ docker compose ps
 docker compose logs -f app
 ```
 
+### 端口映射配置
+
+如需自定义宿主机端口，在项目根目录创建 `.env` 文件（注意：这不是 `.env.compose`）：
+
+```bash
+# .env — Docker Compose 变量替换用
+APP_PORT=28080    # Gradio Demo 宿主机端口（默认 8080）
+API_PORT=28090    # API Server 宿主机端口（默认 8090）
+```
+
+> `.env.compose` 用于容器内环境变量，`.env` 用于 `compose.yaml` 中的端口映射等变量替换。
+
 ## 4. 验证接口
 
 ```bash
 curl -sS 'http://127.0.0.1:8080/gradio_api/info'
+curl -sS 'http://127.0.0.1:8090/health'
 curl -sS 'http://127.0.0.1:27080/healthz'
 ```
 
 访问地址：
 
-- Demo/API：`http://127.0.0.1:8080`
+- Gradio Demo：`http://127.0.0.1:8080`（或自定义 `APP_PORT`）
+- API Server：`http://127.0.0.1:8090`（或自定义 `API_PORT`）
 - SearXNG：`http://127.0.0.1:27080`
 
 ## 5. 停止与清理

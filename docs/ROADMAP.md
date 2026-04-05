@@ -53,7 +53,7 @@
 
 - 质量增强小版本，强调“可控篇幅 + 长文输出完整性 + 网络环境鲁棒性”
 
-### `v0.1.8`（当前）
+### `v0.1.8`
 
 已纳入能力：
 
@@ -121,24 +121,50 @@
 
 - 成本优化版本，强调"重复查询零消耗 + 可配置缓存策略"
 
+### `v0.1.13`（请求限流）
+
+已纳入能力：
+
+- **请求限流中间件**：基于内存滑动窗口计数器（`SlidingWindowCounter`），按 IP 或 Bearer Token 限流
+- **限流配置**：`RATE_LIMIT_ENABLED`（默认开启）、`RATE_LIMIT_RPM`（默认 30 次/分钟）
+- **路径白名单**：`/health`、`/docs` 等路径自动跳过限流
+- **容器化**：api-server Dockerfile 与 gradio-demo 对齐，HEALTHCHECK 指向 `/health`
+- **回归测试**：6 条限流中间件测试（配额内通过、超额 429、bypass 路径、禁用模式、独立 key 计数）
+
+版本定位：
+
+- 安全增强版本，强调"请求级限流 + 容器化部署就绪"
+
+### `v0.1.14`（当前 · pipeline 对齐 + 安全审查）
+
+已纳入能力：
+
+- **api-server pipeline 预加载重写**：对齐 gradio-demo 的 `load_miroflow_config` 模式，正确处理 Hydra 全局初始化状态
+- **compose.yaml 集成**：`api` 服务监听 8090 端口，与 `app`（Gradio）并行运行
+- **安全审查修复 7 项**：
+  - 任务管理内存泄漏修复（`cleanup_stale_tasks` 定期清理）
+  - 异常信息泄漏修复（pipeline 异常返回通用错误消息）
+  - 废弃 API 替换（`asyncio.get_running_loop()`、FastAPI `lifespan`）
+  - 输入校验增强（`ResearchRequest` 枚举约束）
+  - 限流响应隐藏内部配置 + 定期清理桶
+- **Dockerfile `--frozen` 修复**：容器无外网时 `uv run` 不再尝试下载依赖
+
+版本定位：
+
+- 安全加固与部署修复版本，强调"生产环境安全 + 容器离线可用"
+
 ## 后续版本
 
 ### `v0.2.0`（生产化）
 
-核心主题：API 层独立、运行时韧性、可观测性
+核心主题：持久化、可观测性、架构升级
 
 目标能力：
 
-- **API 层独立**：引入 FastAPI/Starlette 原生 API 层，提供标准 OpenAPI schema 与 SSE 流式输出；Gradio 仅作 Demo UI 保留，不再承担对外 API 职责
-- **认证与限流**：API 层支持 Bearer Token 鉴权；基于 Valkey 实现请求级限流，防止外部调用方滥用
-- **结果缓存**：相同 `query + mode + profile` 请求在可配置时间窗内命中 Valkey 缓存，避免重复消耗搜索配额与 LLM tokens
 - **SearchProvider 协议化**：抽象 `SearchProvider` 协议接口，SearXNG / SerpAPI / Serper / Bing / 搜狗各实现一个 Provider，通过配置注册；新增搜索源不再需要改核心代码
-- **同服务多 Key 轮转**：LLM 与搜索源支持多 API Key 池轮转，单 Key 耗尽或 429 时自动切换
-- **模型级 failback**：主模型失败自动切换备用模型，按 `primary → secondary → fallback` 链路降级
 - **结构化运行观测**：暴露 Prometheus `/metrics` 端点（请求量、延迟 P50/P99、搜索源命中率、429 频次、LLM token 用量、失败原因分布），附带 Grafana dashboard JSON
 - **异步任务队列**：引入轻量任务队列（如 `arq`），支持并发多任务、任务优先级、超时自动取消与状态持久化
-- **会话级任务隔离**：活动任务表、取消接口与停止动作按会话/调用方定向，不再全局广播取消
-- **最小回归门禁**：CI 覆盖 `mode/search_profile/run_research_once` 核心路径的集成测试
+- **持久化缓存**：ResultCache 从内存升级为 Valkey 后端，支持跨重启缓存保留
 
 验收标准：
 
@@ -204,6 +230,6 @@
 
 如果资源有限，建议优先投入以下三项：
 
-1. **API 层独立**（v0.2.0）— 解除 Gradio 耦合是后续所有生产化能力的前置条件
-2. **MCP Server 模式**（v0.2.5）— 项目定位"面向智能体"的差异化核心能力，让 MiroSearch 直接出现在各大 AI IDE 的工具列表中
-3. **结果缓存**（v0.2.0）— 投入极小，成本收益比最高
+1. **MCP Server 模式**（v0.2.5）— 项目定位"面向智能体"的差异化核心能力，让 MiroSearch 直接出现在各大 AI IDE 的工具列表中
+2. **SearchProvider 协议化**（v0.2.0）— 解耦搜索源是后续多源质量提升的前置条件
+3. **Prometheus 可观测性**（v0.2.0）— 生产运行必备，发现瓶颈和异常的基础设施

@@ -159,6 +159,83 @@
 - 若返回 `No \\boxed{} content found in the final answer.`：视为“未收敛”，不是服务不可用
 - 若出现 429：指数退避并降级 `mode`（`thinking -> balanced -> quota`）
 
+---
+
+## FastAPI API Server（v0.1.11+）
+
+独立于 Gradio 的标准 HTTP API 层，默认监听 8090 端口。
+
+### 基础地址
+
+- 本地默认：`http://127.0.0.1:8090`
+
+### 认证
+
+设置 `API_TOKENS` 环境变量启用 Bearer Token 认证（逗号分隔支持多 Token）。留空则跳过认证。
+
+```bash
+curl -H "Authorization: Bearer your-token" http://127.0.0.1:8090/v1/research
+```
+
+### 端点一览
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/v1/research` | 提交研究任务，返回 `task_id` |
+| GET | `/v1/research/{task_id}/stream` | SSE 流式获取任务实时进度 |
+| POST | `/v1/research/{task_id}/cancel` | 取消指定任务 |
+| POST | `/v1/research/cancel` | 按 `caller_id` 批量取消 |
+| GET | `/v1/metrics/last` | 最近任务运行指标 |
+| GET | `/health` | 健康检查 |
+
+### 请求示例
+
+```bash
+curl -X POST http://127.0.0.1:8090/v1/research \
+  -H "Authorization: Bearer your-token" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "量子计算最新进展", "mode": "balanced", "search_profile": "parallel-trusted", "output_detail_level": "balanced"}'
+```
+
+响应：
+
+```json
+{"task_id": "xxxx", "status": "running"}
+```
+
+缓存命中时：
+
+```json
+{"task_id": "xxxx", "status": "cached", "result": "...markdown..."}
+```
+
+### 请求参数（`ResearchRequest`）
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| `query` | string | 是 | — | 研究问题 |
+| `mode` | string | 否 | `balanced` | 研究模式（枚举同上） |
+| `search_profile` | string | 否 | `searxng-first` | 检索路由（枚举同上） |
+| `output_detail_level` | string | 否 | `detailed` | 输出篇幅（枚举同上） |
+| `caller_id` | string | 否 | — | 调用方标识，用于定向取消 |
+
+### 限流
+
+- 默认开启，`RATE_LIMIT_RPM=30`（每分钟 30 次）
+- `/health`、`/docs` 等路径自动跳过
+- 超限返回 `429 Too Many Requests`，附带 `Retry-After` 和 `X-RateLimit-Remaining` 头
+
+### 错误码
+
+| 状态码 | 含义 |
+|--------|------|
+| `401` | 未提供或无效的 Bearer Token |
+| `404` | 任务不存在 |
+| `422` | 参数校验失败（如 mode 不在枚举范围内） |
+| `429` | 请求限流，按 `Retry-After` 头等待后重试 |
+
+---
+
 ## 可观测性说明（google_search）
 
 在工具链路中，`google_search` 的结果包含下列元信息（用于判断是否真实走了多路并发与补检）：

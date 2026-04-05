@@ -28,6 +28,11 @@ This project is modified from [MiroMindAI/MiroThinker](https://github.com/MiroMi
 - **Multi-source search**: SearXNG, SerpAPI, Serper — with parallel aggregation and confidence-based supplemental retrieval
 - **Unified API**: `run_research_once` with 6 parameters for full control over mode, routing, depth, and output detail
 - **Runtime observability**: stage heartbeat (search/reasoning/verification/summary), stale-task auto-reconciliation
+- **Independent API server**: FastAPI-based `apps/api-server/` with standard REST endpoints (`/v1/research`), Bearer Token auth, and request rate limiting
+- **Result caching**: in-memory LRU + TTL cache to avoid redundant search/LLM costs for identical queries
+- **Multi-key rotation**: LLM and search API keys support pool rotation with 429-aware backoff
+- **Model failback**: automatic fallback to secondary model on consecutive primary model failures
+- **CI regression gate**: GitHub Actions `run-tests.yml` with 60+ automated tests across 3 apps
 
 > For full API specification and parameter reference, see [`docs/API_SPEC.md`](docs/API_SPEC.md)
 >
@@ -170,11 +175,15 @@ Skill acquisition and installation:
 
 ## Changelog
 
-- Release `0.1.7` highlights:
-  - Added network-environment routing guidance (Mainland China without proxy vs overseas/proxy-enabled)
-  - Added deployable SearXNG engine template: `deploy/searxng/settings.yml`
-  - Updated AI Agent + Skill docs with environment-aware `search_profile` decision flow
-  - Added connectivity self-check commands to reduce “all engines timeout” misdiagnosis
+- Release `0.1.14` highlights:
+  - Independent FastAPI API server with Bearer Token auth, rate limiting, and Docker deployment
+  - Result caching (LRU + TTL) integrated in both Gradio and API server
+  - Security review: 7 fixes including memory leak, exception info leakage, input validation
+  - Dockerfile `--frozen` fix for offline container environments
+- Release `0.1.10` highlights:
+  - Structured run metrics, model failback, CI regression gate
+- Release `0.1.9` highlights:
+  - Multi-key rotation for LLM and search APIs, session-level task isolation
 - Full history: [`docs/CHANGELOG.md`](docs/CHANGELOG.md)
 
 ## Documentation Index
@@ -184,6 +193,7 @@ Skill acquisition and installation:
 - Changelog: [`docs/CHANGELOG.md`](docs/CHANGELOG.md)
 - Docker Compose deployment: [`docs/DEPLOY_DOCKER_COMPOSE.md`](docs/DEPLOY_DOCKER_COMPOSE.md)
 - Demo docs: [`apps/gradio-demo/README.md`](apps/gradio-demo/README.md)
+- API server docs: [`apps/api-server/README.md`](apps/api-server/README.md)
 - Agent docs: [`apps/miroflow-agent/README.md`](apps/miroflow-agent/README.md)
 - Tools docs: [`libs/miroflow-tools/README.md`](libs/miroflow-tools/README.md)
 - Local tool deployment: [`docs/LOCAL-TOOL-DEPLOYMENT.md`](docs/LOCAL-TOOL-DEPLOYMENT.md)
@@ -213,6 +223,9 @@ cd apps/gradio-demo && uv sync && uv run main.py
 
 # Agent tests
 cd apps/miroflow-agent && uv run pytest
+
+# API server tests
+cd apps/api-server && uv run pytest tests/ -v
 ```
 
 ## Roadmap
@@ -221,7 +234,7 @@ See: [`docs/ROADMAP.md`](docs/ROADMAP.md)
 
 Current planning is divided into five phases:
 
-- `v0.2.0` (production-ready): Standalone API layer (decoupled from Gradio), auth & rate limiting, result caching, SearchProvider protocol, multi-key rotation, model failback, Prometheus observability, async task queue
+- `v0.2.0` (production-ready): SearchProvider protocol, Prometheus observability, async task queue, persistent cache (Valkey backend)
 - `v0.2.5` (MCP standard): Expose `run_research_once` as a standard MCP tool (stdio + SSE transport) for native AI IDE integration
 - `v0.3.0` (quality enhancement): Eval pipeline in CI, multi-source RRF ranking, multilingual retrieval optimization, research result persistence, structured conflict detection
 - `v1.0.0` (ecosystem distribution): Helm Chart / one-click cloud deploy, skill versioned release, compatibility matrix auto-verification
