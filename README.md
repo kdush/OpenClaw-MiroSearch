@@ -232,9 +232,8 @@ cd apps/api-server && uv run pytest tests/ -v
 
 See: [`docs/ROADMAP.md`](docs/ROADMAP.md)
 
-Current planning is divided into five phases:
+Current planning is divided into four phases:
 
 - `v0.2.0` (production-ready): SearchProvider protocol, Prometheus observability, async task queue, persistent cache (Valkey backend)
-- `v0.2.5` (MCP standard): Expose `run_research_once` as a standard MCP tool (stdio + SSE transport) for native AI IDE integration
-- `v0.3.0` (quality enhancement): Eval pipeline in CI, multi-source RRF ranking, multilingual retrieval optimization, research result persistence, structured conflict detection
+- `v0.2.5` (quality enhancement): Eval pipeline in CI, multi-source RRF ranking, multilingual retrieval optimization, research result persistence, structured conflict detection
 - `v1.0.0` (ecosystem distribution): Helm Chart / one-click cloud deploy, skill versioned release, compatibility matrix auto-verification

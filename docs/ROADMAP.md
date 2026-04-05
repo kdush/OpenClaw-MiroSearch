@@ -172,22 +172,7 @@
 - 外部 Agent 可通过标准 HTTP + Bearer Token 调用，无需依赖 Gradio 协议
 - Prometheus 指标可被 Grafana 面板正常采集与展示
 
-### `v0.2.5`（MCP 标准暴露）
-
-核心主题：让 MiroSearch 成为可被 AI IDE 与智能体原生发现的 MCP Server
-
-目标能力：
-
-- **MCP Server 模式**：将 `run_research_once` 暴露为标准 MCP tool（支持 stdio 与 SSE transport），上层 Agent（Cursor、Windsurf、Claude Desktop 等）可原生 MCP 接入
-- **MCP 工具描述规范化**：提供完整的 tool schema（参数类型、枚举值、默认值），让 Agent 无需查阅文档即可正确调用
-- **MCP 与 HTTP API 共存**：两种接入方式共享同一任务引擎，行为一致
-
-验收标准：
-
-- 在 Cursor / Windsurf 等 AI IDE 中添加 MCP Server 配置后，可直接通过 tool call 发起检索
-- MCP 调用与 HTTP API 调用结果一致
-
-### `v0.3.0`（质量增强）
+### `v0.2.5`（质量增强）
 
 核心主题：检索质量、评测体系、多语言支持
 
@@ -226,10 +211,20 @@
 - 外部智能体可按技能文档直接调用，无需额外沟通
 - 兼容矩阵在 CI 中自动检测并阻止不兼容版本发布
 
+### MCP Server（待定 · 按需启动）
+
+> 降级说明：项目已通过 HTTP API + Skills 文档包实现完整的 Agent 接入能力。MCP 协议的增量价值有限，维护成本较高。仅在社区有明确需求时启动。
+
+目标能力：
+
+- 将 `run_research_once` 暴露为标准 MCP tool（stdio + SSE transport）
+- 完整 tool schema（参数类型、枚举值、默认值）
+- MCP 与 HTTP API 共享同一任务引擎
+
 ## 优先级说明
 
 如果资源有限，建议优先投入以下三项：
 
-1. **MCP Server 模式**（v0.2.5）— 项目定位"面向智能体"的差异化核心能力，让 MiroSearch 直接出现在各大 AI IDE 的工具列表中
-2. **SearchProvider 协议化**（v0.2.0）— 解耦搜索源是后续多源质量提升的前置条件
+1. **SearchProvider 协议化**（v0.2.0）— 解耦搜索源是后续多源质量提升的前置条件，当前新增搜索源仍需改核心代码
+2. **Eval Pipeline CI 化**（v0.2.5）— 质量提升的度量基础，没有评测就没有可量化的改进
 3. **Prometheus 可观测性**（v0.2.0）— 生产运行必备，发现瓶颈和异常的基础设施
