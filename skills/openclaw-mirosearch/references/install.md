@@ -13,13 +13,30 @@
 
 ```bash
 cp .env.compose.example .env.compose
+# 编辑 .env.compose 填入 LLM 密钥等配置
 docker compose --env-file .env.compose up -d --build
 ```
+
+Compose 会启动以下服务：
+
+| 服务 | 说明 | 默认端口 |
+|------|------|----------|
+| `api` | FastAPI API Server | 8090 |
+| `worker` | arq Worker（异步执行任务） | — |
+| `valkey` | Valkey（任务队列 + 缓存） | 6379 |
+| `app` | Gradio Demo | 8080 |
+| `searxng` | SearXNG 搜索引擎 | 27080 |
 
 验证：
 
 ```bash
+# FastAPI API（推荐）
+curl -sS 'http://127.0.0.1:8090/health'
+
+# Gradio Demo
 curl -sS 'http://127.0.0.1:8080/gradio_api/info'
+
+# SearXNG
 curl -sS 'http://127.0.0.1:27080/healthz'
 ```
 
@@ -31,7 +48,43 @@ docker compose down
 
 ## 3. uv 本地安装（开发场景）
 
-在仓库根目录执行：
+### 3a. FastAPI API Server + Worker（推荐）
+
+```bash
+cd apps/api-server
+uv sync
+cp .env.example .env
+```
+
+编辑 `.env` 最小配置：
+
+```bash
+BASE_URL="https://api.longcat.chat/openai"
+API_KEY="<your_longcat_key>"
+SEARXNG_BASE_URL="http://127.0.0.1:27080"
+VALKEY_HOST="127.0.0.1"
+VALKEY_PORT=6379
+```
+
+需要预先启动 Valkey / Redis：
+
+```bash
+docker run -d --name valkey -p 6379:6379 valkey/valkey:8-alpine
+```
+
+启动 API Server 和 Worker（两个终端）：
+
+```bash
+# 终端 1：API Server
+uv run python main.py
+
+# 终端 2：Worker
+uv run python worker.py
+```
+
+API 地址：`http://127.0.0.1:8090`
+
+### 3b. Gradio Demo（兼容）
 
 ```bash
 cd apps/gradio-demo
@@ -44,16 +97,9 @@ cp .env.example .env
 ```bash
 BASE_URL="https://api.longcat.chat/openai"
 API_KEY="<your_longcat_key>"
-
 SEARXNG_BASE_URL="http://127.0.0.1:27080"
 SERPAPI_API_KEY="<your_serpapi_key>"
 SERPER_API_KEY="<your_serper_key>"
-
-DEFAULT_RESEARCH_MODE="balanced"
-DEFAULT_SEARCH_PROFILE="parallel-trusted"
-DEFAULT_SEARCH_RESULT_NUM=20
-DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS=3
-DEFAULT_OUTPUT_DETAIL_LEVEL="balanced"
 ```
 
 启动：
@@ -67,10 +113,12 @@ uv run main.py
 ## 4. 健康检查
 
 ```bash
+# FastAPI（推荐）
+curl -sS 'http://127.0.0.1:8090/health'
+
+# Gradio
 curl -sS 'http://127.0.0.1:8080/gradio_api/info'
 ```
-
-若返回接口元数据，说明服务可用。
 
 ## 5. 网络环境适配（建议安装后立即做）
 
@@ -98,9 +146,9 @@ curl -sS -m 8 -o /dev/null -w 'duckduckgo: %{http_code} %{time_total}\n' https:/
 
 ## 6. 常见部署形态
 
-- 单机 Demo（容器）：使用 `docker compose` 统一启动
+- 生产 API（推荐）：`docker compose` 启动 api + worker + valkey，通过反向代理暴露 `/v1/research`
+- 单机 Demo（容器）：`docker compose` 统一启动，含 Gradio Web 界面
 - 单机 Demo（源码）：直接运行 `apps/gradio-demo/main.py`
-- 生产 API：固定 `mode/search_profile`，通过反向代理暴露 `gradio_api`
 
 ## 7. 失败排查
 

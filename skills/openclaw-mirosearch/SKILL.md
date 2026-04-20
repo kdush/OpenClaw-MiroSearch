@@ -1,6 +1,6 @@
 ---
 name: openclaw-mirosearch
-description: 用于 OpenClaw 或其他智能体执行深度检索与高质量联网研究。安装与使用流程分离：安装看 skill-install/install，使用看 usage/api/modes。
+description: 用于 OpenClaw 或其他智能体执行深度检索与高质量联网研究。v0.2.0 起推荐使用 FastAPI 异步 API。安装看 skill-install/install，使用看 usage/api/modes。
 ---
 
 # OpenClaw-MiroSearch（深度检索 Skill）
@@ -14,22 +14,38 @@ description: 用于 OpenClaw 或其他智能体执行深度检索与高质量联
 - 深度检索或高质量检索（多来源交叉、核查、结构化报告）：
   - 使用本 skill（`openclaw-mirosearch`）
 
-接口约束：
+## 两套 API（v0.2.0）
 
-- 仅使用 `run_research_once` 单一接口，不再走历史双接口分支逻辑
+| API | 地址 | 适用场景 | 状态 |
+|-----|------|----------|------|
+| **FastAPI（推荐）** | `http://127.0.0.1:8090` | AI Agent 接入、生产环境 | ✅ 推荐 |
+| Gradio API | `http://127.0.0.1:8080` | Demo 体验、浏览器交互 | 兼容保留 |
+
+> v0.2.0 起，FastAPI API Server 采用异步任务队列（arq + Valkey），支持并发多任务、SSE 流式事件推送和任务状态持久化。**AI Agent 应优先使用 FastAPI API。**
 
 ## 文档分工（安装与使用分离）
 
 - 只看安装：`references/skill-install.md`、`references/install.md`
 - 只看使用：`references/usage.md`、`references/api.md`、`references/modes.md`
 
-## 使用阶段执行顺序（仅运行时）
+## 使用阶段执行顺序（FastAPI，推荐）
 
-1. 先确认服务是否在线：`GET /gradio_api/info`
-1. 使用统一接口 `run_research_once` 发起研究并轮询结果：`references/api.md`
-1. 根据问题类型选择模式：`references/modes.md`
-1. 根据交付需求选择篇幅：`detailed`（超长）/`balanced`（适中）/`compact`（精简）
-1. 若卡住，先调用 `stop_current` 再重试（v0.1.9+ 支持传入 `caller_id` 定向取消，不影响其他并发任务）
+1. 确认服务在线：`GET /health`
+2. 提交任务：`POST /v1/research` → 返回 `task_id`
+3. 轮询状态或流式监听：
+   - 轮询：`GET /v1/research/{task_id}`（`status` 为 `completed` 时取 `result`）
+   - 流式：`GET /v1/research/{task_id}/stream`（SSE 事件流）
+4. 根据问题类型选择模式：`references/modes.md`
+5. 根据交付需求选择篇幅：`detailed`（超长）/`balanced`（适中）/`compact`（精简）
+6. 若需取消：`POST /v1/research/{task_id}/cancel`
+
+## 使用阶段执行顺序（Gradio，兼容）
+
+1. 确认服务在线：`GET /gradio_api/info`
+2. 发起研究：`POST /gradio_api/call/run_research_once`
+3. 轮询结果：`GET /gradio_api/call/run_research_once/{event_id}`
+4. 终态以 SSE `event: complete` 为准
+5. 若卡住：`POST /gradio_api/call/stop_current` 后重试
 
 ## 默认策略
 
@@ -37,19 +53,19 @@ description: 用于 OpenClaw 或其他智能体执行深度检索与高质量联
 - 强校验问题：`mode=verified` + `search_profile=parallel-trusted`
 - 额度优先：`mode=quota` + `search_profile=searxng-only`
 - 核查深度：`search_result_num=30` + `verification_min_search_rounds=4`
-- 超长报告：`output_detail_level=detailed`（v0.1.8+ 已修复渲染问题，研究总结区域将展示完整多章节报告，字数目标 ≥12000 字符，全量保留所有检索轮次信息）
-- 网络分流：先看 `references/usage.md` 的“先按网络环境选路由”（中国大陆无代理优先 `searxng-first`，海外/有代理优先 `parallel-trusted`）
+- 超长报告：`output_detail_level=detailed`（研究总结区域将展示完整多章节报告，字数目标 ≥12000 字符，全量保留所有检索轮次信息）
+- 网络分流：先看 `references/usage.md` 的"先按网络环境选路由"（中国大陆无代理优先 `searxng-first`，海外/有代理优先 `parallel-trusted`）
 
 ## 终态与降级重试
 
-- 任务完成信号以 SSE `event: complete` 为准。
-- 若返回 `No \boxed{} content found in the final answer.`，视为“本轮失败可重试”。
+- **FastAPI**：任务状态为 `completed` 时，`result` 字段为最终 Markdown
+- **Gradio**：以 SSE `event: complete` 作为结束信号
+- 若返回 `No \boxed{} content found in the final answer.`，视为"本轮失败可重试"
 - 建议降级顺序：
-  1. 原参数重试 1 次；
-  1. `thinking -> balanced`；
-  1. `balanced -> quota`；
-  1. 检索策略改为 `parallel-trusted`（质量优先）或 `searxng-only`（额度优先）。
-- 近期已修复“终态误报 running 导致前端一直生成中”问题；若再遇长时间等待，优先检查是否 429 限流。
+  1. 原参数重试 1 次
+  2. `thinking -> balanced`
+  3. `balanced -> quota`
+  4. 检索策略改为 `parallel-trusted`（质量优先）或 `searxng-only`（额度优先）
 
 ## 资源文件
 
@@ -65,12 +81,14 @@ description: 用于 OpenClaw 或其他智能体执行深度检索与高质量联
 - 给出可直接执行的命令
 - 明确 `mode` 与 `search_profile` 的推荐值
 - 对核查类问题给出 `search_result_num` 与 `verification_min_search_rounds`，并给出 `output_detail_level` 推荐值
-- 若失败，返回“失败点 + 下一步排查命令”
+- 若失败，返回"失败点 + 下一步排查命令"
 
 ## 面向 AI Agent 的执行要点
 
-- 明确告知调用方：终态只认 SSE `event: complete`
-- 返回内容中若出现 `No \boxed{} content found in the final answer.`，应走“重试/降级”，而不是判定服务离线
-- 在推荐参数时，优先给出可直接复制的完整 6 参数模板
-- 中间进度可读取 `heartbeat.data.stage`（阶段、回合、检索轮次），但不可作为终态信号
-- 若任务日志出现陈旧 `running`，服务端会自动收敛为 `failed`，避免长期假运行
+- **优先使用 FastAPI API**（`/v1/research`），支持异步任务队列与并发
+- FastAPI 终态判定：轮询 `GET /v1/research/{task_id}`，`status=completed` 即为完成
+- SSE 流式监听：`GET /v1/research/{task_id}/stream`，可实时获取 `stage_heartbeat` 进度事件
+- Gradio 终态判定：以 `event: complete` 为准，`heartbeat` 仅做进度展示
+- `No \boxed{} content found in the final answer.` 代表未收敛，应走重试/降级
+- 推荐参数时，优先给出可直接复制的完整参数模板
+- 调用脚本支持 `--api-mode fastapi`（默认）或 `--api-mode gradio`
