@@ -16,9 +16,8 @@ OpenClaw-MiroSearch is an open-source web retrieval engineering project for agen
 
 ## Upstream & License
 
-This project is modified from [MiroMindAI/MiroThinker](https://github.com/MiroMindAI/MiroThinker).
+This project is modified from [MiroMindAI/MiroThinker](https://github.com/MiroMindAI/MiroThinker). The repository retains the original license requirements while adding engineering improvements for OpenClaw/Agent toolchain integration. Compatible with existing search channels (SearXNG, SerpAPI, Serper) and the original MiroFlow toolchain.
 
-- Attribution: [`docs/OPEN_SOURCE_ATTRIBUTION.md`](docs/OPEN_SOURCE_ATTRIBUTION.md)
 - License: [`LICENSE`](LICENSE)
 
 ## Implemented Features
@@ -36,7 +35,7 @@ This project is modified from [MiroMindAI/MiroThinker](https://github.com/MiroMi
 
 > For full API specification and parameter reference, see [`docs/API_SPEC.md`](docs/API_SPEC.md)
 >
-> For architecture overview and data flow diagrams, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) ([English](docs/ARCHITECTURE_en.md))
+> For architecture overview and data flow diagrams, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 
 <p align="center"><img src="assets/demo-screenshot.png" alt="Demo Screenshot" width="900" /></p>
 
@@ -162,7 +161,7 @@ Skill acquisition and installation:
 - Packaged file: `skills/openclaw-mirosearch.zip`
 - Installation guide: [`skills/openclaw-mirosearch/references/skill-install.md`](skills/openclaw-mirosearch/references/skill-install.md)
 - API docs: [`skills/openclaw-mirosearch/references/api.md`](skills/openclaw-mirosearch/references/api.md)
-- AI Agent integration: [`docs/AI_AGENT_INTEGRATION.md`](docs/AI_AGENT_INTEGRATION.md)
+- AI Agent integration: [`docs/API_SPEC.md`](docs/API_SPEC.md)
 
 ## Recommended Configuration Baseline
 
@@ -189,27 +188,23 @@ Skill acquisition and installation:
 ## Documentation Index
 
 - Overview: [`docs/README.md`](docs/README.md)
-- Architecture: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) / [`ARCHITECTURE_en.md`](docs/ARCHITECTURE_en.md)
+- Architecture: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+- Deployment: [`docs/DEPLOY.md`](docs/DEPLOY.md)
+- API spec & Agent integration: [`docs/API_SPEC.md`](docs/API_SPEC.md)
+- Roadmap: [`docs/ROADMAP.md`](docs/ROADMAP.md)
 - Changelog: [`docs/CHANGELOG.md`](docs/CHANGELOG.md)
-- Docker Compose deployment: [`docs/DEPLOY_DOCKER_COMPOSE.md`](docs/DEPLOY_DOCKER_COMPOSE.md)
 - Demo docs: [`apps/gradio-demo/README.md`](apps/gradio-demo/README.md)
 - API server docs: [`apps/api-server/README.md`](apps/api-server/README.md)
 - Agent docs: [`apps/miroflow-agent/README.md`](apps/miroflow-agent/README.md)
 - Tools docs: [`libs/miroflow-tools/README.md`](libs/miroflow-tools/README.md)
-- Local tool deployment: [`docs/LOCAL-TOOL-DEPLOYMENT.md`](docs/LOCAL-TOOL-DEPLOYMENT.md)
 - OpenClaw skill package: [`skills/openclaw-mirosearch/SKILL.md`](skills/openclaw-mirosearch/SKILL.md)
-- Roadmap: [`docs/ROADMAP.md`](docs/ROADMAP.md)
-- API spec: [`docs/API_SPEC.md`](docs/API_SPEC.md)
 
 ## Open Source Collaboration
 
-- Contributing guide: [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md)
+- Contributing, governance, support & release: [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md)
 - Security policy: [`docs/SECURITY.md`](docs/SECURITY.md)
 - Code of conduct: [`docs/CODE_OF_CONDUCT.md`](docs/CODE_OF_CONDUCT.md)
 - Changelog: [`docs/CHANGELOG.md`](docs/CHANGELOG.md)
-- Support: [`docs/SUPPORT.md`](docs/SUPPORT.md)
-- Governance: [`docs/GOVERNANCE.md`](docs/GOVERNANCE.md)
-- Release process: [`docs/RELEASE.md`](docs/RELEASE.md)
 
 ## Development Validation
 

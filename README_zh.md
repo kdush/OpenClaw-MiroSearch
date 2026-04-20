@@ -16,9 +16,8 @@ OpenClaw-MiroSearch 是一个面向智能体场景的开源联网检索工程，
 
 ## 上游归属与许可证
 
-本项目基于 [MiroMindAI/MiroThinker](https://github.com/MiroMindAI/MiroThinker) 改造。
+本项目基于 [MiroMindAI/MiroThinker](https://github.com/MiroMindAI/MiroThinker) 改造。仓库在保留原有许可证要求的前提下，新增了面向 OpenClaw/Agent 工具链的工程化改造。兼容现有检索渠道（SearXNG、SerpAPI、Serper）与原有 MiroFlow 工具链。
 
-- 归属声明：[`docs/OPEN_SOURCE_ATTRIBUTION.md`](docs/OPEN_SOURCE_ATTRIBUTION.md)
 - 许可证：[`LICENSE`](LICENSE)
 
 ## 已实现功能
@@ -31,7 +30,7 @@ OpenClaw-MiroSearch 是一个面向智能体场景的开源联网检索工程，
 
 > 完整 API 规格与参数说明请参见 [`docs/API_SPEC.md`](docs/API_SPEC.md)
 >
-> 架构概览与数据流图请参见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)（[English](docs/ARCHITECTURE_en.md)）
+> 架构概览与数据流图请参见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 
 <p align="center"><img src="assets/demo-screenshot.png" alt="Demo Screenshot" width="900" /></p>
 
@@ -166,7 +165,7 @@ Skill 使用：
 
 - 使用说明：[`skills/openclaw-mirosearch/references/usage.md`](skills/openclaw-mirosearch/references/usage.md)
 - API 说明：[`skills/openclaw-mirosearch/references/api.md`](skills/openclaw-mirosearch/references/api.md)
-- AI Agent 接入详解：[`docs/AI_AGENT_INTEGRATION.md`](docs/AI_AGENT_INTEGRATION.md)
+- AI Agent 接入详解：[`docs/API_SPEC.md`](docs/API_SPEC.md)
 
 ## 建议配置基线
 
@@ -181,24 +180,22 @@ Skill 使用：
 
 - 文档总览：[`docs/README.md`](docs/README.md)
 - 架构概览：[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
-- Docker Compose 独立部署：[`docs/DEPLOY_DOCKER_COMPOSE.md`](docs/DEPLOY_DOCKER_COMPOSE.md)
+- 部署指南：[`docs/DEPLOY.md`](docs/DEPLOY.md)
+- API 规格 & Agent 接入：[`docs/API_SPEC.md`](docs/API_SPEC.md)
+- 路线图：[`docs/ROADMAP.md`](docs/ROADMAP.md)
+- 变更记录：[`docs/CHANGELOG.md`](docs/CHANGELOG.md)
 - Demo 说明：[`apps/gradio-demo/README.md`](apps/gradio-demo/README.md)
+- API Server 说明：[`apps/api-server/README.md`](apps/api-server/README.md)
 - Agent 说明：[`apps/miroflow-agent/README.md`](apps/miroflow-agent/README.md)
 - 工具层说明：[`libs/miroflow-tools/README.md`](libs/miroflow-tools/README.md)
-- 本地工具部署：[`docs/LOCAL-TOOL-DEPLOYMENT.md`](docs/LOCAL-TOOL-DEPLOYMENT.md)
 - OpenClaw 技能包：[`skills/openclaw-mirosearch/SKILL.md`](skills/openclaw-mirosearch/SKILL.md)
-- 路线图：[`docs/ROADMAP.md`](docs/ROADMAP.md)
-- API 规格：[`docs/API_SPEC.md`](docs/API_SPEC.md)
 
 ## 开源协作文档
 
-- 贡献指南：[`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md)
+- 贡献、治理、支持与发布：[`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md)
 - 安全策略：[`docs/SECURITY.md`](docs/SECURITY.md)
 - 行为准则：[`docs/CODE_OF_CONDUCT.md`](docs/CODE_OF_CONDUCT.md)
 - 变更记录：[`docs/CHANGELOG.md`](docs/CHANGELOG.md)
-- 支持说明：[`docs/SUPPORT.md`](docs/SUPPORT.md)
-- 治理说明：[`docs/GOVERNANCE.md`](docs/GOVERNANCE.md)
-- 发布流程：[`docs/RELEASE.md`](docs/RELEASE.md)
 
 ## 开发校验
 

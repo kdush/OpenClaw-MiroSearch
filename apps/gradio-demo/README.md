@@ -1,11 +1,11 @@
-# OpenClaw-MiroSearch Demo（Gradio）
+# OpenClaw-MiroSearch Demo (Gradio) / Web Demo 与 API 入口
+
+This directory provides a Web Demo and external API entry point.
 
 本目录提供 Web Demo 与对外 API 入口。
 
-- Web 界面：用于交互式提问与调参
-- API：用于其他智能体/脚本程序化调用
-
-> 📄 English version: [README_en.md](./README_en.md)
+- Web Interface / Web 界面：Interactive Q&A with tunable parameters / 交互式提问与调参
+- API / API：Programmatic access for other agents/scripts / 其他智能体/脚本程序化调用
 
 ## 1. 安装
 
@@ -63,7 +63,7 @@ cp .env.compose.example .env.compose
 docker compose --env-file .env.compose up -d --build
 ```
 
-详细说明见：[`docs/DEPLOY_DOCKER_COMPOSE.md`](../../docs/DEPLOY_DOCKER_COMPOSE.md)
+详细说明见：[`docs/DEPLOY.md`](../../docs/DEPLOY.md)
 
 ## 4. 页面可切换配置
 

@@ -153,11 +153,38 @@
 - 普通研究：`mode=balanced` + `search_profile=parallel-trusted` + `output_detail_level=balanced`
 - 高核查/长文：`mode=verified` + `search_profile=parallel-trusted` + `search_result_num=30` + `verification_min_search_rounds=4` + `output_detail_level=detailed`
 
+### 按网络环境选择检索策略
+
+上层 Agent 应将"网络环境"作为路由决策条件，而不是固定单一模板：
+
+- 中国大陆（无代理或出海链路波动）：
+  - 优先 `search_profile=searxng-first`
+  - 检索源顺序建议：`searxng,serpapi,serper`
+  - 失败策略：保持 `fallback`，不要直接并发所有海外源
+- 海外或有稳定代理：
+  - 优先 `search_profile=parallel-trusted`
+  - 检索源顺序建议：`serpapi,searxng,serper`
+  - 可启用并发聚合与置信补检
+- 未知网络：
+  - 首轮用 `searxng-first` 探测可达性
+  - 连续 1-2 轮稳定后再提升到 `parallel-trusted`
+
+建议 Agent 在启动阶段做一次轻量连通性采样（如 `bing/google/duckduckgo`），用结果决定初始模板，避免全量超时。
+
 ### 失败处理建议
 
 - 若 SSE 未出现 `complete`：先调 `stop_current`，再重试
-- 若返回 `No \\boxed{} content found in the final answer.`：视为“未收敛”，不是服务不可用
+- 若返回 `No \\boxed{} content found in the final answer.`：视为"未收敛"，不是服务不可用
 - 若出现 429：指数退避并降级 `mode`（`thinking -> balanced -> quota`）
+- 限流 429：服务端已支持多 Key 自动轮转（v0.1.9+），单 Key 限流时自动切换；调用方仍建议指数退避，必要时降级到 `mode=quota`
+- 若看到长期 `running` 但无推进：检查最新 `heartbeat.data.stage`；系统会自动回收陈旧 `running` 为 `failed`
+
+### 输出消费建议
+
+- 只消费 `complete` 事件首项 Markdown
+- 若需要机器二次处理，先保留原文，再做结构化抽取
+- 对时效问题，优先保留"时间锚点 + 关键数字 + 来源"三要素
+- 进度展示建议读取 `heartbeat.data.stage.phase`（检索/推理/校验/总结）与 `search_round`
 
 ---
 

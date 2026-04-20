@@ -29,6 +29,7 @@ def test_build_demo_uses_two_column_layout_with_right_options():
     demo_main = _load_demo_main()
     demo = demo_main.build_demo()
     components = demo.config["components"]
+    dependencies = demo.config["dependencies"]
 
     component_by_elem_id = {}
     for component in components:
@@ -45,3 +46,11 @@ def test_build_demo_uses_two_column_layout_with_right_options():
     assert component_by_elem_id["search-result-num-selector"]["type"] == "dropdown"
     assert component_by_elem_id["verification-rounds-selector"]["type"] == "slider"
     assert component_by_elem_id["output-detail-level-selector"]["type"] == "dropdown"
+
+    run_research_api = [
+        dependency
+        for dependency in dependencies
+        if dependency.get("api_name") == "run_research_once"
+    ]
+    assert len(run_research_api) == 1
+    assert len(run_research_api[0]["inputs"]) == 6
