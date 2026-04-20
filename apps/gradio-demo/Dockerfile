@@ -6,19 +6,21 @@ ARG APP_WORKDIR=/workspace/apps/gradio-demo
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    UV_LINK_MODE=copy
+    UV_LINK_MODE=copy \
+    UV_HTTP_TIMEOUT=300 \
+    UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates curl && \
     rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir uv==${UV_VERSION}
+RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple uv==${UV_VERSION}
 
 WORKDIR /workspace
 COPY . /workspace
 
 WORKDIR ${APP_WORKDIR}
-RUN uv sync --frozen --no-dev
+RUN uv sync --frozen --no-dev || uv sync --frozen --no-dev
 
 EXPOSE 8080
 

@@ -7,7 +7,7 @@ services:
       dockerfile: apps/gradio-demo/Dockerfile
     image: openclaw-mirosearch:latest
     restart: unless-stopped
-    # 如果容器无法访问外网（常见于 Unraid / 部分 NAS 的 bridge 网络），
+    # 如果容器无法访问外网，
     # 取消下行注释并注释掉 ports 段，改用 host 网络模式：
     # network_mode: host
     env_file:
@@ -39,8 +39,13 @@ services:
       API_HOST: 0.0.0.0
       API_PORT: 8090
       SEARXNG_BASE_URL: ${SEARXNG_BASE_URL:-http://searxng:8080}
+      VALKEY_HOST: valkey
+      VALKEY_PORT: 6379
     ports:
       - "${API_PORT:-8090}:8090"
+    depends_on:
+      valkey:
+        condition: service_healthy
     healthcheck:
       test:
         - CMD-SHELL
@@ -49,6 +54,24 @@ services:
       timeout: 10s
       retries: 5
       start_period: 30s
+
+  worker:
+    build:
+      context: .
+      dockerfile: apps/api-server/Dockerfile
+    image: openclaw-mirosearch-api:latest
+    restart: unless-stopped
+    env_file:
+      - .env.compose
+    environment:
+      SEARXNG_BASE_URL: ${SEARXNG_BASE_URL:-http://searxng:8080}
+      VALKEY_HOST: valkey
+      VALKEY_PORT: 6379
+    command: ["python", "worker.py"]
+    working_dir: /workspace/apps/api-server
+    depends_on:
+      valkey:
+        condition: service_healthy
 
   valkey:
     image: valkey/valkey:8-alpine
