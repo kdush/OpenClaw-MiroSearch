@@ -188,9 +188,9 @@
 
 ---
 
-## FastAPI API Server（v0.1.11+）
+## FastAPI API Server（v0.2.0）
 
-独立于 Gradio 的标准 HTTP API 层，默认监听 8090 端口。
+独立于 Gradio 的标准 HTTP API 层，默认监听 8090 端口。v0.2.0 起采用异步任务队列架构（arq + Valkey）。
 
 ### 基础地址
 
@@ -208,8 +208,9 @@ curl -H "Authorization: Bearer your-token" http://127.0.0.1:8090/v1/research
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| POST | `/v1/research` | 提交研究任务，返回 `task_id` |
-| GET | `/v1/research/{task_id}/stream` | SSE 流式获取任务实时进度 |
+| POST | `/v1/research` | 提交研究任务，异步入队，返回 `task_id` |
+| GET | `/v1/research/{task_id}` | 查询任务状态、元数据与结果 |
+| GET | `/v1/research/{task_id}/stream` | SSE 流式获取任务实时进度事件 |
 | POST | `/v1/research/{task_id}/cancel` | 取消指定任务 |
 | POST | `/v1/research/cancel` | 按 `caller_id` 批量取消 |
 | GET | `/v1/metrics/last` | 最近任务运行指标 |
@@ -224,16 +225,37 @@ curl -X POST http://127.0.0.1:8090/v1/research \
   -d '{"query": "量子计算最新进展", "mode": "balanced", "search_profile": "parallel-trusted", "output_detail_level": "balanced"}'
 ```
 
-响应：
+响应（异步入队）：
 
 ```json
-{"task_id": "xxxx", "status": "running"}
+{"task_id": "xxxx", "status": "accepted"}
 ```
 
-缓存命中时：
+缓存命中时（同步返回）：
 
 ```json
 {"task_id": "xxxx", "status": "cached", "result": "...markdown..."}
+```
+
+任务状态查询（`GET /v1/research/{task_id}`）：
+
+```json
+{
+  "task_id": "xxxx",
+  "status": "running",
+  "meta": {
+    "task_id": "xxxx",
+    "status": "running",
+    "query": "...",
+    "mode": "balanced",
+    "current_stage": "tool:unknown",
+    "created_at": 1776648665.85,
+    "started_at": 1776648666.30,
+    "finished_at": null
+  },
+  "result": null,
+  "event_count": 8
+}
 ```
 
 ### 请求参数（`ResearchRequest`）
@@ -243,6 +265,8 @@ curl -X POST http://127.0.0.1:8090/v1/research \
 | `query` | string | 是 | — | 研究问题 |
 | `mode` | string | 否 | `balanced` | 研究模式（枚举同上） |
 | `search_profile` | string | 否 | `searxng-first` | 检索路由（枚举同上） |
+| `search_result_num` | int | 否 | `20` | 每轮检索结果数 |
+| `verification_min_search_rounds` | int | 否 | `3` | 最少检索轮次（verified 模式） |
 | `output_detail_level` | string | 否 | `detailed` | 输出篇幅（枚举同上） |
 | `caller_id` | string | 否 | — | 调用方标识，用于定向取消 |
 

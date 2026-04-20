@@ -11,6 +11,42 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 - 规划：结构化冲突检测报告与专项评测集
 
+## [0.2.0] - 2026-04-20
+
+### Added
+
+- **异步任务队列**：基于 arq + Valkey 实现异步研究任务调度
+  - `services/task_store.py`：Valkey 持久化任务元数据、事件流、结果与取消标志
+  - `services/task_queue.py`：arq 任务入队封装，连接池管理
+  - `services/task_event_sink.py`：Pipeline 事件 → 持久化事件流适配器
+  - `services/pipeline_runtime.py`：Hydra 配置工厂，管理 Pipeline 组件生命周期
+  - `workers/research_worker.py`：arq Worker 消费任务，执行完整 Pipeline
+  - `worker.py`：Worker 入口脚本，含 LLM 配置诊断日志
+  - `settings.py`：Pydantic 统一配置管理（Valkey / 队列 / Worker / API）
+- **SSE 流式端点重构**：切换到 `sse_starlette`，修复 `ServerSentEvent` 序列化 bug
+- **任务状态查询**：`GET /v1/research/{task_id}` 返回完整任务元数据与事件计数
+- **请求参数扩展**：`search_result_num`、`verification_min_search_rounds` 可由调用方指定
+- **Docker 构建优化**：BuildKit 缓存挂载、PyPI 镜像源加速
+- **Compose 编排**：新增 worker / valkey 服务定义，修复 working_dir 路径
+- **测试覆盖 24 条新增**：
+  - `test_research_queue_api`（7 条）：任务入队、缓存命中、状态查询、取消
+  - `test_research_worker`（3 条）：Worker 成功/取消/失败场景
+  - `test_sse_stream`（6 条）：SSE 完整生命周期、404、增量读取
+  - `test_task_store`（8 条）：TaskStore 集成测试
+
+### Changed
+
+- `POST /v1/research` 响应从同步返回结果改为异步入队（返回 `task_id` + `status: accepted`）
+- 研究端点从单进程阻塞改为 Worker 异步执行，支持并发多任务
+- `deps.py` 精简：移除内存任务管理逻辑，改用 TaskStore/TaskQueue 服务层注入
+- `.env.compose.example` 新增 Valkey、任务队列、Worker 配置项
+
+### Removed
+
+- 删除冗余英文文档副本（ARCHITECTURE_en / CONTRIBUTING_en / SECURITY_en / CODE_OF_CONDUCT_en）
+- 删除过期文档：GOVERNANCE / RELEASE / QA / SUPPORT / LOCAL-TOOL-DEPLOYMENT / AI_AGENT_INTEGRATION
+- 删除已完成计划文档
+
 ## [0.1.14] - 2026-04-05
 
 ### Changed

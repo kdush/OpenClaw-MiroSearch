@@ -229,6 +229,6 @@ See: [`docs/ROADMAP.md`](docs/ROADMAP.md)
 
 Current planning is divided into four phases:
 
-- `v0.2.0` (production-ready): SearchProvider protocol, Prometheus observability, async task queue, persistent cache (Valkey backend)
-- `v0.2.5` (quality enhancement): Eval pipeline in CI, multi-source RRF ranking, multilingual retrieval optimization, research result persistence, structured conflict detection
+- `v0.2.0` (production-ready) ✅: SearchProvider protocol, async task queue (arq + Valkey), SSE streaming, persistent cache, Docker Compose orchestration
+- `v0.2.5` (quality + observability): Prometheus metrics, eval pipeline in CI, multi-source RRF ranking, multilingual retrieval optimization
 - `v1.0.0` (ecosystem distribution): Helm Chart / one-click cloud deploy, skill versioned release, compatibility matrix auto-verification

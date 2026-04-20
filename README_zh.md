@@ -215,9 +215,8 @@ cd apps/miroflow-agent && uv run pytest
 
 路线图详见：[`docs/ROADMAP.md`](docs/ROADMAP.md)
 
-当前规划分为五个阶段：
+当前规划分为三个阶段：
 
-- `v0.2.0`（生产化）：API 层独立（脱离 Gradio）、认证限流、结果缓存、SearchProvider 协议化、多 Key 轮转、模型 failback、Prometheus 可观测性、异步任务队列
-- `v0.2.5`（MCP 标准暴露）：将 `run_research_once` 暴露为标准 MCP tool（stdio + SSE transport），支持 AI IDE 原生接入
-- `v0.3.0`（质量增强）：Eval Pipeline CI 化、多源 RRF 融合排序、多语言检索优化、研究结果持久化、结构化冲突检测
+- `v0.2.0`（生产化）✅：异步任务队列（arq + Valkey）、SSE 流式输出、SearchProvider 协议化、持久化缓存、Docker Compose 多服务编排
+- `v0.2.5`（质量增强 + 可观测性）：Prometheus 指标、Eval Pipeline CI 化、多源 RRF 融合排序、多语言检索优化
 - `v1.0.0`（生态分发）：Helm Chart / 一键云部署、技能包版本化发布、兼容矩阵自动验证
