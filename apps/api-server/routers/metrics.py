@@ -4,8 +4,8 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends
 
-from deps import get_last_run_metrics
 from middleware.auth import verify_bearer_token
+from services.task_store import get_task_store
 
 router = APIRouter(prefix="/v1/metrics", tags=["metrics"])
 
@@ -17,7 +17,8 @@ router = APIRouter(prefix="/v1/metrics", tags=["metrics"])
 async def metrics_last(
     _token: Optional[str] = Depends(verify_bearer_token),
 ):
-    data = get_last_run_metrics()
+    task_store = await get_task_store()
+    data = await task_store.get_last_run_metrics()
     if data is None:
         return {"status": "no_data", "message": "尚无已完成的任务"}
     return data

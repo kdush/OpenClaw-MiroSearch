@@ -2,6 +2,7 @@
 
 独立于 Gradio Demo 的标准 HTTP API 层，提供：
 - POST /v1/research — 提交研究任务
+- GET  /v1/research/{task_id} — 获取任务状态
 - GET  /v1/research/{task_id}/stream — SSE 流式进度
 - POST /v1/research/{task_id}/cancel — 取消指定任务
 - POST /v1/research/cancel — 按 caller_id 批量取消
@@ -12,9 +13,8 @@
 import logging
 import os
 import sys
-from pathlib import Path
-
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI
@@ -26,10 +26,11 @@ if str(_AGENT_ROOT) not in sys.path:
 
 load_dotenv()
 
-from deps import cleanup_stale_tasks
 from middleware.rate_limit import check_rate_limit, cleanup_rate_limit_buckets
 from models import HealthResponse
 from routers import metrics, research
+from services.task_queue import close_task_queue, get_task_queue
+from services.task_store import close_task_store, get_task_store
 
 logging.basicConfig(
     level=logging.INFO,
@@ -37,26 +38,45 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 
+logger = logging.getLogger("api-server")
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    """应用生命周期：启动定期清理任务，关闭时取消。"""
+    """应用生命周期：初始化/关闭 TaskStore 和 TaskQueue。"""
     import asyncio
+
+    # 启动时初始化
+    logger.info("Initializing TaskStore and TaskQueue...")
+    await get_task_store()
+    await get_task_queue()
+    logger.info("TaskStore initialized")
 
     async def _cleanup_loop():
         while True:
             await asyncio.sleep(60)
-            cleanup_stale_tasks()
             cleanup_rate_limit_buckets()
 
     task = asyncio.create_task(_cleanup_loop())
+
     yield
+
+    # 关闭时清理
     task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+    await close_task_store()
+    await close_task_queue()
+    logger.info("TaskStore and TaskQueue closed")
 
 
 app = FastAPI(
     title="MiroSearch API",
     description="OpenClaw-MiroSearch 标准 HTTP API，独立于 Gradio Demo",
-    version="0.1.0",
+    version="0.2.0",
     docs_url="/docs",
     redoc_url="/redoc",
     dependencies=[Depends(check_rate_limit)],

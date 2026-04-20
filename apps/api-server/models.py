@@ -85,3 +85,45 @@ class ErrorResponse(BaseModel):
     """通用错误响应。"""
 
     detail: str
+
+
+# ---- 新增任务状态模型 ----
+
+
+class ResearchTaskMeta(BaseModel):
+    """任务元数据。"""
+
+    task_id: str
+    status: str
+    caller_id: str = ""
+    query: str = ""
+    mode: str = "balanced"
+    search_profile: str = "parallel-trusted"
+    search_result_num: int = 20
+    verification_min_search_rounds: int = 3
+    output_detail_level: str = "detailed"
+    created_at: float = 0.0
+    started_at: Optional[float] = None
+    finished_at: Optional[float] = None
+    current_stage: str = ""
+    error: Optional[str] = None
+
+
+class ResearchTaskStatusResponse(BaseModel):
+    """GET /v1/research/{task_id} 响应。"""
+
+    task_id: str
+    status: str
+    meta: ResearchTaskMeta
+    result: Optional[str] = None
+    event_count: int = 0
+
+
+class ResearchTaskProgress(BaseModel):
+    """任务进度信息。"""
+
+    task_id: str
+    status: str
+    current_stage: str = ""
+    started_at: Optional[float] = None
+    elapsed_seconds: float = 0.0

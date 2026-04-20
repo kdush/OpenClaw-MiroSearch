@@ -1,125 +1,46 @@
-"""研究任务相关端点：提交、流式输出、取消。"""
+"""研究任务相关端点：提交、状态查询、流式输出、取消。
 
-import asyncio
+重构后执行模型:
+- POST /v1/research: 参数校验 -> 缓存检查 -> 任务入队 -> 返回 task_id
+- GET /v1/research/{task_id}: 返回任务快照
+- GET /v1/research/{task_id}/stream: 从 Redis Stream 增量读取事件
+- POST /v1/research/{task_id}/cancel: 写入共享取消标记
+- POST /v1/research/cancel: 按 caller 批量设置取消标记
+"""
+
 import logging
-import os
-import threading
+import time
 import uuid
-from typing import AsyncIterable, Optional
+from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.sse import EventSourceResponse, ServerSentEvent
+import json as _json
 
-from deps import (
-    cancel_task,
-    cancel_tasks_by_caller,
-    finish_task,
-    get_task,
-    register_task,
-    set_last_run_metrics,
-)
+from fastapi import APIRouter, Depends, HTTPException
+from sse_starlette.sse import EventSourceResponse
+
 from middleware.auth import verify_bearer_token
-from models import CancelResponse, ErrorResponse, ResearchRequest, ResearchResponse
+from models import (
+    CancelResponse,
+    ErrorResponse,
+    ResearchRequest,
+    ResearchResponse,
+    ResearchTaskMeta,
+    ResearchTaskStatusResponse,
+)
+from services.task_queue import TaskPayload, get_task_queue
+from services.task_store import TaskStatus, get_task_store
+from settings import settings
 from src.cache.result_cache import ResultCache
 
 logger = logging.getLogger("api-server")
 
 router = APIRouter(prefix="/v1/research", tags=["research"])
 
+# 结果缓存（保持内存实现）
 _result_cache = ResultCache(
-    max_size=int(os.getenv("RESULT_CACHE_MAX_SIZE", "128")),
-    ttl_seconds=int(os.getenv("RESULT_CACHE_TTL_SECONDS", "3600")),
+    max_size=settings.result_cache_max_size,
+    ttl_seconds=settings.result_cache_ttl_seconds,
 )
-
-# ---- pipeline 预加载缓存 ----
-_preload_cache = {}
-_preload_lock = threading.Lock()
-_hydra_initialized = False
-
-
-def _load_hydra_config(overrides: list) -> "DictConfig":
-    """使用 Hydra compose API 加载配置，处理全局初始化状态。"""
-    global _hydra_initialized
-    from pathlib import Path
-
-    from hydra import compose, initialize_config_dir
-
-    conf_dir = os.getenv("AGENT_CONF_DIR", "")
-    if not conf_dir:
-        conf_dir = str(Path(__file__).resolve().parents[2] / "miroflow-agent" / "conf")
-
-    if not _hydra_initialized:
-        try:
-            initialize_config_dir(config_dir=conf_dir, version_base=None)
-            _hydra_initialized = True
-        except Exception as e:
-            logger.warning("Hydra 初始化状态: %s", e)
-
-    return compose(config_name="config", overrides=overrides)
-
-
-def _build_config_overrides(req: ResearchRequest) -> list:
-    """根据请求参数构建 Hydra override 列表，对齐 gradio-demo 逻辑。"""
-    llm_provider = os.getenv("DEFAULT_LLM_PROVIDER", "qwen")
-    provider_config_map = {
-        "anthropic": "claude-3-7",
-        "openai": "gpt-5",
-        "qwen": "qwen-3",
-    }
-    llm_config = provider_config_map.get(llm_provider, "qwen-3")
-
-    overrides = [
-        f"llm={llm_config}",
-        f"llm.provider={llm_provider}",
-        f"llm.model_name={os.getenv('DEFAULT_MODEL_NAME', 'LongCat-Flash-Chat')}",
-        f"llm.base_url={os.getenv('BASE_URL', 'http://localhost:11434')}",
-        f"llm.api_key={os.getenv('API_KEY', '')}",
-        f"agent={os.getenv('AGENT_CONFIG', 'demo_search_only')}",
-    ]
-    return overrides
-
-
-def _ensure_pipeline_loaded(req: ResearchRequest) -> dict:
-    """懒加载 pipeline 组件（与 gradio-demo 对齐的预加载逻辑）。"""
-    from src.core.pipeline import create_pipeline_components
-
-    cache_key = f"{req.mode}|{req.search_profile}|{req.search_result_num}|{req.output_detail_level}"
-    with _preload_lock:
-        if cache_key in _preload_cache:
-            return _preload_cache[cache_key]
-
-    overrides = _build_config_overrides(req)
-    cfg = _load_hydra_config(overrides)
-    main_tm, sub_tms, output_fmt = create_pipeline_components(cfg)
-
-    # 获取工具定义
-    async def _get_tool_defs():
-        tool_defs = await main_tm.get_all_tool_definitions()
-        sub_defs = {}
-        for name, tm in sub_tms.items():
-            sub_defs[name] = await tm.get_all_tool_definitions()
-        return tool_defs, sub_defs
-
-    loop = asyncio.new_event_loop()
-    tool_definitions, sub_agent_tool_definitions = loop.run_until_complete(_get_tool_defs())
-    loop.close()
-
-    # 如有子代理，暴露为工具
-    if cfg.agent.sub_agents:
-        from src.core.sub_agent import expose_sub_agents_as_tools
-        tool_definitions += expose_sub_agents_as_tools(cfg.agent.sub_agents)
-
-    result = {
-        "cfg": cfg,
-        "main_agent_tool_manager": main_tm,
-        "sub_agent_tool_managers": sub_tms,
-        "output_formatter": output_fmt,
-        "tool_definitions": tool_definitions,
-        "sub_agent_tool_definitions": sub_agent_tool_definitions,
-    }
-    with _preload_lock:
-        _preload_cache[cache_key] = result
-    return result
 
 
 @router.post(
@@ -133,114 +54,109 @@ async def create_research(
     req: ResearchRequest,
     _token: Optional[str] = Depends(verify_bearer_token),
 ):
+    task_store = await get_task_store()
+    task_queue = await get_task_queue()
+
     # 结果缓存检查
     cache_key = ResultCache.make_key(
         req.query, req.mode, req.search_profile, req.output_detail_level
     )
     cached = _result_cache.get(cache_key)
     if cached is not None:
+        # 缓存命中：创建 cached 任务并写入事件
         task_id = f"cached-{uuid.uuid4().hex[:8]}"
         logger.info("Cache hit | key=%s | query=%s", cache_key, req.query[:60])
-        queue = register_task(task_id, caller_id=req.caller_id or "")
-        queue.put_nowait({"event": "final_output", "data": {"markdown": cached}})
-        queue.put_nowait(None)
-        finish_task(task_id, "completed")
+
+        await task_store.create_task(
+            task_id=task_id,
+            status=TaskStatus.CACHED,
+            caller_id=req.caller_id or "",
+            query=req.query,
+            mode=req.mode,
+            search_profile=req.search_profile,
+            search_result_num=req.search_result_num,
+            verification_min_search_rounds=req.verification_min_search_rounds,
+            output_detail_level=req.output_detail_level,
+        )
+        await task_store.append_event(task_id, "final_output", {"markdown": cached})
+        await task_store.store_result(task_id, cached)
+        await task_store.update_task_status(task_id, TaskStatus.CACHED)
+
         return ResearchResponse(task_id=task_id, status="cached")
 
+    # 创建任务
     task_id = str(uuid.uuid4())
-    queue = register_task(task_id, caller_id=req.caller_id or "")
-
-    # 后台启动 pipeline
-    asyncio.get_running_loop().run_in_executor(
-        None, _run_pipeline_background, task_id, req, queue, cache_key
+    await task_store.create_task(
+        task_id=task_id,
+        status=TaskStatus.QUEUED,
+        caller_id=req.caller_id or "",
+        query=req.query,
+        mode=req.mode,
+        search_profile=req.search_profile,
+        search_result_num=req.search_result_num,
+        verification_min_search_rounds=req.verification_min_search_rounds,
+        output_detail_level=req.output_detail_level,
     )
 
-    return ResearchResponse(task_id=task_id)
+    # 入队
+    payload = TaskPayload(
+        task_id=task_id,
+        query=req.query,
+        mode=req.mode,
+        search_profile=req.search_profile,
+        search_result_num=req.search_result_num,
+        verification_min_search_rounds=req.verification_min_search_rounds,
+        output_detail_level=req.output_detail_level,
+        caller_id=req.caller_id or "",
+        cache_key=cache_key,
+    )
+    await task_queue.enqueue_research_job(payload)
+
+    return ResearchResponse(task_id=task_id, status="accepted")
 
 
-def _run_pipeline_background(task_id: str, req: ResearchRequest, queue: asyncio.Queue, cache_key: str = ""):
-    """在线程中运行 pipeline，事件写入 queue。"""
-    from src.core.pipeline import execute_task_pipeline
+@router.get(
+    "/{task_id}",
+    response_model=ResearchTaskStatusResponse,
+    responses={404: {"model": ErrorResponse}},
+    summary="获取任务状态",
+    description="返回任务快照，支持不依赖 SSE 的轮询式查询。",
+)
+async def get_task_status(
+    task_id: str,
+    _token: Optional[str] = Depends(verify_bearer_token),
+):
+    task_store = await get_task_store()
 
-    task_info = get_task(task_id)
-    cancel_event = task_info["cancel_event"] if task_info else threading.Event()
+    meta = await task_store.get_task(task_id)
+    if not meta:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
-    try:
-        components = _ensure_pipeline_loaded(req)
-    except Exception as e:
-        logger.error("Pipeline 预加载失败: %s", e, exc_info=True)
-        queue.put_nowait({"event": "error", "data": {"error": "Internal server error during pipeline initialization"}})
-        queue.put_nowait(None)
-        finish_task(task_id, "failed")
-        return
+    result = await task_store.get_result(task_id)
+    event_count = await task_store.get_event_stream_length(task_id)
 
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
-    class QueueWrapper:
-        def __init__(self, q, cancel_evt):
-            self._q = q
-            self._cancel = cancel_evt
-
-        async def put(self, item):
-            if self._cancel.is_set():
-                return
-            # run_metrics 事件特殊处理
-            if isinstance(item, dict) and item.get("event") == "run_metrics":
-                set_last_run_metrics(item.get("data"))
-            self._q.put_nowait(item)
-
-    wrapper = QueueWrapper(queue, cancel_event)
-
-    async def _run():
-        pipeline_task = asyncio.create_task(
-            execute_task_pipeline(
-                cfg=components["cfg"],
-                task_id=task_id,
-                task_description=req.query,
-                task_file_name=None,
-                main_agent_tool_manager=components["main_agent_tool_manager"],
-                sub_agent_tool_managers=components["sub_agent_tool_managers"],
-                output_formatter=components["output_formatter"],
-                stream_queue=wrapper,
-                log_dir=os.getenv("LOG_DIR", "logs/api-server"),
-                tool_definitions=components["tool_definitions"],
-                sub_agent_tool_definitions=components["sub_agent_tool_definitions"],
-            )
-        )
-
-        async def _watch_cancel():
-            while not cancel_event.is_set():
-                await asyncio.sleep(0.5)
-            pipeline_task.cancel()
-
-        cancel_watcher = asyncio.create_task(_watch_cancel())
-        try:
-            done, pending = await asyncio.wait(
-                [pipeline_task, cancel_watcher],
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            for t in pending:
-                t.cancel()
-            for t in done:
-                if t == pipeline_task:
-                    try:
-                        await t
-                    except asyncio.CancelledError:
-                        pass
-        except Exception as e:
-            logger.error("Pipeline 执行出错: %s", e, exc_info=True)
-            queue.put_nowait({"event": "error", "data": {"error": "Internal server error during pipeline execution"}})
-
-    try:
-        loop.run_until_complete(_run())
-        finish_task(task_id, "completed")
-    except Exception as e:
-        logger.error("Pipeline 线程异常: %s", e, exc_info=True)
-        finish_task(task_id, "failed")
-    finally:
-        queue.put_nowait(None)
-        loop.close()
+    return ResearchTaskStatusResponse(
+        task_id=task_id,
+        status=meta.status.value,
+        meta=ResearchTaskMeta(
+            task_id=meta.task_id,
+            status=meta.status.value,
+            caller_id=meta.caller_id,
+            query=meta.query,
+            mode=meta.mode,
+            search_profile=meta.search_profile,
+            search_result_num=meta.search_result_num,
+            verification_min_search_rounds=meta.verification_min_search_rounds,
+            output_detail_level=meta.output_detail_level,
+            created_at=meta.created_at,
+            started_at=meta.started_at,
+            finished_at=meta.finished_at,
+            current_stage=meta.current_stage,
+            error=meta.error,
+        ),
+        result=result,
+        event_count=event_count,
+    )
 
 
 @router.get(
@@ -252,23 +168,54 @@ async def stream_research(
     task_id: str,
     _token: Optional[str] = Depends(verify_bearer_token),
 ):
-    task = get_task(task_id)
-    if not task:
+    task_store = await get_task_store()
+
+    meta = await task_store.get_task(task_id)
+    if not meta:
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
-    queue = task["queue"]
-
     async def _event_generator():
+        last_event_id = None
+        heartbeat_interval = 15  # 心跳间隔（秒）
+        last_heartbeat = time.time()
+
         while True:
-            try:
-                message = await asyncio.wait_for(queue.get(), timeout=30)
-                if message is None:
-                    yield ServerSentEvent(data={"status": "completed"}, event="done")
+            # 读取事件
+            events = await task_store.read_events(
+                task_id,
+                last_event_id=last_event_id,
+                block_ms=5000,
+                count=100,
+            )
+
+            for event in events:
+                last_event_id = event["id"]
+                yield {
+                    "event": event["event"],
+                    "data": _json.dumps(event["data"], ensure_ascii=False),
+                }
+                last_heartbeat = time.time()
+
+            # 检查任务是否进入终态
+            current = await task_store.get_task(task_id)
+            if current and current.status in (
+                TaskStatus.COMPLETED,
+                TaskStatus.FAILED,
+                TaskStatus.CANCELLED,
+                TaskStatus.CACHED,
+            ):
+                # 事件流读取完毕后输出 done
+                if not events:
+                    yield {
+                        "event": "done",
+                        "data": _json.dumps({"status": current.status.value}),
+                    }
                     break
-                event_type = message.get("event", "message")
-                yield ServerSentEvent(data=message.get("data", {}), event=event_type)
-            except asyncio.TimeoutError:
-                yield ServerSentEvent(data={}, event="heartbeat")
+
+            # 发送心跳
+            if time.time() - last_heartbeat > heartbeat_interval:
+                yield {"event": "heartbeat", "data": "{}"}
+                last_heartbeat = time.time()
 
     return EventSourceResponse(_event_generator())
 
@@ -282,9 +229,16 @@ async def cancel_research(
     task_id: str,
     _token: Optional[str] = Depends(verify_bearer_token),
 ):
-    success = cancel_task(task_id)
-    if not success:
+    task_store = await get_task_store()
+
+    meta = await task_store.get_task(task_id)
+    if not meta:
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+
+    if meta.status not in (TaskStatus.QUEUED, TaskStatus.RUNNING):
+        raise HTTPException(status_code=400, detail=f"Task {task_id} is not cancellable (status: {meta.status.value})")
+
+    await task_store.request_cancel(task_id)
     return CancelResponse(cancelled=1, task_ids=[task_id])
 
 
@@ -298,5 +252,6 @@ async def cancel_by_caller(
     caller_id: Optional[str] = None,
     _token: Optional[str] = Depends(verify_bearer_token),
 ):
-    cancelled_ids = cancel_tasks_by_caller(caller_id)
+    task_store = await get_task_store()
+    cancelled_ids = await task_store.cancel_tasks_by_caller(caller_id)
     return CancelResponse(cancelled=len(cancelled_ids), task_ids=cancelled_ids)
