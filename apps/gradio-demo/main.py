@@ -4,6 +4,7 @@ import html
 import json
 import logging
 import os
+import re
 import threading
 import time
 import uuid
@@ -1947,11 +1948,66 @@ def _merge_final_summary_blocks(
     return [unique_blocks[-1]]
 
 
+_REFERENCES_HEADING_RE = re.compile(
+    r"(?im)^[ \t]*(?:#{1,6}[ \t]+)?(?:\*+[ \t]*)?"
+    r"(?:参考文献|参考资料|引用|references?|sources?)"
+    r"(?:[ \t]*\*+)?[ \t]*$"
+)
+_REFERENCE_ENTRY_RE = re.compile(r"\[(\d{1,4})\][^\n]*?(https?://\S+)")
+_CITATION_RE = re.compile(r"\[(\d{1,4})\]")
+_CODE_SEGMENT_RE = re.compile(r"```[\s\S]*?```|`[^`\n]+`")
+_REFERENCE_URL_TRAILING = ".,;:)]>。，、；：）】》」’”"
+
+
+def _linkify_reference_citations(markdown_text: str) -> str:
+    """将研究总结中形如 ``[N]`` 的引用标记替换为指向文末 References 区真实 URL 的可点击链接。"""
+    if not markdown_text:
+        return markdown_text
+    heading_match = _REFERENCES_HEADING_RE.search(markdown_text)
+    if not heading_match:
+        return markdown_text
+
+    body = markdown_text[: heading_match.start()]
+    references_section = markdown_text[heading_match.start():]
+
+    id_to_url: Dict[str, str] = {}
+    for entry in _REFERENCE_ENTRY_RE.finditer(references_section):
+        ref_id = entry.group(1)
+        raw_url = entry.group(2).rstrip(_REFERENCE_URL_TRAILING)
+        if ref_id and raw_url and ref_id not in id_to_url:
+            id_to_url[ref_id] = raw_url
+
+    if not id_to_url:
+        return markdown_text
+
+    def _replace_citation(match: "re.Match[str]") -> str:
+        ref_id = match.group(1)
+        url = id_to_url.get(ref_id)
+        if not url:
+            return match.group(0)
+        href = html.escape(url, quote=True)
+        return (
+            f'<a href="{href}" target="_blank" rel="noopener noreferrer" '
+            f'class="ref-citation">[{ref_id}]</a>'
+        )
+
+    pieces: List[str] = []
+    cursor = 0
+    for code_match in _CODE_SEGMENT_RE.finditer(body):
+        start, end = code_match.span()
+        pieces.append(_CITATION_RE.sub(_replace_citation, body[cursor:start]))
+        pieces.append(body[start:end])
+        cursor = end
+    pieces.append(_CITATION_RE.sub(_replace_citation, body[cursor:]))
+
+    return "".join(pieces) + references_section
+
+
 def _build_summary_section(final_summary_blocks: List[str]) -> List[str]:
     if not final_summary_blocks:
         return []
     lines = ["## 📋 研究总结\n\n"]
-    lines.extend(final_summary_blocks)
+    lines.extend(_linkify_reference_citations(block) for block in final_summary_blocks)
     return lines
 
 
