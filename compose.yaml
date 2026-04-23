@@ -67,7 +67,7 @@ services:
       SEARXNG_BASE_URL: ${SEARXNG_BASE_URL:-http://searxng:8080}
       VALKEY_HOST: valkey
       VALKEY_PORT: 6379
-    command: ["python", "worker.py"]
+    command: [".venv/bin/python", "worker.py"]
     working_dir: /workspace/apps/api-server
     depends_on:
       valkey:
