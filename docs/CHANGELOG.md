@@ -11,6 +11,22 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 - 规划：结构化冲突检测报告与专项评测集
 
+## [0.2.1] - 2026-04-23
+
+### Added
+
+- **研究报告引用可点击**（gradio-demo）：研究总结正文中形如 `[2]`、`[5]`、`[9]` 的数字引用自动转换为指向报告末尾"References / 参考文献"章节对应真实 URL 的 HTML 锚点，点击在新标签页打开原始信源
+  - 自动识别多种参考文献章节标题（`**References**` / `## 参考文献` / `## References` / `## 引用` / `## Sources` 等）
+  - 解析形如 `[N] 标题. URL` 的条目构建 id → url 映射
+  - 跳过围栏代码块与行内代码内的 `[N]`，避免误伤
+  - URL 尾部自动修剪 ASCII 与常见中文标点
+  - 参考文献章节本身保持原样，内部 `[N]` 不嵌套链接
+  - 新增 3 条单元测试覆盖正常替换、无参考文献段落、代码块保护
+
+### Fixed
+
+- **Compose Worker 启动命令**：`compose.yaml` 中 `api-worker` 服务启动命令改为 `.venv/bin/python worker.py`，避免容器 `PATH` 未指向 uv 托管解释器时拉起错误的 Python，确保 arq Worker 稳定启动
+
 ## [0.2.0] - 2026-04-20
 
 ### Added
