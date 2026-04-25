@@ -24,6 +24,8 @@ from src.cache.result_cache import ResultCache
 from src.core.pipeline import create_pipeline_components, execute_task_pipeline
 from utils import replace_chinese_punctuation
 
+import api_client
+
 # Create global cleanup thread pool for operations that won't be affected by asyncio.cancel
 cleanup_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="cleanup")
 
@@ -461,27 +463,27 @@ DEFAULT_FINAL_SUMMARY_MERGE_STRATEGY = os.getenv(
 
 SEARCH_PROFILE_ENV_MAP: Dict[str, Dict[str, str]] = {
     "searxng-first": {
-        "SEARCH_PROVIDER_ORDER": "searxng,serpapi,serper",
+        "SEARCH_PROVIDER_ORDER": "searxng,serpapi,tavily,serper",
         "SEARCH_PROVIDER_MODE": "fallback",
     },
     "serp-first": {
-        "SEARCH_PROVIDER_ORDER": "serpapi,searxng,serper",
+        "SEARCH_PROVIDER_ORDER": "serpapi,tavily,searxng,serper",
         "SEARCH_PROVIDER_MODE": "fallback",
     },
     "multi-route": {
-        "SEARCH_PROVIDER_ORDER": "serpapi,searxng,serper",
+        "SEARCH_PROVIDER_ORDER": "serpapi,tavily,searxng,serper",
         "SEARCH_PROVIDER_MODE": "merge",
     },
     "parallel": {
-        "SEARCH_PROVIDER_ORDER": "serpapi,searxng,serper",
+        "SEARCH_PROVIDER_ORDER": "serpapi,tavily,searxng,serper",
         "SEARCH_PROVIDER_MODE": "parallel",
         "SEARCH_PROVIDER_PARALLEL_MAX_WAIT_MS": "4500",
         "SEARCH_PROVIDER_PARALLEL_MIN_SUCCESS": "1",
     },
     "parallel-trusted": {
-        "SEARCH_PROVIDER_ORDER": "serpapi,searxng,serper",
+        "SEARCH_PROVIDER_ORDER": "serpapi,tavily,searxng,serper",
         "SEARCH_PROVIDER_MODE": "parallel_conf_fallback",
-        "SEARCH_PROVIDER_TRUSTED_ORDER": "serpapi,searxng,serper",
+        "SEARCH_PROVIDER_TRUSTED_ORDER": "serpapi,tavily,searxng,serper",
         "SEARCH_PROVIDER_PARALLEL_MAX_WAIT_MS": "4500",
         "SEARCH_PROVIDER_PARALLEL_MIN_SUCCESS": "1",
         "SEARCH_PROVIDER_FALLBACK_MAX_STEPS": "3",
@@ -2003,11 +2005,41 @@ def _linkify_reference_citations(markdown_text: str) -> str:
     return "".join(pieces) + references_section
 
 
+FORMAT_ERROR_MARKERS = (
+    "No \\boxed{} content found in the final answer.",
+    "No \\boxed{} content found.",
+    "Task incomplete - reached maximum turns",
+)
+
+
+def _humanize_pipeline_fallback(text: str) -> str:
+    """探测 pipeline 在未收敛时的兜底文案，重写为对用户友好的中文提示。
+
+    pipeline 在 LLM 未输出 \\boxed{} 或达到最大轮次时，会用一句固定字符串占位。
+    直接展示该字符串容易让用户误以为 demo 出错。这里集中重写，避免散落补丁。
+    """
+    stripped = (text or "").strip()
+    if not stripped:
+        return text
+    for marker in FORMAT_ERROR_MARKERS:
+        if marker in stripped:
+            return (
+                "> 本轮检索未能在限定回合内收敛出可信结论（模型未输出 `\\boxed{}` 或达到最大轮次）。\n"
+                "> 建议操作：稍后重试一次；若仍未收敛，可降级 `mode`（如 `verified` → `balanced`）"
+                "或换用更明确的提问表达。"
+            )
+    return text
+
+
 def _build_summary_section(final_summary_blocks: List[str]) -> List[str]:
     if not final_summary_blocks:
         return []
-    lines = ["## 📋 研究总结\n\n"]
-    lines.extend(_linkify_reference_citations(block) for block in final_summary_blocks)
+    # 前置空字符串项：确保和上一个 HTML block（如 search-step-board 的 </div>）之间
+    # 有一个空行，否则 CommonMark 会把 `## 📋 研究总结` 视为 HTML block 的延续，
+    # 导致 `## ` 字面显示而非作为标题渲染。
+    lines = ["", "## 📋 研究总结\n\n"]
+    rewritten = (_humanize_pipeline_fallback(block) for block in final_summary_blocks)
+    lines.extend(_linkify_reference_citations(block) for block in rewritten)
     return lines
 
 
@@ -2437,6 +2469,206 @@ def _spinner_markup(running: bool, status_text: str = "生成中...") -> str:
     )
 
 
+# ---------- API 模式（断电重连）------------------------------------------------
+#
+# 当 BACKEND_MODE=api 时，gradio_run 不再本地跑 pipeline，而是：
+#   1) POST /v1/research 创建任务，拿到服务端 task_id
+#   2) 把 task_id 写入 ui_state（前端 JS 据此把 ?task_id=xxx 同步到 URL）
+#   3) 订阅 GET /v1/research/{task_id}/stream，把 SSE 事件喂给既有渲染逻辑
+#
+# 刷新页面后由 demo.load -> reconnect_or_init 接管：
+#   - 从 URL ?task_id 取回任务，再次订阅 SSE，服务端会回放历史事件 + 实时增量。
+
+
+def _build_initial_ui_state(
+    *,
+    task_id: Optional[str],
+    mode: str,
+    search_profile: str,
+    search_result_num: int,
+    verification_min_search_rounds: int,
+    output_detail_level: str,
+    render_mode: str,
+    summary_merge_strategy: str,
+) -> dict:
+    return {
+        "task_id": task_id,
+        "mode": mode,
+        "search_profile": search_profile,
+        "search_result_num": search_result_num,
+        "verification_min_search_rounds": verification_min_search_rounds,
+        "render_mode": render_mode,
+        "output_detail_level": output_detail_level,
+        "final_summary_merge_strategy": summary_merge_strategy,
+    }
+
+
+async def _render_stream_via_api(
+    task_id: str,
+    *,
+    ui_state: dict,
+    resolved_ui_render_mode: str,
+    resolved_summary_merge_strategy: str,
+):
+    """订阅 api-server SSE 流并按既有渲染管线产出 Gradio 输出元组。
+
+    Yields:
+        (markdown, run_btn_update, stop_btn_update, ui_state)
+    """
+    state = _init_render_state()
+    initial_markdown = _render_markdown(
+        state,
+        render_mode=resolved_ui_render_mode,
+        final_summary_merge_strategy=resolved_summary_merge_strategy,
+    )
+    yield (
+        initial_markdown + _spinner_markup(True, _format_runtime_status_label(state)),
+        gr.update(interactive=False),
+        gr.update(interactive=True),
+        ui_state,
+    )
+
+    # 取消检查复用本地 _CANCEL_FLAGS：stop 按钮按下后会 set 标志
+    async def _cancel_check() -> bool:
+        return await _disconnect_check_for_task(task_id)
+
+    try:
+        async for message in api_client.stream_task_events(
+            task_id, cancel_check=_cancel_check
+        ):
+            event_type = message.get("event", "unknown")
+            if event_type == "done":
+                # 服务端终态信号：completed / cancelled / failed / cached
+                done_status = (message.get("data") or {}).get("status", "completed")
+                if done_status == "failed":
+                    state["errors"].append("任务执行失败")
+                break
+            if event_type == "heartbeat":
+                state = _update_state_with_event(state, message)
+                heartbeat_ts = (message.get("data") or {}).get("timestamp")
+                heartbeat_label = _format_runtime_status_label(state, heartbeat_ts)
+                heartbeat_md = _render_markdown(
+                    state,
+                    render_mode=resolved_ui_render_mode,
+                    final_summary_merge_strategy=resolved_summary_merge_strategy,
+                )
+                yield (
+                    heartbeat_md + _spinner_markup(True, heartbeat_label),
+                    gr.update(interactive=False),
+                    gr.update(interactive=True),
+                    ui_state,
+                )
+                continue
+            state = _update_state_with_event(state, message)
+            md = _render_markdown(
+                state,
+                render_mode=resolved_ui_render_mode,
+                final_summary_merge_strategy=resolved_summary_merge_strategy,
+            )
+            yield (
+                md + _spinner_markup(True, _format_runtime_status_label(state)),
+                gr.update(interactive=False),
+                gr.update(interactive=True),
+                ui_state,
+            )
+            await asyncio.sleep(0.01)
+    except api_client.TaskNotFoundError:
+        yield (
+            f"任务 `{task_id}` 不存在或已过期，请重新发起检索。",
+            gr.update(interactive=True),
+            gr.update(interactive=False),
+            {**ui_state, "task_id": None},
+        )
+        return
+    except api_client.ApiClientError as exc:
+        logger.error("API SSE 订阅失败: %s", exc)
+        yield (
+            f"连接 api-server 失败：{exc}",
+            gr.update(interactive=True),
+            gr.update(interactive=False),
+            ui_state,
+        )
+        return
+    except Exception as exc:
+        logger.exception("API 流处理异常")
+        yield (
+            f"流处理异常：{exc}",
+            gr.update(interactive=True),
+            gr.update(interactive=False),
+            ui_state,
+        )
+        return
+
+    final_md = _render_markdown(
+        state,
+        render_mode=resolved_ui_render_mode,
+        final_summary_merge_strategy=resolved_summary_merge_strategy,
+    )
+    yield (
+        final_md,
+        gr.update(interactive=True),
+        gr.update(interactive=False),
+        ui_state,
+    )
+
+
+async def _gradio_run_via_api(
+    query: str,
+    resolved_mode: str,
+    resolved_search_profile: str,
+    resolved_search_result_num: int,
+    resolved_verification_min_rounds: int,
+    resolved_output_detail_level: str,
+    resolved_ui_render_mode: str,
+    resolved_summary_merge_strategy: str,
+    ui_state: dict,
+):
+    """API 后端模式下的 gradio_run 主体。"""
+    try:
+        created = await api_client.safe_create_task(
+            query=query,
+            mode=resolved_mode,
+            search_profile=resolved_search_profile,
+            search_result_num=resolved_search_result_num,
+            verification_min_search_rounds=resolved_verification_min_rounds,
+            output_detail_level=resolved_output_detail_level,
+        )
+    except api_client.ApiClientError as exc:
+        logger.error("api-server 创建任务失败: %s", exc)
+        yield (
+            f"提交任务到 api-server 失败：{exc}",
+            gr.update(interactive=True),
+            gr.update(interactive=False),
+            ui_state,
+        )
+        return
+
+    task_id = created.get("task_id")
+    if not task_id:
+        yield (
+            "api-server 未返回 task_id，请检查后端日志。",
+            gr.update(interactive=True),
+            gr.update(interactive=False),
+            ui_state,
+        )
+        return
+
+    new_ui_state = {**ui_state, "task_id": task_id}
+    _reset_cancel_flag(task_id)
+    _register_active_task(task_id)
+
+    try:
+        async for tup in _render_stream_via_api(
+            task_id,
+            ui_state=new_ui_state,
+            resolved_ui_render_mode=resolved_ui_render_mode,
+            resolved_summary_merge_strategy=resolved_summary_merge_strategy,
+        ):
+            yield tup
+    finally:
+        _unregister_active_task(task_id)
+
+
 async def gradio_run(
     query: str,
     mode: str,
@@ -2462,6 +2694,35 @@ async def gradio_run(
     resolved_summary_merge_strategy = _normalize_final_summary_merge_strategy(
         _get_summary_merge_for_output_detail(resolved_output_detail_level)
     )
+
+    # ===== API 后端模式：把任务交给 api-server，刷新页面可由 task_id 重连 =====
+    if api_client.is_api_mode_enabled():
+        base_state = ui_state or {}
+        new_ui_state = _build_initial_ui_state(
+            task_id=None,  # 真正的 task_id 由 api-server 生成
+            mode=resolved_mode,
+            search_profile=resolved_search_profile,
+            search_result_num=resolved_search_result_num,
+            verification_min_search_rounds=resolved_verification_min_rounds,
+            output_detail_level=resolved_output_detail_level,
+            render_mode=resolved_ui_render_mode,
+            summary_merge_strategy=resolved_summary_merge_strategy,
+        )
+        merged_state = {**base_state, **new_ui_state}
+        async for tup in _gradio_run_via_api(
+            query=query,
+            resolved_mode=resolved_mode,
+            resolved_search_profile=resolved_search_profile,
+            resolved_search_result_num=resolved_search_result_num,
+            resolved_verification_min_rounds=resolved_verification_min_rounds,
+            resolved_output_detail_level=resolved_output_detail_level,
+            resolved_ui_render_mode=resolved_ui_render_mode,
+            resolved_summary_merge_strategy=resolved_summary_merge_strategy,
+            ui_state=merged_state,
+        ):
+            yield tup
+        return
+
     task_id = str(uuid.uuid4())
     _reset_cancel_flag(task_id)
     _register_active_task(task_id)
@@ -2635,10 +2896,144 @@ def stop_current_ui(ui_state: Optional[dict] = None):
     tid = (ui_state or {}).get("task_id")
     target_ids = [tid] if tid else _get_active_task_ids()
     _cancel_task_ids(target_ids)
+    # API 模式：同步通知 api-server 设置取消标记，让 worker 协作式中止
+    if api_client.is_api_mode_enabled() and tid:
+        async def _remote_cancel():
+            try:
+                await api_client.cancel_task(tid)
+            except Exception as exc:
+                logger.warning("远程 cancel_task 失败 task_id=%s err=%s", tid, exc)
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.ensure_future(_remote_cancel())
+            else:
+                loop.run_until_complete(_remote_cancel())
+        except RuntimeError:
+            asyncio.run(_remote_cancel())
     return (
         gr.update(interactive=True),
         gr.update(interactive=False),
     )
+
+
+# ---------- 重连入口（demo.load 调用）----------------------------------------
+
+
+async def reconnect_or_init(
+    ui_state: Optional[dict],
+    request: gr.Request,
+):
+    """页面加载时根据 URL `?task_id=...` 决定是否重连任务。
+
+    Yields 与 gradio_run 相同的 4 元组：
+        (markdown, run_btn_update, stop_btn_update, ui_state)
+
+    当 URL 没有 task_id，或不在 API 模式时，仅恢复初始空闲态。
+    """
+    base_state = ui_state or {}
+
+    # 首屏空闲态：等待用户输入
+    idle_tuple = (
+        I18N[DEFAULT_LANG]["output_waiting"],
+        gr.update(interactive=True),
+        gr.update(interactive=False),
+        base_state,
+    )
+
+    if not api_client.is_api_mode_enabled():
+        yield idle_tuple
+        return
+
+    query_params = getattr(request, "query_params", {}) or {}
+    # query_params 可能是 dict / Mapping 类型
+    try:
+        task_id = query_params.get("task_id") if hasattr(query_params, "get") else None
+    except Exception:
+        task_id = None
+    if not task_id:
+        yield idle_tuple
+        return
+
+    # 校验任务是否存在
+    try:
+        snapshot = await api_client.get_task(task_id)
+    except api_client.ApiClientError as exc:
+        logger.warning("get_task 失败 task_id=%s err=%s", task_id, exc)
+        yield (
+            f"无法连接 api-server：{exc}",
+            gr.update(interactive=True),
+            gr.update(interactive=False),
+            {**base_state, "task_id": None},
+        )
+        return
+
+    if snapshot is None:
+        yield (
+            f"任务 `{task_id}` 不存在或已过期，请重新发起检索。",
+            gr.update(interactive=True),
+            gr.update(interactive=False),
+            {**base_state, "task_id": None},
+        )
+        return
+
+    # 还原任务参数到 ui_state（便于下次 stop / 取消）
+    meta = snapshot.get("meta") or {}
+    resolved_output_detail_level = _normalize_output_detail_level(
+        meta.get("output_detail_level") or DEFAULT_OUTPUT_DETAIL_LEVEL
+    )
+    resolved_ui_render_mode = _normalize_render_mode(
+        None,
+        _get_render_mode_for_output_detail(resolved_output_detail_level),
+    )
+    resolved_summary_merge_strategy = _normalize_final_summary_merge_strategy(
+        _get_summary_merge_for_output_detail(resolved_output_detail_level)
+    )
+    new_ui_state = _build_initial_ui_state(
+        task_id=task_id,
+        mode=_normalize_research_mode(meta.get("mode") or DEFAULT_RESEARCH_MODE),
+        search_profile=_normalize_search_profile(
+            meta.get("search_profile") or DEFAULT_SEARCH_PROFILE
+        ),
+        search_result_num=_normalize_search_result_num(
+            meta.get("search_result_num") or DEFAULT_SEARCH_RESULT_NUM
+        ),
+        verification_min_search_rounds=_normalize_verification_min_search_rounds(
+            meta.get("verification_min_search_rounds")
+            or DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS
+        ),
+        output_detail_level=resolved_output_detail_level,
+        render_mode=resolved_ui_render_mode,
+        summary_merge_strategy=resolved_summary_merge_strategy,
+    )
+    new_ui_state = {**base_state, **new_ui_state}
+
+    # 任何状态（queued/running/completed/cached/failed/cancelled）都通过 SSE 重建 UI：
+    #
+    # api-server 端 `_event_generator` 会从 Redis Stream 头部回放全部历史事件，
+    # 终态任务还会立即追加 `event: done`。这样无论任务进行中还是已结束，
+    # 刷新页面后看到的渲染都与实时观察完全一致（包含搜索列表、检索过程、研究总结），
+    # 而不是只展示 76 字节的兜底 result 字段。
+    #
+    # status 仅用于决定按钮可交互性：终态任务恢复 Run 可点、Stop 不可点。
+    status = (snapshot.get("status") or (meta.get("status") or "")).lower()
+    is_terminal = status in {"completed", "cached", "failed", "cancelled"}
+    if not is_terminal:
+        _reset_cancel_flag(task_id)
+        _register_active_task(task_id)
+    try:
+        async for tup in _render_stream_via_api(
+            task_id,
+            ui_state=new_ui_state,
+            resolved_ui_render_mode=resolved_ui_render_mode,
+            resolved_summary_merge_strategy=resolved_summary_merge_strategy,
+        ):
+            # 终态任务的事件流会在很短时间内结束并 yield 最终态元组（Run 可点、Stop 不可点）；
+            # 中间过程的元组保持原样按 SSE 节奏 yield。
+            yield tup
+    finally:
+        if not is_terminal:
+            _unregister_active_task(task_id)
 
 
 def stop_current_api(caller_id: Optional[str] = None):
@@ -3748,6 +4143,11 @@ def build_demo():
             padding: 22px 20px !important;
         }
     }
+
+    /* task_id <-> URL 同步桥的隐藏样式：
+       Gradio 5 中 visible=False 的组件不进入 DOM，JS 无法找到，
+       因此用 CSS 隐藏一个 visible=True 的 textbox。 */
+    #gr-task-id-bridge { position: absolute !important; left: -9999px !important; top: -9999px !important; width: 1px !important; height: 1px !important; opacity: 0 !important; pointer-events: none !important; }
     """
     custom_css = custom_css.replace("__LOCAL_FONT_FAMILY_STACK__", LOCAL_FONT_FAMILY_STACK)
 
@@ -3820,7 +4220,60 @@ def build_demo():
     })();
     </script>
     """
-    demo_head = f"{favicon_head}{skills_bind_script}"
+    # 任务 ID URL 同步桥：把 ?task_id=xxx 写入 / 读取 URL。
+    task_id_url_bridge_script = """
+    <script>
+    (() => {
+        // gradio_run / reconnect_or_init 通过隐藏 textbox#gr-task-id-bridge 写入当前 task_id；
+        // 我们监听其变化，把 task_id 同步到 URL，避免刷新丢失。
+        const observe = () => {
+            const wrapper = document.querySelector('#gr-task-id-bridge');
+            if (!wrapper) { return false; }
+            const input = wrapper.querySelector('textarea, input');
+            if (!input) { return false; }
+            const sync = () => {
+                const value = (input.value || '').trim();
+                const url = new URL(window.location.href);
+                const current = url.searchParams.get('task_id') || '';
+                if (value && value !== current) {
+                    url.searchParams.set('task_id', value);
+                    window.history.replaceState(null, '', url.toString());
+                } else if (!value && current) {
+                    url.searchParams.delete('task_id');
+                    window.history.replaceState(null, '', url.toString());
+                }
+            };
+            input.addEventListener('input', sync);
+            input.addEventListener('change', sync);
+            // 兼容 Gradio 内部 set value 但不触发 input 事件的情况
+            const observer = new MutationObserver(sync);
+            observer.observe(input, { attributes: true, attributeFilter: ['value'] });
+            // 初次轮询
+            let last = input.value;
+            window.setInterval(() => {
+                if (input.value !== last) {
+                    last = input.value;
+                    sync();
+                }
+            }, 500);
+            sync();
+            return true;
+        };
+        const start = () => {
+            if (observe()) { return; }
+            const t = window.setInterval(() => {
+                if (observe()) { window.clearInterval(t); }
+            }, 300);
+        };
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', start, { once: true });
+        } else {
+            start();
+        }
+    })();
+    </script>
+    """
+    demo_head = f"{favicon_head}{skills_bind_script}{task_id_url_bridge_script}"
 
     def _get_i18n(lang: str):
         return I18N.get(lang, I18N[DEFAULT_LANG])
@@ -4016,6 +4469,19 @@ def build_demo():
         api_stop_output = gr.JSON(visible=False)
         api_stop_btn = gr.Button(value="api-stop", visible=False)
 
+        # task_id <-> URL 同步桥：JS 监听该 textbox 的 value 变化，把 ?task_id=xxx 写入 URL。
+        # 注意：Gradio 5 中 visible=False 的组件不会进入 DOM，因此这里 visible=True，
+        # 通过 #gr-task-id-bridge 的 CSS 规则把它定位到屏幕外。
+        task_id_box = gr.Textbox(
+            value="",
+            visible=True,
+            elem_id="gr-task-id-bridge",
+            interactive=False,
+            show_label=False,
+            container=False,
+            label=None,
+        )
+
         # State
         ui_state = gr.State(
             {
@@ -4054,6 +4520,29 @@ def build_demo():
             ],
             outputs=[out_md, run_btn, stop_btn, ui_state],
             api_name="run_research_stream",
+        )
+
+        # ui_state 任意一次更新都同步 task_id 到隐藏 textbox（JS 据此写 URL）
+        def _extract_task_id(state: Optional[dict]) -> str:
+            if not state:
+                return ""
+            tid = state.get("task_id")
+            return tid or ""
+
+        ui_state.change(
+            fn=_extract_task_id,
+            inputs=[ui_state],
+            outputs=[task_id_box],
+            api_name=False,
+            queue=False,
+        )
+
+        # 页面加载时根据 URL ?task_id 决定空闲态 / 重连进行中的任务
+        demo.load(
+            fn=reconnect_or_init,
+            inputs=[ui_state],
+            outputs=[out_md, run_btn, stop_btn, ui_state],
+            api_name=False,
         )
         mode_selector.change(
             fn=_update_verification_rounds_visibility,

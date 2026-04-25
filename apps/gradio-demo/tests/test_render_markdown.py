@@ -196,3 +196,61 @@ def test_linkify_reference_citations_skips_code_blocks():
     assert 'class="ref-citation">[1]</a>' in linked
     # 代码块内部的 [1] 保持原样，不被替换。
     assert "print(\"[1] not a citation\")" in linked
+
+
+def test_humanize_pipeline_fallback_rewrites_format_error():
+    demo_main = _load_demo_main()
+    out = demo_main._humanize_pipeline_fallback(
+        "No \\boxed{} content found in the final answer."
+    )
+    assert "\\boxed{}" in out  # 重写后仍然解释了原因
+    assert "未能" in out and "降级" in out
+
+
+def test_humanize_pipeline_fallback_rewrites_incomplete_marker():
+    demo_main = _load_demo_main()
+    out = demo_main._humanize_pipeline_fallback(
+        "Task incomplete - reached maximum turns. Will retry with failure experience."
+    )
+    assert "未能" in out
+
+
+def test_humanize_pipeline_fallback_keeps_normal_summary():
+    demo_main = _load_demo_main()
+    text = "## 关键结论\n本研究表明...证据 [1] [2]"
+    assert demo_main._humanize_pipeline_fallback(text) == text
+
+
+def test_build_summary_section_humanizes_fallback():
+    demo_main = _load_demo_main()
+    blocks = ["No \\boxed{} content found in the final answer."]
+    rendered = "".join(demo_main._build_summary_section(blocks))
+    assert "## 📋 研究总结" in rendered
+    assert "未能" in rendered
+    # 原始字符串不应直接展示
+    assert "No \\boxed{} content found in the final answer." not in rendered
+
+
+def test_summary_section_has_blank_line_after_html_block():
+    """避免回归：search-step-board </div> 与 ## 📋 研究总结 之间必须有空行，
+    否则 CommonMark 会把 `##` 视为 HTML block 的延续，标题无法渲染。
+    """
+    demo_main = _load_demo_main()
+    state = demo_main._init_render_state()
+    events = [
+        {"event": "start_of_agent", "data": {"agent_id": "a1", "agent_name": "main"}},
+        {"event": "tool_call", "data": {"tool_call_id": "t1", "tool_name": "google_search", "tool_input": {"q": "demo"}}},
+        {"event": "tool_call", "data": {"tool_call_id": "t1", "tool_name": "google_search", "tool_input": {"q": "demo", "result": {"organic": []}}}},
+        {"event": "start_of_agent", "data": {"agent_id": "a2", "agent_name": "Final Summary"}},
+        {"event": "tool_call", "data": {"tool_call_id": "fs1", "tool_name": "show_text", "tool_input": {"text": "# 关键结论\n本研究表明..."}}},
+    ]
+    for e in events:
+        state = demo_main._update_state_with_event(state, e)
+    md = demo_main._render_markdown(state)
+    # `</div>` 与 `## 📋 研究总结` 之间应有至少一个空行（即 `\n\n`）
+    idx_div = md.rfind("</div>", 0, md.find("## 📋 研究总结"))
+    idx_h2 = md.find("## 📋 研究总结")
+    between = md[idx_div + len("</div>"):idx_h2]
+    assert "\n\n" in between, (
+        f"HTML block 与下一个 markdown 标题之间必须空行，实际 between={between!r}"
+    )
