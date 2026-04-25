@@ -9,7 +9,26 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Added
 
-- 规划：结构化冲突检测报告与专项评测集
+- **Demo 断电重连（gradio-demo）**：研究任务可在浏览器刷新或网络中断后通过 URL `?task_id=xxx` 自动续看完整进度，不再丢失中间结果
+  - 新增 `BACKEND_MODE=api` 后端模式，启用后 demo 不再在自己进程内执行 pipeline，而是把每次检索作为一个任务投递到 `api-server`
+  - 新增 `apps/gradio-demo/api_client.py`：基于 `aiohttp` 的轻量 HTTP/SSE 客户端，封装 `create_task` / `get_task` / `cancel_task` / `stream_task_events` 四个端点；手撕 SSE 解析器避免新增依赖
+  - 任务创建后服务端 `task_id` 通过 CSS 隐藏的 `<textarea id="gr-task-id-bridge">` + `MutationObserver` 同步写入 `?task_id=xxx`（`history.replaceState`，无页面跳转）
+  - `demo.load(reconnect_or_init)` 自动从 URL `query_params["task_id"]` 接管：所有非空任务状态都通过 SSE 重建 UI，由 `api-server` 从 Redis Stream 头部回放历史事件 + 阻塞等待新事件，刷新后渲染与实时观察体验完全一致
+  - "停止"按钮在 API 模式下额外调用 `POST /v1/research/{task_id}/cancel`，触发 worker 协作式中止
+  - 保留 `BACKEND_MODE=local` 默认值与原有进程内执行路径，向后兼容
+- **未收敛任务文案中文化**：探测 pipeline 兜底文案（`No \boxed{} content found in the final answer.` / `Task incomplete - reached maximum turns ...`），在研究总结区域重写为"本轮检索未能在限定回合内收敛出可信结论 ... 建议降级 mode 或重试"，提升可读性，避免用户误以为 demo 故障
+- **新增 21 条单元测试**：
+  - 16 条 `test_api_client.py`：BACKEND_MODE 切换 / SSE 单块解析（默认事件名、多行 data、注释、id/retry、非 JSON 回退）/ 4 端点 + SSE 流端到端（基于本地 aiohttp 测试服务）
+  - 4 条 `test_render_markdown.py`：`_humanize_pipeline_fallback` 与 `_build_summary_section` 的兜底文案重写覆盖
+  - 1 条 `test_render_markdown.py`：正常总结块不被误改
+
+### Changed
+
+- `.env.compose.example`、`apps/gradio-demo/.env.example` 新增 `BACKEND_MODE` / `API_BASE_URL` / `API_BEARER_TOKEN` 三个配置项及中文注释
+
+### Notes
+
+- Gradio 5 中 `visible=False` 的组件不会进入 DOM，因此 `task_id_box` 必须 `visible=True` + CSS 移到屏幕外，才能被 JS 桥找到。已加入相关注释与 CSS 规则。
 
 ## [0.2.1] - 2026-04-23
 
