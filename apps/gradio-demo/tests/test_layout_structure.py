@@ -3,6 +3,8 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 GRADIO_DEMO_DIR = PROJECT_ROOT / "apps" / "gradio-demo"
@@ -54,3 +56,63 @@ def test_build_demo_uses_two_column_layout_with_right_options():
     ]
     assert len(run_research_api) == 1
     assert len(run_research_api[0]["inputs"]) == 6
+
+
+def test_build_demo_syncs_task_id_bridge_for_load_and_run_stream():
+    demo_main = _load_demo_main()
+    demo = demo_main.build_demo()
+    components = demo.config["components"]
+    dependencies = demo.config["dependencies"]
+
+    component_id_by_elem_id = {}
+    for component in components:
+        elem_id = component.get("props", {}).get("elem_id")
+        if elem_id:
+            component_id_by_elem_id[elem_id] = component.get("id")
+
+    task_id_bridge_id = component_id_by_elem_id["gr-task-id-bridge"]
+
+    load_dependencies = [
+        dependency
+        for dependency in dependencies
+        if dependency.get("targets")
+        and any(target[1] == "load" for target in dependency["targets"])
+    ]
+    assert len(load_dependencies) == 1
+    assert task_id_bridge_id in load_dependencies[0]["outputs"]
+
+    run_stream_dependencies = [
+        dependency
+        for dependency in dependencies
+        if dependency.get("api_name") == "run_research_stream"
+    ]
+    assert len(run_stream_dependencies) == 1
+    assert task_id_bridge_id in run_stream_dependencies[0]["outputs"]
+
+
+def test_build_demo_head_prefills_task_id_bridge_from_url():
+    demo_main = _load_demo_main()
+    demo = demo_main.build_demo()
+    head = demo.config.get("head") or ""
+
+    assert "initialUrlTaskId" in head
+    assert "if (!input.value && initialUrlTaskId)" in head
+
+
+def test_build_launch_kwargs_defaults_to_blocking():
+    demo_main = _load_demo_main()
+
+    launch_kwargs = demo_main._build_launch_kwargs("0.0.0.0", 8080)
+
+    assert launch_kwargs["server_name"] == "0.0.0.0"
+    assert launch_kwargs["server_port"] == 8080
+    assert launch_kwargs["prevent_thread_lock"] is False
+
+
+def test_build_launch_kwargs_respects_env_override(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("GRADIO_PREVENT_THREAD_LOCK", "true")
+    demo_main = _load_demo_main()
+
+    launch_kwargs = demo_main._build_launch_kwargs("0.0.0.0", 8080)
+
+    assert launch_kwargs["prevent_thread_lock"] is True

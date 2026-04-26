@@ -2236,7 +2236,18 @@ def _render_markdown(
         else:
             lines.extend(process_lines)
 
-    return "\n".join(lines) if lines else "*等待开始研究...*"
+    if lines:
+        return "\n".join(lines)
+
+    runtime_stage = state.get("runtime_stage") or {}
+    if float(runtime_stage.get("updated_at") or 0) > 0:
+        status_label = _format_runtime_status_label(state)
+        return (
+            f"*{status_label}*\n\n"
+            "> 当前任务已启动，暂时还没有可展示的正文或工具输出。"
+        )
+
+    return "*等待开始研究...*"
 
 
 def _update_state_with_event(state: dict, message: dict):
@@ -2503,19 +2514,78 @@ def _build_initial_ui_state(
     }
 
 
+def _task_id_bridge_value(state: Optional[dict]) -> str:
+    if not state:
+        return ""
+    task_id = state.get("task_id")
+    return str(task_id or "")
+
+
+def _build_launch_kwargs(host: str, port: int) -> dict:
+    launch_kwargs = {
+        "server_name": host,
+        "server_port": port,
+        "prevent_thread_lock": _read_env_bool(
+            "GRADIO_PREVENT_THREAD_LOCK", False
+        ),
+    }
+    allowed_paths = _collect_gradio_allowed_paths()
+    if allowed_paths:
+        launch_kwargs["allowed_paths"] = allowed_paths
+    return launch_kwargs
+
+
+def _build_reconnect_initial_render_state(snapshot: dict) -> dict:
+    state = _init_render_state()
+    meta = snapshot.get("meta") or {}
+    status = str(snapshot.get("status") or meta.get("status") or "").strip().lower()
+    current_stage = str(meta.get("current_stage") or "").strip().lower()
+    try:
+        event_count = max(0, int(snapshot.get("event_count") or 0))
+    except (TypeError, ValueError):
+        event_count = 0
+
+    runtime_stage = state.setdefault("runtime_stage", {})
+    if status == "queued":
+        runtime_stage["phase"] = "排队"
+        runtime_stage["detail"] = "任务排队中"
+    elif status == "running":
+        if current_stage.startswith("search") or "search" in current_stage or "检索" in current_stage:
+            runtime_stage["phase"] = "检索"
+        elif current_stage.startswith("tool") or "tool" in current_stage or "工具" in current_stage:
+            runtime_stage["phase"] = "工具调用"
+        elif current_stage.startswith("summary") or "summary" in current_stage or "总结" in current_stage:
+            runtime_stage["phase"] = "总结"
+        else:
+            runtime_stage["phase"] = "推理"
+        runtime_stage["detail"] = "任务恢复中"
+    else:
+        return state
+
+    has_started = bool(meta.get("started_at")) or event_count > 0 or bool(current_stage)
+    if status == "running" and not has_started:
+        return state
+
+    runtime_stage["updated_at"] = float(
+        meta.get("started_at") or meta.get("created_at") or time.time()
+    )
+    return state
+
+
 async def _render_stream_via_api(
     task_id: str,
     *,
     ui_state: dict,
     resolved_ui_render_mode: str,
     resolved_summary_merge_strategy: str,
+    initial_state: Optional[dict] = None,
 ):
     """订阅 api-server SSE 流并按既有渲染管线产出 Gradio 输出元组。
 
     Yields:
         (markdown, run_btn_update, stop_btn_update, ui_state)
     """
-    state = _init_render_state()
+    state = initial_state or _init_render_state()
     initial_markdown = _render_markdown(
         state,
         render_mode=resolved_ui_render_mode,
@@ -2526,6 +2596,7 @@ async def _render_stream_via_api(
         gr.update(interactive=False),
         gr.update(interactive=True),
         ui_state,
+        _task_id_bridge_value(ui_state),
     )
 
     # 取消检查复用本地 _CANCEL_FLAGS：stop 按钮按下后会 set 标志
@@ -2557,6 +2628,7 @@ async def _render_stream_via_api(
                     gr.update(interactive=False),
                     gr.update(interactive=True),
                     ui_state,
+                    _task_id_bridge_value(ui_state),
                 )
                 continue
             state = _update_state_with_event(state, message)
@@ -2570,14 +2642,17 @@ async def _render_stream_via_api(
                 gr.update(interactive=False),
                 gr.update(interactive=True),
                 ui_state,
+                _task_id_bridge_value(ui_state),
             )
             await asyncio.sleep(0.01)
     except api_client.TaskNotFoundError:
+        cleared_ui_state = {**ui_state, "task_id": None}
         yield (
             f"任务 `{task_id}` 不存在或已过期，请重新发起检索。",
             gr.update(interactive=True),
             gr.update(interactive=False),
-            {**ui_state, "task_id": None},
+            cleared_ui_state,
+            _task_id_bridge_value(cleared_ui_state),
         )
         return
     except api_client.ApiClientError as exc:
@@ -2587,6 +2662,7 @@ async def _render_stream_via_api(
             gr.update(interactive=True),
             gr.update(interactive=False),
             ui_state,
+            _task_id_bridge_value(ui_state),
         )
         return
     except Exception as exc:
@@ -2596,6 +2672,7 @@ async def _render_stream_via_api(
             gr.update(interactive=True),
             gr.update(interactive=False),
             ui_state,
+            _task_id_bridge_value(ui_state),
         )
         return
 
@@ -2609,6 +2686,7 @@ async def _render_stream_via_api(
         gr.update(interactive=True),
         gr.update(interactive=False),
         ui_state,
+        _task_id_bridge_value(ui_state),
     )
 
 
@@ -2640,6 +2718,7 @@ async def _gradio_run_via_api(
             gr.update(interactive=True),
             gr.update(interactive=False),
             ui_state,
+            _task_id_bridge_value(ui_state),
         )
         return
 
@@ -2650,6 +2729,7 @@ async def _gradio_run_via_api(
             gr.update(interactive=True),
             gr.update(interactive=False),
             ui_state,
+            _task_id_bridge_value(ui_state),
         )
         return
 
@@ -2762,6 +2842,7 @@ async def gradio_run(
             gr.update(interactive=False),
             gr.update(interactive=True),
             ui_state,
+            _task_id_bridge_value(ui_state),
         )
         async for message in stream_events_optimized(
             task_id,
@@ -2788,6 +2869,7 @@ async def gradio_run(
                     gr.update(interactive=False),
                     gr.update(interactive=True),
                     ui_state,
+                    _task_id_bridge_value(ui_state),
                 )
                 continue
 
@@ -2802,6 +2884,7 @@ async def gradio_run(
                 gr.update(interactive=False),
                 gr.update(interactive=True),
                 ui_state,
+                _task_id_bridge_value(ui_state),
             )
             # Small delay to allow Gradio to process the update
             await asyncio.sleep(0.01)
@@ -2815,6 +2898,7 @@ async def gradio_run(
             gr.update(interactive=True),
             gr.update(interactive=False),
             ui_state,
+            _task_id_bridge_value(ui_state),
         )
     finally:
         _unregister_active_task(task_id)
@@ -2939,6 +3023,7 @@ async def reconnect_or_init(
         gr.update(interactive=True),
         gr.update(interactive=False),
         base_state,
+        _task_id_bridge_value(base_state),
     )
 
     if not api_client.is_api_mode_enabled():
@@ -2959,21 +3044,25 @@ async def reconnect_or_init(
     try:
         snapshot = await api_client.get_task(task_id)
     except api_client.ApiClientError as exc:
+        cleared_ui_state = {**base_state, "task_id": None}
         logger.warning("get_task 失败 task_id=%s err=%s", task_id, exc)
         yield (
             f"无法连接 api-server：{exc}",
             gr.update(interactive=True),
             gr.update(interactive=False),
-            {**base_state, "task_id": None},
+            cleared_ui_state,
+            _task_id_bridge_value(cleared_ui_state),
         )
         return
 
     if snapshot is None:
+        cleared_ui_state = {**base_state, "task_id": None}
         yield (
             f"任务 `{task_id}` 不存在或已过期，请重新发起检索。",
             gr.update(interactive=True),
             gr.update(interactive=False),
-            {**base_state, "task_id": None},
+            cleared_ui_state,
+            _task_id_bridge_value(cleared_ui_state),
         )
         return
 
@@ -3018,6 +3107,7 @@ async def reconnect_or_init(
     # status 仅用于决定按钮可交互性：终态任务恢复 Run 可点、Stop 不可点。
     status = (snapshot.get("status") or (meta.get("status") or "")).lower()
     is_terminal = status in {"completed", "cached", "failed", "cancelled"}
+    initial_render_state = _build_reconnect_initial_render_state(snapshot)
     if not is_terminal:
         _reset_cancel_flag(task_id)
         _register_active_task(task_id)
@@ -3027,6 +3117,7 @@ async def reconnect_or_init(
             ui_state=new_ui_state,
             resolved_ui_render_mode=resolved_ui_render_mode,
             resolved_summary_merge_strategy=resolved_summary_merge_strategy,
+            initial_state=initial_render_state,
         ):
             # 终态任务的事件流会在很短时间内结束并 yield 最终态元组（Run 可点、Stop 不可点）；
             # 中间过程的元组保持原样按 SSE 节奏 yield。
@@ -4231,6 +4322,10 @@ def build_demo():
             if (!wrapper) { return false; }
             const input = wrapper.querySelector('textarea, input');
             if (!input) { return false; }
+            const initialUrlTaskId = new URL(window.location.href).searchParams.get('task_id') || '';
+            if (!input.value && initialUrlTaskId) {
+                input.value = initialUrlTaskId;
+            }
             const sync = () => {
                 const value = (input.value || '').trim();
                 const url = new URL(window.location.href);
@@ -4518,19 +4613,13 @@ def build_demo():
                 output_detail_level_selector,
                 ui_state,
             ],
-            outputs=[out_md, run_btn, stop_btn, ui_state],
+            outputs=[out_md, run_btn, stop_btn, ui_state, task_id_box],
             api_name="run_research_stream",
         )
 
         # ui_state 任意一次更新都同步 task_id 到隐藏 textbox（JS 据此写 URL）
-        def _extract_task_id(state: Optional[dict]) -> str:
-            if not state:
-                return ""
-            tid = state.get("task_id")
-            return tid or ""
-
         ui_state.change(
-            fn=_extract_task_id,
+            fn=_task_id_bridge_value,
             inputs=[ui_state],
             outputs=[task_id_box],
             api_name=False,
@@ -4541,7 +4630,7 @@ def build_demo():
         demo.load(
             fn=reconnect_or_init,
             inputs=[ui_state],
-            outputs=[out_md, run_btn, stop_btn, ui_state],
+            outputs=[out_md, run_btn, stop_btn, ui_state, task_id_box],
             api_name=False,
         )
         mode_selector.change(
@@ -4626,11 +4715,5 @@ if __name__ == "__main__":
     demo = build_demo()
     host = os.getenv("HOST", "0.0.0.0")
     port = int(os.getenv("PORT", "8080"))
-    allowed_paths = _collect_gradio_allowed_paths()
-    launch_kwargs = {
-        "server_name": host,
-        "server_port": port,
-    }
-    if allowed_paths:
-        launch_kwargs["allowed_paths"] = allowed_paths
+    launch_kwargs = _build_launch_kwargs(host, port)
     demo.queue().launch(**launch_kwargs)
