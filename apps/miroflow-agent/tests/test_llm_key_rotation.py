@@ -9,19 +9,15 @@
 - Key 全部耗尽时优雅报错，不无限循环
 """
 
-import asyncio
-import dataclasses
+import importlib
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 from omegaconf import OmegaConf
 from openai import RateLimitError
-
-from miroflow_tools.mcp_servers.utils.key_pool import KeyPool
 
 # ---------------------------------------------------------------------------
 # 确保测试可直接导入项目源码
@@ -32,7 +28,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.llm.providers.openai_client import OpenAIClient
+OpenAIClient = importlib.import_module("src.llm.providers.openai_client").OpenAIClient
 
 
 # ---------------------------------------------------------------------------
@@ -161,6 +157,26 @@ class TestKeyPoolInit:
             client = OpenAIClient(task_id="test-2", cfg=cfg, task_log=task_log)
         assert client._key_pool.size == 1
         assert client._key_pool.current_key() == "single-fallback-key"
+
+
+class TestOpenAISdkRetries:
+    def test_sdk_internal_retries_disabled_by_default(self, monkeypatch):
+        monkeypatch.delenv("OPENAI_SDK_MAX_RETRIES", raising=False)
+        task_log = _make_task_log()
+        cfg = _make_minimal_cfg()
+
+        client = OpenAIClient(task_id="test-sdk-retries", cfg=cfg, task_log=task_log)
+
+        assert client.client.max_retries == 0
+
+    def test_sdk_internal_retries_can_be_overridden(self, monkeypatch):
+        monkeypatch.setenv("OPENAI_SDK_MAX_RETRIES", "1")
+        task_log = _make_task_log()
+        cfg = _make_minimal_cfg()
+
+        client = OpenAIClient(task_id="test-sdk-retries-override", cfg=cfg, task_log=task_log)
+
+        assert client.client.max_retries == 1
 
 
 # ===========================================================================

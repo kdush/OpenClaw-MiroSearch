@@ -11,6 +11,7 @@ This module provides the AnswerGenerator class that handles:
 - Context management fallback strategies
 """
 
+import asyncio
 import logging
 import os
 import time
@@ -36,6 +37,9 @@ logger = logging.getLogger(__name__)
 
 # Safety limits for retry loops
 DEFAULT_MAX_FINAL_ANSWER_RETRIES = 3
+# 单次 LLM 调用的总墙时超时（防止 SDK 内部静默卡死，与 LLM_HTTP_TIMEOUT_SECONDS 形成多层防护）。
+# 默认 480 秒：覆盖 LLM_HTTP_TIMEOUT_SECONDS=90 + max_retries=4 的最坏组合，并留出重试间隔余量。
+DEFAULT_LLM_CALL_WALL_TIMEOUT_SECONDS = 480.0
 RESEARCH_COMPACT_TARGET_MAX_CHARS = max(
     300, int(os.getenv("RESEARCH_COMPACT_TARGET_MAX_CHARS", "1200"))
 )
@@ -154,6 +158,9 @@ class AnswerGenerator:
             str(domain).strip().lower() for domain in raw_domains if str(domain).strip()
         ]
 
+        # 阶段心跳同名去重，避免高频心跳刷 stderr
+        self._last_stage_log_key: Optional[Tuple[Any, ...]] = None
+
     async def _emit_stage_heartbeat(
         self,
         phase: str,
@@ -163,12 +170,24 @@ class AnswerGenerator:
         agent_name: str = "Final Summary",
     ) -> None:
         """发送阶段心跳，便于前端展示总结/校验阶段进度。"""
+        normalized_turn = max(0, int(turn))
+        log_key = (phase, normalized_turn, detail, agent_name)
+        if log_key != self._last_stage_log_key:
+            self._last_stage_log_key = log_key
+            logger.info(
+                "🫀 stage_heartbeat | agent=%s | phase=%s | turn=%s | detail=%s",
+                agent_name,
+                phase,
+                normalized_turn,
+                detail,
+            )
+
         try:
             await self.stream.update(
                 "stage_heartbeat",
                 {
                     "phase": phase,
-                    "turn": max(0, int(turn)),
+                    "turn": normalized_turn,
                     "detail": detail,
                     "agent_name": agent_name,
                     "timestamp": time.time(),
@@ -400,15 +419,34 @@ class AnswerGenerator:
         """
         original_message_history = message_history
         llm_call_start_time = time.perf_counter()
+        # 调用前先打印一次 "LLM Call Start"，便于在 SDK 静默卡死场景下定位问题位置。
+        self.task_log.log_step(
+            "info",
+            f"{purpose} | LLM Call Start",
+            f"requesting agent_type={agent_type}, history_len={len(message_history)}",
+        )
+        # 总墙时超时：防止 openai SDK / httpx 在异常网络条件下静默死锁。
         try:
-            response, message_history = await self.llm_client.create_message(
-                system_prompt=system_prompt,
-                message_history=message_history,
-                tool_definitions=tool_definitions,
-                keep_tool_result=self.cfg.agent.keep_tool_result,
-                step_id=step_id,
-                task_log=self.task_log,
-                agent_type=agent_type,
+            wall_timeout = float(
+                os.environ.get(
+                    "LLM_CALL_WALL_TIMEOUT_SECONDS",
+                    DEFAULT_LLM_CALL_WALL_TIMEOUT_SECONDS,
+                )
+            )
+        except (TypeError, ValueError):
+            wall_timeout = DEFAULT_LLM_CALL_WALL_TIMEOUT_SECONDS
+        try:
+            response, message_history = await asyncio.wait_for(
+                self.llm_client.create_message(
+                    system_prompt=system_prompt,
+                    message_history=message_history,
+                    tool_definitions=tool_definitions,
+                    keep_tool_result=self.cfg.agent.keep_tool_result,
+                    step_id=step_id,
+                    task_log=self.task_log,
+                    agent_type=agent_type,
+                ),
+                timeout=wall_timeout,
             )
 
             if ErrorBox.is_error_box(response):
@@ -470,6 +508,28 @@ class AnswerGenerator:
                 message_history,
             )
 
+        except asyncio.TimeoutError:
+            elapsed_ms = int((time.perf_counter() - llm_call_start_time) * 1000)
+            self.task_log.record_stage_timing(
+                f"answer_generator.llm_call.{agent_type}",
+                elapsed_ms,
+                message=f"{purpose} wall timeout after {elapsed_ms}ms",
+                metadata={
+                    "purpose": purpose,
+                    "agent_type": agent_type,
+                    "tool_definition_count": len(tool_definitions or []),
+                    "status": "wall_timeout",
+                    "wall_timeout_seconds": wall_timeout,
+                },
+                info_level="error",
+            )
+            self.task_log.log_step(
+                "error",
+                f"{purpose} | LLM Wall Timeout",
+                f"{purpose} exceeded wall timeout {wall_timeout:.1f}s, treating as failure to allow retry/failback.",
+            )
+            # Treat as transient failure: main loop counts consecutive_llm_failures and may activate failback model.
+            return "", False, None, original_message_history
         except Exception as e:
             elapsed_ms = int((time.perf_counter() - llm_call_start_time) * 1000)
             self.task_log.record_stage_timing(

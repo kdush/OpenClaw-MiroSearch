@@ -163,6 +163,9 @@ class Orchestrator:
         # Track boxed answers extracted during main loop turns
         self.intermediate_boxed_answers: List[str] = []
 
+        # 阶段心跳同名去重，避免高频心跳刷 stderr，仅在阶段/回合/明细变化时打印一次
+        self._last_stage_log_key: Optional[tuple] = None
+
         # Record used subtask / q / Query to detect duplicates
         self.used_queries: Dict[str, Dict[str, int]] = {}
 
@@ -285,6 +288,22 @@ class Orchestrator:
         }
         if tool_name:
             payload["tool_name"] = tool_name
+
+        # 同名去重后镜像到 stderr：仅在阶段/回合/明细/工具变化时打印一行 INFO，
+        # 让 docker logs 也能持续看到任务进度，便于运维侧观察长任务。
+        log_key = (phase, payload["turn"], detail, agent_name, tool_name)
+        if log_key != self._last_stage_log_key:
+            self._last_stage_log_key = log_key
+            tool_suffix = f" tool={tool_name}" if tool_name else ""
+            logger.info(
+                "🫀 stage_heartbeat | agent=%s | phase=%s | turn=%s | detail=%s%s",
+                agent_name,
+                phase,
+                payload["turn"],
+                detail,
+                tool_suffix,
+            )
+
         try:
             await self.stream.update("stage_heartbeat", payload)
         except Exception:

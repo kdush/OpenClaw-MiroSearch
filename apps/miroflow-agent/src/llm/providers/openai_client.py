@@ -35,6 +35,7 @@ logger = logging.getLogger("miroflow_agent")
 DEFAULT_OPENAI_MAX_RETRIES = 4
 DEFAULT_OPENAI_RETRY_WAIT_SECONDS = 6.0
 DEFAULT_OPENAI_HTTP_TIMEOUT_SECONDS = 90.0
+DEFAULT_OPENAI_SDK_MAX_RETRIES = 0
 DEFAULT_TOOL_RESULT_MAX_CHARS = 4000
 DEFAULT_SUMMARY_MAX_TOKENS = 3072
 DEFAULT_VERIFICATION_MAX_TOKENS = 2048
@@ -194,6 +195,9 @@ class OpenAIClient(BaseClient):
         timeout_seconds = self._read_env_float(
             "LLM_HTTP_TIMEOUT_SECONDS", DEFAULT_OPENAI_HTTP_TIMEOUT_SECONDS
         )
+        sdk_max_retries = self._read_env_int(
+            "OPENAI_SDK_MAX_RETRIES", DEFAULT_OPENAI_SDK_MAX_RETRIES
+        )
         http_client_args = {
             "headers": {"x-upstream-session-id": self.task_id},
             "timeout": timeout_seconds,
@@ -204,12 +208,14 @@ class OpenAIClient(BaseClient):
                 api_key=active_key,
                 base_url=self.base_url,
                 http_client=DefaultAsyncHttpxClient(**http_client_args),
+                max_retries=sdk_max_retries,
             )
         else:
             return OpenAI(
                 api_key=active_key,
                 base_url=self.base_url,
                 http_client=DefaultHttpxClient(**http_client_args),
+                max_retries=sdk_max_retries,
             )
 
     def _update_token_usage(self, usage_data: Any) -> None:
