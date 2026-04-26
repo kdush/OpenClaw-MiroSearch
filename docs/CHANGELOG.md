@@ -7,6 +7,55 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+> 下一版本（v0.2.3）的工作主线锚定 [`docs/SCRAPING_ITERATION_PLAN.md`](./SCRAPING_ITERATION_PLAN.md) 中的 T2 / T1 / T4：
+> 重定向手动循环 + 每跳 SSRF 校验、共享 `httpx.AsyncClient` + 分阶段 metrics、中文编码兜底（charset_normalizer / meta charset 估计）。
+
+## [0.2.2] - 2026-04-26
+
+### Added
+
+- **MCP 工具 `scrape_url` 雏形**（libs/miroflow-tools）：基于 `httpx + BeautifulSoup`，让 LLM 在 `google_search` snippet 不足时主动"打开页面看正文"
+  - 仅支持 http(s) 绝对 URL，content-type 白名单 `text/html` / `application/xhtml+xml` / `text/plain`
+  - SSRF 防护：拒绝 loopback / 私网 / link-local / multicast / reserved 主机
+  - 超时（默认 25s）、`max_chars` 截断（默认 10000，硬上限 30000）、可配 User-Agent
+  - 正文优先选择 `article` / `main` / `[role=main]` / `#content` 等容器，fallback 全文 text
+  - 5 条单元测试覆盖：非 http scheme、空 url、私网 SSRF、HTML 正文抽取、非 HTML content-type 拒绝
+  - 同步在 `apps/miroflow-agent/src/utils/parsing_utils.py` 的 `TARGET_TOOLS` 集合中登记，LLM 错写 server_name 时自动修正
+  - 详细后续迭代规划见 [`docs/SCRAPING_ITERATION_PLAN.md`](./SCRAPING_ITERATION_PLAN.md)（T1-T9）
+- **阶段心跳镜像到 stderr**：`Orchestrator._emit_stage_heartbeat` 与 `AnswerGenerator._emit_stage_heartbeat` 增加同名事件去重 + `logger.info` 落 stderr，方便 `docker logs` 直接观察长任务进度
+
+### Fixed
+
+- **API 模式严重回归：worker 完全忽略 demo 投递的检索参数**（apps/api-server）
+  - 现象：用户在 demo 选 `verified + parallel-trusted + 20 results + detailed`，切到 `BACKEND_MODE=api` 后实际跑的却是硬编码的 `agent=demo_search_only`，导致原本能跑出研究总结的 query 全部回退成"未收敛"兜底文案
+  - 根因：`apps/api-server/services/pipeline_runtime.py` 内 `build_config_overrides` 仅依据 `DEFAULT_LLM_PROVIDER` / `AGENT_CONFIG` 等 process env 决定 cfg，把 `RequestLike` 的 `mode` / `search_profile` / `search_result_num` / `verification_min_search_rounds` / `output_detail_level` 五个字段全部丢弃
+  - 修复：新增 `apps/api-server/services/profile_resolver.py`，与 gradio-demo 的 `_ensure_preloaded` 对齐策略
+    - 复用同一套 `SEARCH_PROFILE_ENV_MAP`（searxng-first / serp-first / multi-route / parallel / parallel-trusted / searxng-only）
+    - 复用同一套 mode → hydra overrides 映射（production-web / verified / research / balanced / quota / thinking），所有可调常量改为运行时 `os.getenv` 读取
+    - 复用同一套 `output_detail_level` → max_turns / keep_tool_result / max_tokens 映射
+  - `pipeline_runtime` 同步改造：
+    - `build_config_overrides` 返回 `(search_env, hydra_overrides)` 二元组
+    - `create_runtime_components` 在 `_temporary_env_vars` 上下文中创建组件，让检索 MCP 子进程从进程 env 继承到正确的 `SEARCH_PROVIDER_*` 配置
+    - 新增 `asyncio.Lock` 串行化组件创建流程，避免 worker 多 task 并发覆盖进程级 env
+- **新增 55 条单元测试**：
+  - 47 条 `test_profile_resolver.py`：normalize_* / build_search_env / build_mode_overrides / build_full_overrides 全分支覆盖
+  - 8 条 `test_pipeline_runtime_overrides.py`：验证 `RequestLike` 五字段被正确传递，base llm overrides 与 mode_overrides 顺序正确
+- **Worker cancel 链路鲁棒性修复**（apps/api-server/workers/research_worker.py）
+  - `check_cancel` 协程加启动 INFO 日志（确认 watcher 被正确启动）；redis 单次读取异常仅打 warning 后继续轮询，不再静默退出导致 cancel 信号永远收不到
+  - `pending` 任务清理路径改为 `asyncio.wait_for(timeout=10s)`：当下游代码吞掉 CancelledError 时（如 `pipeline.py` 的 except 分支）worker 不再 hang，最多 10s 后强制 abandon 并继续返回 `cancelled` 状态
+  - 新增 2 条测试覆盖：`test_cancel_watcher_survives_redis_errors`（redis 抖动 watcher 不死）、`test_cancel_path_with_unresponsive_pipeline`（不响应 cancel 的 pipeline 在超时窗口后被 abandon）
+- **Dockerfile 默认走国内 apt 镜像源**（apps/api-server, apps/gradio-demo）
+  - 新增 `APT_MIRROR` build-arg，默认 `mirrors.tuna.tsinghua.edu.cn`，sed 替换 `/etc/apt/sources.list*` 内 `deb.debian.org` 与 `security.debian.org`
+  - 兼容 deb822（trixie 起 `/etc/apt/sources.list.d/debian.sources`）与老 `sources.list` 两种格式
+  - 需要恢复官方源时：`docker compose build --build-arg APT_MIRROR= api worker`
+- **compose 文件 build 段加 `network: host`**（compose.yaml, compose.host-network.yaml）
+  - app/api/worker 三个服务的 `build.network: host`，让 build 阶段直接走宿主机网络
+  - 解决 tower 等环境下 docker0 桥接网无法访问外部 apt/pip 仓库（宿主能连但 build 容器连不上）的问题
+- **新增构建脚本** `scripts/deploy/build_images.sh`
+  - 直接调 `docker build --network=host -f ... -t ...`，绕过 `docker compose build` 在 BuildKit 下需要交互式授权 `network.host` entitlement 的问题（ssh 非 TTY 场景无法通过）
+  - 支持 `APT_MIRROR` / `PIP_INDEX_URL` / `IMAGE_TAG_API` / `IMAGE_TAG_DEMO` 环境变量覆盖
+  - 用法：`scripts/deploy/build_images.sh [api|demo|all]`
+
 ### Added
 
 - **Demo 断电重连（gradio-demo）**：研究任务可在浏览器刷新或网络中断后通过 URL `?task_id=xxx` 自动续看完整进度，不再丢失中间结果

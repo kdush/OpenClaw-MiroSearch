@@ -1,6 +1,10 @@
 # API 调用参考
 
-v0.2.0 起提供两套 API，**AI Agent 推荐使用 FastAPI API**。
+v0.2.0 起提供两套 API，**AI Agent 推荐使用 FastAPI API**。当前 skill 对齐版本：v0.2.2。
+
+> v0.2.2 修复说明：早期版本（v0.2.0 / v0.2.1）的 FastAPI worker 会丢弃请求里的
+> `mode` / `search_profile` / `search_result_num` / `verification_min_search_rounds` / `output_detail_level`
+> 五个字段并强行回退硬编码轻量预设。**升级到 v0.2.2 后这五个字段会全链路生效，请显式传入需要的值。**
 
 ---
 

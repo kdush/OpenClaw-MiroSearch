@@ -18,3 +18,4 @@
 - [路线图 / Roadmap](./ROADMAP.md)
 - [API 规格 / API Spec](./API_SPEC.md)（含 AI Agent 接入指引）
 - [部署指南 / Deployment Guide](./DEPLOY.md)（含 Docker Compose 与本地工具部署）
+- [抓取能力迭代计划 / Scraping Iteration Plan](./SCRAPING_ITERATION_PLAN.md)（T1-T9，对应 v0.2.3 → v0.3.0）

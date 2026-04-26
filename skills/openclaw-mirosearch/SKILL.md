@@ -1,9 +1,9 @@
 ---
 name: openclaw-mirosearch
-description: 用于 OpenClaw 或其他智能体执行深度检索与高质量联网研究。v0.2.0 起推荐使用 FastAPI 异步 API。安装看 skill-install/install，使用看 usage/api/modes。
+description: 用于 OpenClaw 或其他智能体执行深度检索与高质量联网研究。v0.2.2 修复了 API 模式严重回归并补齐 Demo 断电重连，内置 LLM 抓取工具雏形。AI Agent 优先用 FastAPI 异步 API。安装看 skill-install/install，使用看 usage/api/modes。
 ---
 
-# OpenClaw-MiroSearch（深度检索 Skill）
+# OpenClaw-MiroSearch（深度检索 Skill · v0.2.2）
 
 ## 何时使用（先分流）
 
@@ -14,7 +14,7 @@ description: 用于 OpenClaw 或其他智能体执行深度检索与高质量联
 - 深度检索或高质量检索（多来源交叉、核查、结构化报告）：
   - 使用本 skill（`openclaw-mirosearch`）
 
-## 两套 API（v0.2.0）
+## 两套 API（v0.2.0+）
 
 | API | 地址 | 适用场景 | 状态 |
 |-----|------|----------|------|
@@ -22,6 +22,13 @@ description: 用于 OpenClaw 或其他智能体执行深度检索与高质量联
 | Gradio API | `http://127.0.0.1:8080` | Demo 体验、浏览器交互 | 兼容保留 |
 
 > v0.2.0 起，FastAPI API Server 采用异步任务队列（arq + Valkey），支持并发多任务、SSE 流式事件推送和任务状态持久化。**AI Agent 应优先使用 FastAPI API。**
+
+## v0.2.2 关键变化（必读）
+
+- **API 模式严重回归已修复**：早期 v0.2.0/v0.2.1 在 `BACKEND_MODE=api` 下投递任务时，`mode` / `search_profile` / `search_result_num` / `verification_min_search_rounds` / `output_detail_level` 五个字段会被 worker 丢弃，强行回退到硬编码的轻量预设。**v0.2.2 起这五个字段全链路生效，请务必显式传入。**
+- **Demo 断电重连**：浏览器刷新或网络中断后通过 `?task_id=xxx` 自动接管同一研究任务，SSE 头部回放 + 阻塞等待新事件；AI Agent 可放心忽略此功能，但若直接复用 Gradio Demo 作为 UI 前端可获得免重跑能力。
+- **LLM 内部抓取工具雏形 `scrape_url`**：Agent 内部工具（不对外暴露 API），让 LLM 在 `google_search` snippet 不足以披露法规原文/官方公告全文时主动"打开页面看正文"。**对调用方而言无 schema 变化**，只需感知"v0.2.2 起 `output_detail_level=detailed` 的报告原文召回更稳"。完整后续迭代规划见仓库 `docs/SCRAPING_ITERATION_PLAN.md`（T1-T9）。
+- **Worker cancel 鲁棒化**：cancel watcher 抗 redis 抖动，不响应 cancel 的 pipeline 在 10s 超时窗口后被强制 abandon，调用方 `POST /v1/research/{task_id}/cancel` 后最多等 10s 必能收到终态。
 
 ## 文档分工（安装与使用分离）
 

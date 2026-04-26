@@ -1,8 +1,10 @@
 # OpenClaw-MiroSearch 路线图（版本化）
 
-更新时间：2026-04-23  
-当前版本：`v0.2.1`  
+更新时间：2026-04-26  
+当前版本：`v0.2.2`  
 说明：已完成能力前置到已发布版本，未完成能力后移到后续版本。
+
+> 抓取能力专项迭代：详见 [`docs/SCRAPING_ITERATION_PLAN.md`](./SCRAPING_ITERATION_PLAN.md)，共 T1-T9 共 9 个任务，分布在 v0.2.3 → v0.3.0 节奏中。
 
 ## 已发布
 
@@ -167,7 +169,7 @@
 
 - 生产化架构版本，强调"异步任务队列 + Valkey 持久化 + SSE 流式输出 + Docker Compose 多服务编排"
 
-### `v0.2.1`（体验与编排修复 · 当前版本）
+### `v0.2.1`（体验与编排修复）
 
 已纳入能力：
 
@@ -178,7 +180,34 @@
 
 - 面向体验与部署稳定性的 patch 版本，不改变 API 契约与数据结构
 
+### `v0.2.2`（API 模式 + 断电重连 + 抓取雏形 · 当前版本）
+
+已纳入能力：
+
+- **API 模式回归严重 bug 修复**：`api-server` 投递任务时 `mode` / `search_profile` / `search_result_num` / `verification_min_search_rounds` / `output_detail_level` 五字段全链路生效（新增 `services/profile_resolver.py`），不再被硬编码 `agent=demo_search_only` 覆盖
+- **Demo 断电重连**：`gradio-demo` 引入 `BACKEND_MODE=api`，刷新 / 网络断开后通过 `?task_id=xxx` 自动接管，SSE 头部回放 + 阻塞等待新事件
+- **未收敛文案中文化**：兜底语 `No \boxed{} content found in the final answer.` 重写为可读中文提示，避免误判服务故障
+- **Worker cancel 链路鲁棒化**：watcher 抗 redis 抖动；不响应 cancel 的 pipeline 在 10s 超时窗口后被强制 abandon，不再 hang
+- **Dockerfile 国内 apt 镜像源 + compose 构建走 host 网络**：tower 等内网环境构建不再被 docker0 桥接网卡住；新增 `scripts/deploy/build_images.sh` 直调 `docker build --network=host` 绕过 BuildKit 交互式授权
+- **MCP 工具 `scrape_url` 雏形**：基于 `httpx + BeautifulSoup`，`google_search` 命中长正文需求时让 LLM 主动"打开页面看正文"；含 SSRF 防护、content-type 白名单、超时控制、`max_chars` 截断与 5 条单元测试
+- **测试覆盖增量约 80 条**：profile_resolver / pipeline_runtime overrides / worker_healthcheck / api_client SSE / scrape_url guards / handle_llm_call_wall_timeout 等
+
+版本定位：
+
+- 在生产化基础上修复 API 模式严重回归，引入抓取雏形，为后续 T1-T9 抓取迭代奠基；详见 [`docs/SCRAPING_ITERATION_PLAN.md`](./SCRAPING_ITERATION_PLAN.md)
+
 ## 后续版本
+
+### `v0.2.3` ~ `v0.3.0`（抓取能力专项迭代）
+
+核心主题：把 `scrape_url` 从最小可用扩展为"看得全、抽得准、跑得快、防得住"
+
+任务编号沿用 [`docs/SCRAPING_ITERATION_PLAN.md`](./SCRAPING_ITERATION_PLAN.md)：
+
+- `v0.2.3`：T2（重定向手动循环 + 每跳 SSRF）+ T1（共享 AsyncClient + 分阶段 metrics）+ T4（中文编码兜底）
+- `v0.2.4`：T3（PDF 抽取 + 20MB 上限）+ T5（JSON / RSS / Atom / XML 直通）
+- `v0.2.5-scrape`：T6（trafilatura 主路径）+ T7（HTML 表格转 markdown）+ T8（句子 / 段落边界截断）
+- `v0.3.0-scrape`：T9（`scrape_urls` 批量并发）+ robots.txt 校验 + 抓取限流
 
 ### `v0.2.5`（质量增强 + 可观测性）
 

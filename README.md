@@ -174,15 +174,19 @@ Skill acquisition and installation:
 
 ## Changelog
 
-- Release `0.1.14` highlights:
-  - Independent FastAPI API server with Bearer Token auth, rate limiting, and Docker deployment
-  - Result caching (LRU + TTL) integrated in both Gradio and API server
-  - Security review: 7 fixes including memory leak, exception info leakage, input validation
-  - Dockerfile `--frozen` fix for offline container environments
-- Release `0.1.10` highlights:
-  - Structured run metrics, model failback, CI regression gate
-- Release `0.1.9` highlights:
-  - Multi-key rotation for LLM and search APIs, session-level task isolation
+- Release `0.2.2` highlights:
+  - API-mode regression fix: `mode` / `search_profile` / `search_result_num` / `verification_min_search_rounds` / `output_detail_level` are now respected end-to-end via `services/profile_resolver.py`
+  - Demo crash-recovery: `BACKEND_MODE=api` plus `?task_id=xxx` URL bridge — refresh / disconnect resumes the same task via SSE replay
+  - MCP tool `scrape_url`: lightweight `httpx + BeautifulSoup` scraper with SSRF guard so the LLM can "open the page" when `google_search` snippets are insufficient
+  - See [`docs/SCRAPING_ITERATION_PLAN.md`](docs/SCRAPING_ITERATION_PLAN.md) for the full T1–T9 scraping roadmap
+  - Worker cancel watcher hardened against Redis hiccups; unresponsive pipelines are abandoned after a 10s timeout
+  - Dockerfile uses a domestic apt mirror by default; compose builds run with `network: host`; `scripts/deploy/build_images.sh` bypasses BuildKit's `network.host` entitlement prompt
+- Release `0.2.1` highlights:
+  - Clickable `[N]` references in research summaries pointing to the report's References / 参考文献 section
+  - `api-worker` startup command pinned to `.venv/bin/python` for reliable arq worker boot
+- Release `0.2.0` highlights:
+  - Async task queue (arq + Valkey), persistent SSE event streams, cache and metadata persistence
+  - `SearchProvider` Protocol + `ProviderRegistry` (Serper / SerpAPI / SearXNG)
 - Full history: [`docs/CHANGELOG.md`](docs/CHANGELOG.md)
 
 ## Documentation Index
@@ -230,5 +234,7 @@ See: [`docs/ROADMAP.md`](docs/ROADMAP.md)
 Current planning is divided into four phases:
 
 - `v0.2.0` (production-ready) ✅: SearchProvider protocol, async task queue (arq + Valkey), SSE streaming, persistent cache, Docker Compose orchestration
+- `v0.2.2` (current) ✅: API-mode regression fix, demo crash-recovery, MCP `scrape_url` scaffold
+- `v0.2.3` ~ `v0.3.0` (scraping deep-dive): T1–T9 in [`docs/SCRAPING_ITERATION_PLAN.md`](docs/SCRAPING_ITERATION_PLAN.md) — redirect SSRF, shared `httpx.AsyncClient`, PDF / JSON / RSS support, `trafilatura`, smart truncation, batch `scrape_urls`
 - `v0.2.5` (quality + observability): Prometheus metrics, eval pipeline in CI, multi-source RRF ranking, multilingual retrieval optimization
 - `v1.0.0` (ecosystem distribution): Helm Chart / one-click cloud deploy, skill versioned release, compatibility matrix auto-verification
