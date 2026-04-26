@@ -9,22 +9,18 @@ services:
       network: host
     image: openclaw-mirosearch:latest
     restart: unless-stopped
-    # 如果容器无法访问外网，
-    # 取消下行注释并注释掉 ports 段，改用 host 网络模式：
-    # network_mode: host
+    network_mode: host
     env_file:
       - ${COMPOSE_ENV_FILE:-.env.compose}
     environment:
       HOST: 0.0.0.0
-      PORT: 8080
-      API_BASE_URL: ${GRADIO_API_BASE_URL:-http://api:8090}
-      SEARXNG_BASE_URL: ${SEARXNG_BASE_URL:-http://searxng:8080}
-    ports:
-      - "${APP_PORT:-8080}:8080"
+      PORT: ${APP_PORT:-8080}
+      API_BASE_URL: ${GRADIO_API_BASE_URL:-http://127.0.0.1:${API_PORT:-8090}}
+      SEARXNG_BASE_URL: ${SEARXNG_BASE_URL:-http://127.0.0.1:${SEARXNG_HOST_PORT:-27080}}
     healthcheck:
       test:
         - CMD-SHELL
-        - python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/gradio_api/info', timeout=5).read()"
+        - python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:${APP_PORT:-8080}/gradio_api/info', timeout=5).read()"
       interval: 30s
       timeout: 10s
       retries: 5
@@ -38,23 +34,22 @@ services:
       network: host
     image: openclaw-mirosearch-api:latest
     restart: unless-stopped
+    network_mode: host
     env_file:
       - ${COMPOSE_ENV_FILE:-.env.compose}
     environment:
       API_HOST: 0.0.0.0
-      API_PORT: 8090
-      SEARXNG_BASE_URL: ${SEARXNG_BASE_URL:-http://searxng:8080}
-      VALKEY_HOST: valkey
-      VALKEY_PORT: 6379
-    ports:
-      - "${API_PORT:-8090}:8090"
+      API_PORT: ${API_PORT:-8090}
+      SEARXNG_BASE_URL: ${SEARXNG_BASE_URL:-http://127.0.0.1:${SEARXNG_HOST_PORT:-27080}}
+      VALKEY_HOST: 127.0.0.1
+      VALKEY_PORT: ${VALKEY_PORT:-6379}
     depends_on:
       valkey:
         condition: service_healthy
     healthcheck:
       test:
         - CMD-SHELL
-        - python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health', timeout=5).read()"
+        - python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:${API_PORT:-8090}/health', timeout=5).read()"
       interval: 30s
       timeout: 10s
       retries: 5
@@ -68,12 +63,13 @@ services:
       network: host
     image: openclaw-mirosearch-api:latest
     restart: unless-stopped
+    network_mode: host
     env_file:
       - ${COMPOSE_ENV_FILE:-.env.compose}
     environment:
-      SEARXNG_BASE_URL: ${SEARXNG_BASE_URL:-http://searxng:8080}
-      VALKEY_HOST: valkey
-      VALKEY_PORT: 6379
+      SEARXNG_BASE_URL: ${SEARXNG_BASE_URL:-http://127.0.0.1:${SEARXNG_HOST_PORT:-27080}}
+      VALKEY_HOST: 127.0.0.1
+      VALKEY_PORT: ${VALKEY_PORT:-6379}
     command: [".venv/bin/python", "worker.py"]
     working_dir: /workspace/apps/api-server
     healthcheck:
@@ -92,11 +88,12 @@ services:
   valkey:
     image: valkey/valkey:8-alpine
     restart: unless-stopped
+    network_mode: host
     command: ["valkey-server", "--save", "30", "1", "--loglevel", "warning"]
     volumes:
       - valkey-data:/data
     healthcheck:
-      test: ["CMD", "valkey-cli", "ping"]
+      test: ["CMD", "valkey-cli", "-h", "127.0.0.1", "ping"]
       interval: 30s
       timeout: 5s
       retries: 5
@@ -104,12 +101,11 @@ services:
   searxng:
     image: searxng/searxng:latest
     restart: unless-stopped
+    network_mode: host
     environment:
-      BIND_ADDRESS: 0.0.0.0:8080
+      GRANIAN_PORT: ${SEARXNG_HOST_PORT:-27080}
       SEARXNG_BASE_URL: ${SEARXNG_PUBLIC_BASE_URL:-http://localhost:${SEARXNG_HOST_PORT:-27080}/}
-      SEARXNG_REDIS_URL: redis://valkey:6379/0
-    ports:
-      - "${SEARXNG_HOST_PORT:-27080}:8080"
+      SEARXNG_REDIS_URL: redis://127.0.0.1:${VALKEY_PORT:-6379}/0
     depends_on:
       valkey:
         condition: service_healthy
@@ -119,7 +115,7 @@ services:
     healthcheck:
       test:
         - CMD-SHELL
-        - python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=5).read()"
+        - python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:${SEARXNG_HOST_PORT:-27080}/healthz', timeout=5).read()"
       interval: 30s
       timeout: 10s
       retries: 5

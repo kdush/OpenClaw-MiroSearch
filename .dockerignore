@@ -12,3 +12,4 @@
 report.html
 htmlcov/
 coverage.xml
+dist/
