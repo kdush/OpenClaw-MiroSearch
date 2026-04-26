@@ -39,7 +39,12 @@ def parse_tool_server_mapping(system_prompt: str) -> dict:
         Dict mapping tool_name to correct server_name, e.g.
         {"run_python_code": "tool-python", "google_search": "search_and_scrape_webpage", ...}
     """
-    TARGET_TOOLS = {"run_python_code", "google_search", "scrape_and_extract_info"}
+    TARGET_TOOLS = {
+        "run_python_code",
+        "google_search",
+        "scrape_and_extract_info",
+        "scrape_url",
+    }
     mapping = {}
     current_server = None
     for line in system_prompt.split("\n"):

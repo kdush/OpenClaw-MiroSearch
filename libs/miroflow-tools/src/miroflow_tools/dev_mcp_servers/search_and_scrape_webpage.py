@@ -5,10 +5,13 @@ import asyncio
 import json
 import logging
 import os
+import socket
 import time
+from ipaddress import ip_address
 from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 
+import httpx
 from mcp.server.fastmcp import FastMCP
 from tenacity import (
     retry,
@@ -30,6 +33,7 @@ from .providers.registry import ProviderRegistry
 from .providers.searxng import SearXNGProvider, SearxngPrecheckError
 from .providers.serpapi import SerpAPIProvider
 from .providers.serper import SerperProvider
+from .providers.tavily import TavilyProvider
 
 # Configure logging
 logger = logging.getLogger("miroflow")
@@ -41,7 +45,8 @@ _registry = ProviderRegistry()
 _registry.register(SerperProvider())
 _registry.register(SerpAPIProvider())
 _registry.register(SearXNGProvider())
-DEFAULT_SEARCH_PROVIDER_ORDER = "searxng,serpapi,serper"
+_registry.register(TavilyProvider())
+DEFAULT_SEARCH_PROVIDER_ORDER = "searxng,serpapi,serper,tavily"
 SEARCH_PROVIDER_ORDER = os.getenv(
     "SEARCH_PROVIDER_ORDER", DEFAULT_SEARCH_PROVIDER_ORDER
 )
@@ -55,7 +60,7 @@ VALID_SEARCH_PROVIDER_MODES = {
     "parallel",
     "parallel_conf_fallback",
 }
-DEFAULT_SEARCH_PROVIDER_TRUSTED_ORDER = "serpapi,searxng,serper"
+DEFAULT_SEARCH_PROVIDER_TRUSTED_ORDER = "serpapi,tavily,searxng,serper"
 SEARCH_PROVIDER_TRUSTED_ORDER = os.getenv(
     "SEARCH_PROVIDER_TRUSTED_ORDER", DEFAULT_SEARCH_PROVIDER_TRUSTED_ORDER
 ).strip()
@@ -76,7 +81,7 @@ DEFAULT_SEARCH_CONFIDENCE_HIGH_CONF_DOMAINS = (
 )
 
 DEFAULT_SEARCH_SEARXNG_ONLY_ALLOW_DOWNGRADE = False
-DEFAULT_SEARCH_SEARXNG_ONLY_DOWNGRADE_ORDER = "serpapi,serper"
+DEFAULT_SEARCH_SEARXNG_ONLY_DOWNGRADE_ORDER = "serpapi,tavily,serper"
 
 TENCENTCLOUD_SECRET_ID = os.getenv("TENCENTCLOUD_SECRET_ID", "")
 TENCENTCLOUD_SECRET_KEY = os.getenv("TENCENTCLOUD_SECRET_KEY", "")
@@ -876,6 +881,259 @@ async def sogou_search(
             },
             ensure_ascii=False,
         )
+
+
+# ---------------------------------------------------------------------------
+# 轻量级网页抓取工具：基于 httpx + BeautifulSoup，零外部 API 依赖。
+# 用于 google_search 命中相关 URL 但 snippet 不足以给出条例原文/官方公告全文时，
+# 让 LLM 主动 "打开页面看正文"。
+# ---------------------------------------------------------------------------
+
+DEFAULT_SCRAPE_TIMEOUT_SECONDS = _read_env_float("SCRAPE_TIMEOUT_SECONDS", 25.0, 1.0)
+DEFAULT_SCRAPE_MAX_CHARS = _read_env_int("SCRAPE_MAX_CHARS", 10000, 500)
+SCRAPE_HARD_CAP_CHARS = _read_env_int("SCRAPE_HARD_CAP_CHARS", 30000, 1000)
+SCRAPE_USER_AGENT = os.getenv(
+    "SCRAPE_USER_AGENT",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) MiroflowResearch/1.0 Chrome/126.0.0.0 Safari/537.36",
+)
+ALLOWED_SCRAPE_CONTENT_PREFIXES = (
+    "text/html",
+    "application/xhtml",
+    "text/plain",
+)
+
+
+def _is_private_or_loopback_host(host: str) -> bool:
+    """阻止 LLM 通过 scrape_url 访问内网/loopback，简单 SSRF 防护。"""
+    if not host:
+        return True
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except Exception:
+        # DNS 解析失败按拒绝处理，避免绕过
+        return True
+    for info in infos:
+        try:
+            ip = ip_address(info[4][0])
+        except Exception:
+            continue
+        if (
+            ip.is_loopback
+            or ip.is_private
+            or ip.is_link_local
+            or ip.is_reserved
+            or ip.is_multicast
+            or ip.is_unspecified
+        ):
+            return True
+    return False
+
+
+def _extract_main_text(html: str) -> tuple[str, str]:
+    """从 HTML 抽正文与标题。优先 main/article/role=main，否则整页 text。"""
+    try:
+        from bs4 import BeautifulSoup  # 延迟导入，避免无 bs4 环境直接 import 失败
+    except Exception as exc:
+        return "", f"BeautifulSoup unavailable: {exc}"
+
+    try:
+        soup = BeautifulSoup(html, "lxml")
+    except Exception:
+        soup = BeautifulSoup(html, "html.parser")
+
+    for tag in soup(
+        [
+            "script",
+            "style",
+            "noscript",
+            "iframe",
+            "svg",
+            "form",
+            "header",
+            "footer",
+            "nav",
+            "aside",
+            "template",
+        ]
+    ):
+        tag.decompose()
+
+    candidates = []
+    for selector in ("article", "main", "[role=main]", "#content", ".article", ".content"):
+        for node in soup.select(selector):
+            text = node.get_text(separator="\n", strip=True)
+            if text and len(text) > 200:
+                candidates.append(text)
+
+    if candidates:
+        text_content = max(candidates, key=len)
+    else:
+        text_content = soup.get_text(separator="\n", strip=True)
+
+    normalized_lines = [line.strip() for line in text_content.splitlines() if line.strip()]
+    text_content = "\n".join(normalized_lines)
+
+    title = ""
+    if soup.title and soup.title.string:
+        title = soup.title.string.strip()[:300]
+
+    return text_content, title
+
+
+@mcp.tool()
+async def scrape_url(url: str, max_chars: int = DEFAULT_SCRAPE_MAX_CHARS) -> str:
+    """
+    Fetch a webpage and return its main textual content.
+
+    Use this tool when google_search snippets are insufficient and you need the full
+    article / regulation / official announcement / report text. Best to call this
+    immediately after google_search returns a relevant URL whose snippet hints at,
+    but does not contain, the specific detail you need (条例原文、公告全文、统计数字、
+    完整法规名称等). Pass the EXACT absolute URL from the search result.
+
+    Args:
+        url: Absolute http(s) URL to scrape (required, e.g. https://example.com/page)
+        max_chars: Maximum characters of textual content to return (default 10000,
+                   hard cap 30000). Use a smaller value when you only need a quick
+                   confirmation; use a larger value when you need full text.
+
+    Returns:
+        JSON string with fields:
+        - success: bool
+        - url, final_url, http_status, title, content, content_type
+        - content_length, truncated
+        - error (only present when success=False)
+    """
+    if not url or not isinstance(url, str):
+        return json.dumps(
+            {"success": False, "error": "url is required and must be a string", "url": url},
+            ensure_ascii=False,
+        )
+
+    parsed = urlparse(url.strip())
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return json.dumps(
+            {
+                "success": False,
+                "error": "only absolute http(s) URLs are supported",
+                "url": url,
+            },
+            ensure_ascii=False,
+        )
+
+    if _is_private_or_loopback_host(parsed.hostname or ""):
+        return json.dumps(
+            {
+                "success": False,
+                "error": "private/loopback/multicast hosts are blocked",
+                "url": url,
+            },
+            ensure_ascii=False,
+        )
+
+    try:
+        cap_chars = int(max_chars or DEFAULT_SCRAPE_MAX_CHARS)
+    except (TypeError, ValueError):
+        cap_chars = DEFAULT_SCRAPE_MAX_CHARS
+    cap_chars = max(500, min(cap_chars, SCRAPE_HARD_CAP_CHARS))
+
+    headers = {
+        "User-Agent": SCRAPE_USER_AGENT,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    }
+
+    try:
+        async with httpx.AsyncClient(
+            follow_redirects=True,
+            timeout=DEFAULT_SCRAPE_TIMEOUT_SECONDS,
+            headers=headers,
+        ) as client:
+            response = await client.get(url)
+    except httpx.TimeoutException:
+        return json.dumps(
+            {"success": False, "error": "request timed out", "url": url},
+            ensure_ascii=False,
+        )
+    except httpx.HTTPError as exc:
+        return json.dumps(
+            {
+                "success": False,
+                "error": f"http error: {type(exc).__name__}: {exc}",
+                "url": url,
+            },
+            ensure_ascii=False,
+        )
+    except Exception as exc:
+        return json.dumps(
+            {
+                "success": False,
+                "error": f"unexpected error: {type(exc).__name__}: {exc}",
+                "url": url,
+            },
+            ensure_ascii=False,
+        )
+
+    final_url = str(response.url)
+    content_type = (
+        (response.headers.get("content-type") or "").split(";")[0].strip().lower()
+    )
+    if content_type and not any(
+        content_type.startswith(prefix) for prefix in ALLOWED_SCRAPE_CONTENT_PREFIXES
+    ):
+        return json.dumps(
+            {
+                "success": False,
+                "error": f"unsupported content_type {content_type!r}; only HTML/text are extracted",
+                "url": url,
+                "final_url": final_url,
+                "http_status": response.status_code,
+                "content_type": content_type,
+            },
+            ensure_ascii=False,
+        )
+
+    if response.status_code >= 400:
+        return json.dumps(
+            {
+                "success": False,
+                "error": f"http_status={response.status_code}",
+                "url": url,
+                "final_url": final_url,
+                "http_status": response.status_code,
+            },
+            ensure_ascii=False,
+        )
+
+    if content_type.startswith("text/plain"):
+        text_content = response.text
+        normalized_lines = [
+            line.strip() for line in text_content.splitlines() if line.strip()
+        ]
+        text_content = "\n".join(normalized_lines)
+        title = ""
+    else:
+        text_content, title = _extract_main_text(response.text)
+
+    truncated = len(text_content) > cap_chars
+    if truncated:
+        text_content = text_content[:cap_chars]
+
+    return json.dumps(
+        {
+            "success": True,
+            "url": url,
+            "final_url": final_url,
+            "http_status": response.status_code,
+            "title": title,
+            "content": text_content,
+            "content_type": content_type or "text/html",
+            "content_length": len(text_content),
+            "truncated": truncated,
+        },
+        ensure_ascii=False,
+    )
 
 
 if __name__ == "__main__":

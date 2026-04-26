@@ -174,3 +174,130 @@ async def test_searxng_precheck_raises_on_403(monkeypatch):
 
     with pytest.raises(SearxngPrecheckError):
         await provider.search(SearchParams(query="test"))
+
+
+# ---------------------------------------------------------------------------
+# scrape_url 工具：单元测试
+# ---------------------------------------------------------------------------
+
+
+def _scrape_url_callable():
+    """获取 scrape_url 的真实异步函数（FastMCP 装饰后藏在工具注册表里）。"""
+    import json as _json
+
+    search_mod = _load_search_module()
+    fn = getattr(search_mod, "scrape_url", None)
+    if callable(fn):
+        return fn, search_mod, _json
+    raise RuntimeError("scrape_url is not exposed as a module-level callable")
+
+
+@pytest.mark.asyncio
+async def test_scrape_url_rejects_non_http_scheme():
+    fn, _, json_lib = _scrape_url_callable()
+    raw = await fn("ftp://example.com/x")
+    payload = json_lib.loads(raw)
+    assert payload["success"] is False
+    assert "http(s)" in payload["error"]
+
+
+@pytest.mark.asyncio
+async def test_scrape_url_rejects_empty_url():
+    fn, _, json_lib = _scrape_url_callable()
+    raw = await fn("")
+    payload = json_lib.loads(raw)
+    assert payload["success"] is False
+    assert "url is required" in payload["error"]
+
+
+@pytest.mark.asyncio
+async def test_scrape_url_blocks_private_host(monkeypatch):
+    fn, search_mod, json_lib = _scrape_url_callable()
+    # 强制 SSRF 守卫返回 True，模拟内网解析
+    monkeypatch.setattr(
+        search_mod, "_is_private_or_loopback_host", lambda _host: True
+    )
+    raw = await fn("http://intranet.example/")
+    payload = json_lib.loads(raw)
+    assert payload["success"] is False
+    assert "private" in payload["error"]
+
+
+@pytest.mark.asyncio
+async def test_scrape_url_extracts_main_content(monkeypatch):
+    fn, search_mod, json_lib = _scrape_url_callable()
+    monkeypatch.setattr(
+        search_mod, "_is_private_or_loopback_host", lambda _host: False
+    )
+
+    # 确保正文长度明显超过 max_chars=500，便于断言截断生效
+    paragraph = "<p>第一条 任何人不得在公共场所吸烟，违者处以五十元罚款。</p>" * 30
+    html = (
+        "<html><head><title>Demo Page</title></head><body>"
+        "<header>菜单</header><nav>导航</nav>"
+        "<main><article><h1>条例标题</h1>"
+        f"{paragraph}"
+        "</article></main>"
+        "<footer>版权信息</footer></body></html>"
+    )
+
+    async def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            text=html,
+            headers={"content-type": "text/html; charset=utf-8"},
+            request=request,
+        )
+
+    transport = httpx.MockTransport(_handler)
+
+    class _PatchedClient(httpx.AsyncClient):
+        def __init__(self, *args, **kwargs):
+            kwargs.pop("transport", None)
+            super().__init__(*args, transport=transport, **kwargs)
+
+    monkeypatch.setattr(search_mod.httpx, "AsyncClient", _PatchedClient)
+
+    raw = await fn("https://example.com/regulation", max_chars=500)
+    payload = json_lib.loads(raw)
+    assert payload["success"] is True
+    assert payload["http_status"] == 200
+    assert payload["title"] == "Demo Page"
+    assert "条例标题" in payload["content"]
+    assert payload["truncated"] is True
+    assert payload["content_length"] == 500
+    # 不应包含被剥离的导航/菜单/页脚
+    assert "菜单" not in payload["content"]
+    assert "导航" not in payload["content"]
+    assert "版权信息" not in payload["content"]
+
+
+@pytest.mark.asyncio
+async def test_scrape_url_rejects_non_html_content_type(monkeypatch):
+    fn, search_mod, json_lib = _scrape_url_callable()
+    monkeypatch.setattr(
+        search_mod, "_is_private_or_loopback_host", lambda _host: False
+    )
+
+    async def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=b"%PDF-1.4 binary",
+            headers={"content-type": "application/pdf"},
+            request=request,
+        )
+
+    transport = httpx.MockTransport(_handler)
+
+    class _PatchedClient(httpx.AsyncClient):
+        def __init__(self, *args, **kwargs):
+            kwargs.pop("transport", None)
+            super().__init__(*args, transport=transport, **kwargs)
+
+    monkeypatch.setattr(search_mod.httpx, "AsyncClient", _PatchedClient)
+
+    raw = await fn("https://example.com/file.pdf")
+    payload = json_lib.loads(raw)
+    assert payload["success"] is False
+    assert "unsupported content_type" in payload["error"]
+    assert payload["content_type"] == "application/pdf"
