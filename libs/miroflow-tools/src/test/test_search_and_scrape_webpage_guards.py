@@ -301,3 +301,322 @@ async def test_scrape_url_rejects_non_html_content_type(monkeypatch):
     assert payload["success"] is False
     assert "unsupported content_type" in payload["error"]
     assert payload["content_type"] == "application/pdf"
+
+
+# ---------------------------------------------------------------------------
+# scrape_url v0.2.3 增强（T1 共享 client + T2 重定向 SSRF + T4 编码兜底）
+# ---------------------------------------------------------------------------
+
+
+def _make_patched_client(transport: httpx.MockTransport):
+    """构造一个把 transport 强制注入 httpx.AsyncClient 的 patch 类。
+
+    由于改造后 _get_scrape_client() 仍然走 httpx.AsyncClient(...) 实例化，
+    monkeypatch search_mod.httpx.AsyncClient 即可拦截真实网络。
+    """
+
+    class _PatchedClient(httpx.AsyncClient):
+        instantiation_count = 0
+
+        def __init__(self, *args, **kwargs):
+            type(self).instantiation_count += 1
+            kwargs.pop("transport", None)
+            super().__init__(*args, transport=transport, **kwargs)
+
+    return _PatchedClient
+
+
+@pytest.mark.asyncio
+async def test_scrape_url_returns_metrics_and_encoding_fields(monkeypatch):
+    fn, search_mod, json_lib = _scrape_url_callable()
+    monkeypatch.setattr(
+        search_mod, "_is_private_or_loopback_host", lambda _h: False
+    )
+
+    async def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            text="<html><body><main>hello world 中文</main></body></html>",
+            headers={"content-type": "text/html; charset=utf-8"},
+            request=request,
+        )
+
+    transport = httpx.MockTransport(_handler)
+    monkeypatch.setattr(
+        search_mod.httpx, "AsyncClient", _make_patched_client(transport)
+    )
+
+    raw = await fn("https://example.com/page")
+    payload = json_lib.loads(raw)
+
+    assert payload["success"] is True
+    assert "metrics" in payload
+    metrics = payload["metrics"]
+    assert {"t_request_ms", "t_parse_ms", "t_extract_ms", "redirect_hops"} <= set(
+        metrics.keys()
+    )
+    assert metrics["redirect_hops"] == 0
+    assert all(isinstance(v, int) and v >= 0 for v in metrics.values())
+    # encoding 字段标注实际使用的解码方案
+    assert payload["encoding"] in {"utf-8", "utf_8"}
+    # 不应漏出 redirect_chain（无重定向时省略）
+    assert "redirect_chain" not in payload
+
+
+@pytest.mark.asyncio
+async def test_scrape_url_follows_redirect_chain_within_limit(monkeypatch):
+    fn, search_mod, json_lib = _scrape_url_callable()
+    monkeypatch.setattr(
+        search_mod, "_is_private_or_loopback_host", lambda _h: False
+    )
+
+    call_log = []
+
+    async def _handler(request: httpx.Request) -> httpx.Response:
+        url_str = str(request.url)
+        call_log.append(url_str)
+        if url_str == "https://example.com/start":
+            return httpx.Response(
+                302,
+                headers={"location": "https://example.com/middle"},
+                request=request,
+            )
+        if url_str == "https://example.com/middle":
+            return httpx.Response(
+                301,
+                headers={"location": "https://example.com/final"},
+                request=request,
+            )
+        return httpx.Response(
+            200,
+            text="<html><body><main>arrived</main></body></html>",
+            headers={"content-type": "text/html; charset=utf-8"},
+            request=request,
+        )
+
+    transport = httpx.MockTransport(_handler)
+    monkeypatch.setattr(
+        search_mod.httpx, "AsyncClient", _make_patched_client(transport)
+    )
+
+    raw = await fn("https://example.com/start")
+    payload = json_lib.loads(raw)
+
+    assert payload["success"] is True
+    assert payload["redirect_chain"] == [
+        "https://example.com/middle",
+        "https://example.com/final",
+    ]
+    assert payload["metrics"]["redirect_hops"] == 2
+    assert call_log == [
+        "https://example.com/start",
+        "https://example.com/middle",
+        "https://example.com/final",
+    ]
+    assert "arrived" in payload["content"]
+
+
+@pytest.mark.asyncio
+async def test_scrape_url_blocks_redirect_to_private_host(monkeypatch):
+    fn, search_mod, json_lib = _scrape_url_callable()
+
+    # 仅当目标是 intranet.example 时判私网，确保起始 host 通过初始 SSRF 校验
+    monkeypatch.setattr(
+        search_mod,
+        "_is_private_or_loopback_host",
+        lambda host: host == "intranet.example",
+    )
+
+    async def _handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url) == "https://example.com/start":
+            return httpx.Response(
+                302,
+                headers={"location": "http://intranet.example/admin"},
+                request=request,
+            )
+        # 第二跳不应该被实际请求到
+        raise AssertionError(f"unexpected request to {request.url}")
+
+    transport = httpx.MockTransport(_handler)
+    monkeypatch.setattr(
+        search_mod.httpx, "AsyncClient", _make_patched_client(transport)
+    )
+
+    raw = await fn("https://example.com/start")
+    payload = json_lib.loads(raw)
+
+    assert payload["success"] is False
+    assert "redirect_blocked" in payload["error"]
+    assert "private/loopback" in payload["error"]
+    assert payload["redirect_chain"] == ["http://intranet.example/admin"]
+    assert payload["metrics"]["redirect_hops"] == 1
+
+
+@pytest.mark.asyncio
+async def test_scrape_url_rejects_too_many_redirects(monkeypatch):
+    fn, search_mod, json_lib = _scrape_url_callable()
+    monkeypatch.setattr(
+        search_mod, "_is_private_or_loopback_host", lambda _h: False
+    )
+    # 把跳数上限压低到 2，便于触发
+    monkeypatch.setattr(search_mod, "SCRAPE_MAX_REDIRECT_HOPS", 2)
+
+    async def _handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        idx = int(path.rsplit("/", 1)[-1].lstrip("step")) if path.startswith("/step") else 0
+        return httpx.Response(
+            302,
+            headers={"location": f"https://example.com/step{idx + 1}"},
+            request=request,
+        )
+
+    transport = httpx.MockTransport(_handler)
+    monkeypatch.setattr(
+        search_mod.httpx, "AsyncClient", _make_patched_client(transport)
+    )
+
+    raw = await fn("https://example.com/step0")
+    payload = json_lib.loads(raw)
+
+    assert payload["success"] is False
+    assert "too many redirects" in payload["error"]
+    # max=2 时允许 chain 长度为 2 或 3（第三跳在校验环节抛出）
+    assert len(payload["redirect_chain"]) >= 2
+    assert payload["metrics"]["redirect_hops"] == len(payload["redirect_chain"])
+
+
+@pytest.mark.asyncio
+async def test_scrape_url_decodes_gbk_via_header(monkeypatch):
+    fn, search_mod, json_lib = _scrape_url_callable()
+    monkeypatch.setattr(
+        search_mod, "_is_private_or_loopback_host", lambda _h: False
+    )
+
+    chinese_html = (
+        "<html><head><title>政府公告</title></head>"
+        "<body><main><article>"
+        + "<p>第一条 任何人不得在公共场所吸烟，违者处以五十元罚款。</p>" * 3
+        + "</article></main></body></html>"
+    )
+    gbk_bytes = chinese_html.encode("gbk")
+
+    async def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=gbk_bytes,
+            headers={"content-type": "text/html; charset=GBK"},
+            request=request,
+        )
+
+    transport = httpx.MockTransport(_handler)
+    monkeypatch.setattr(
+        search_mod.httpx, "AsyncClient", _make_patched_client(transport)
+    )
+
+    raw = await fn("https://example.com/gbk")
+    payload = json_lib.loads(raw)
+
+    assert payload["success"] is True
+    assert payload["encoding"] == "gbk"
+    assert "公共场所吸烟" in payload["content"]
+
+
+@pytest.mark.asyncio
+async def test_scrape_url_decodes_via_meta_charset_when_header_missing(monkeypatch):
+    fn, search_mod, json_lib = _scrape_url_callable()
+    monkeypatch.setattr(
+        search_mod, "_is_private_or_loopback_host", lambda _h: False
+    )
+
+    chinese_html = (
+        '<html><head><meta charset="gb2312"><title>地方法规</title></head>'
+        "<body><main><article>"
+        + "<p>第二条 营业场所禁烟标识应当醒目张贴。</p>" * 3
+        + "</article></main></body></html>"
+    )
+    encoded_bytes = chinese_html.encode("gb2312")
+
+    async def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=encoded_bytes,
+            headers={"content-type": "text/html"},  # 故意省略 charset
+            request=request,
+        )
+
+    transport = httpx.MockTransport(_handler)
+    monkeypatch.setattr(
+        search_mod.httpx, "AsyncClient", _make_patched_client(transport)
+    )
+
+    raw = await fn("https://example.com/meta")
+    payload = json_lib.loads(raw)
+
+    assert payload["success"] is True
+    # gb2312 在 Python codecs 下与 gbk 互通，charset_normalizer 可能升级到 gb18030
+    assert payload["encoding"] in {"gb2312", "gbk", "gb18030"}
+    assert "营业场所" in payload["content"]
+
+
+@pytest.mark.asyncio
+async def test_scrape_url_decodes_via_charset_normalizer_fallback(monkeypatch):
+    fn, search_mod, json_lib = _scrape_url_callable()
+    monkeypatch.setattr(
+        search_mod, "_is_private_or_loopback_host", lambda _h: False
+    )
+
+    chinese_html = (
+        "<html><body><main><article>"
+        + "<p>第三条 公共交通工具内禁止吸烟与使用电子烟。</p>" * 5
+        + "</article></main></body></html>"
+    )
+    encoded_bytes = chinese_html.encode("gbk")
+
+    async def _handler(request: httpx.Request) -> httpx.Response:
+        # header 与 meta 均无 charset，强制走 charset_normalizer 兜底
+        return httpx.Response(
+            200,
+            content=encoded_bytes,
+            headers={"content-type": "text/html"},
+            request=request,
+        )
+
+    transport = httpx.MockTransport(_handler)
+    monkeypatch.setattr(
+        search_mod.httpx, "AsyncClient", _make_patched_client(transport)
+    )
+
+    raw = await fn("https://example.com/normalizer")
+    payload = json_lib.loads(raw)
+
+    assert payload["success"] is True
+    assert payload["encoding"] in {"gb18030", "gbk", "gb2312"}
+    assert "电子烟" in payload["content"]
+
+
+@pytest.mark.asyncio
+async def test_scrape_url_reuses_shared_client(monkeypatch):
+    fn, search_mod, json_lib = _scrape_url_callable()
+    monkeypatch.setattr(
+        search_mod, "_is_private_or_loopback_host", lambda _h: False
+    )
+
+    async def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            text="<html><body><main>x</main></body></html>",
+            headers={"content-type": "text/html; charset=utf-8"},
+            request=request,
+        )
+
+    transport = httpx.MockTransport(_handler)
+    patched = _make_patched_client(transport)
+    monkeypatch.setattr(search_mod.httpx, "AsyncClient", patched)
+
+    await fn("https://example.com/a")
+    await fn("https://example.com/b")
+    await fn("https://example.com/c")
+
+    # 3 次连续调用应当只触发一次 client 实例化（共享 client 命中）
+    assert patched.instantiation_count == 1
+    assert search_mod._SCRAPE_CLIENT is not None

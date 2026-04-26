@@ -1,8 +1,22 @@
 # 网页抓取能力迭代计划（v0.2.2 → v0.3.x）
 
-更新时间：2026-04-26
-当前版本：`v0.2.2`
+更新时间：2026-04-27
+当前版本：`v0.2.3-dev`（T1 / T2 / T4 已合并，等 v0.2.3 打 tag）
 计划范围：MCP 工具 `scrape_url`（位于 `libs/miroflow-tools/src/miroflow_tools/dev_mcp_servers/search_and_scrape_webpage.py`）的能力扩展，配合 LLM 在 `google_search` snippet 不足时主动"打开正文"。
+
+## 0. 进度跟踪
+
+| 任务 | 主题 | 状态 | 落地版本 |
+|------|------|------|----------|
+| T1 | 共享 `httpx.AsyncClient` + 分阶段 metrics | ✅ Done | v0.2.3 |
+| T2 | 重定向手动循环 + 每跳 SSRF 校验 + 上限 5 跳 | ✅ Done | v0.2.3 |
+| T4 | 中文编码兜底（header → meta → charset_normalizer） | ✅ Done | v0.2.3 |
+| T3 | PDF 抽取 + 20MB 上限 | ⏳ Pending | v0.2.4 |
+| T5 | JSON / RSS / Atom / XML 直通 | ⏳ Pending | v0.2.4 |
+| T6 | trafilatura 主路径 + bs4 fallback | ⏳ Pending | v0.2.5-scrape |
+| T7 | HTML 表格转 markdown | ⏳ Pending | v0.2.5-scrape |
+| T8 | 句子 / 段落边界截断 | ⏳ Pending | v0.2.5-scrape |
+| T9 | `scrape_urls` 批量并发 | ⏳ Pending | v0.3.0-scrape |
 
 ---
 
@@ -72,7 +86,7 @@ v0.2.2 已上线最小可用 `scrape_url`：基于 `httpx + BeautifulSoup`，仅
 > 顺序：先把"拿得到"的形态打齐（T3/T5），再补"拿得稳"的安全位（T2），随后冲质量（T4/T6/T7/T8），最后做吞吐（T1/T9）。
 > T1 与 T2 可并入同一 commit（共享 client + 重定向手动循环天然一体）。
 
-### T1 [C1] scrape_url 共享 httpx AsyncClient + 分阶段耗时 metrics
+### T1 [C1] scrape_url 共享 httpx AsyncClient + 分阶段耗时 metrics ✅
 
 - 目标：连接池复用、降首字节耗时；区分 dns/connect/tls/transfer/parse 耗时
 - 设计：
@@ -85,7 +99,7 @@ v0.2.2 已上线最小可用 `scrape_url`：基于 `httpx + BeautifulSoup`，仅
 - 回滚：去掉 metrics 字段不影响 LLM 解析；client 单例改回 per-call new 即恢复原状
 - 风险：单例 client 配置若被 module reload 打断会泄漏连接，需配合容器优雅 shutdown
 
-### T2 [D2/D3] 重定向手动循环，每跳 SSRF 校验 + 上限 5 跳
+### T2 [D2/D3] 重定向手动循环，每跳 SSRF 校验 + 上限 5 跳 ✅
 
 - 目标：阻止跳到 169.254.169.254 / 内网 / loopback
 - 设计：
@@ -113,7 +127,7 @@ v0.2.2 已上线最小可用 `scrape_url`：基于 `httpx + BeautifulSoup`，仅
 - 回滚：去掉 `application/pdf` 白名单回到 HTML-only
 - 风险：pdfminer 对扫描件无效（无 OCR），需要在返回里标 `text_quality="empty"` 让 LLM 提示用户
 
-### T4 [B2] 中文编码兜底（charset_normalizer / meta charset 估计）
+### T4 [B2] 中文编码兜底（charset_normalizer / meta charset 估计） ✅
 
 - 目标：解决 `text/html; charset=GBK` 站点在 httpx 默认 utf-8 下乱码
 - 设计：
@@ -198,13 +212,13 @@ v0.2.2 已上线最小可用 `scrape_url`：基于 `httpx + BeautifulSoup`，仅
 
 ## 4. 迭代节奏与版本映射
 
-| 版本 | 任务 | 目标 |
-|------|------|------|
-| **v0.2.2**（已发布） | scrape_url 最小可用 + SSRF 防护 + 单元测试 | 让 LLM 至少能"打开 HTML 正文" |
-| **v0.2.3** | T2 + T1 + T4 | 安全闭环 + 编码鲁棒 + 共享 client |
-| **v0.2.4** | T3 + T5 | 把 PDF / JSON / RSS / Atom / XML 入口接上 |
-| **v0.2.5** | T6 + T7 + T8 | 提升正文质量与表格保真，对接 trafilatura |
-| **v0.3.0** | T9 + 配额限流 + robots.txt 校验 | 批量抓取与外部站点友好性 |
+| 版本 | 任务 | 目标 | 状态 |
+|------|------|------|------|
+| **v0.2.2**（已发布） | scrape_url 最小可用 + SSRF 防护 + 单元测试 | 让 LLM 至少能"打开 HTML 正文" | ✅ shipped |
+| **v0.2.3**（开发中） | T2 + T1 + T4 | 安全闭环 + 编码鲁棒 + 共享 client + metrics | ✅ merged on main |
+| **v0.2.4** | T3 + T5 | 把 PDF / JSON / RSS / Atom / XML 入口接上 | ⏳ next |
+| **v0.2.5** | T6 + T7 + T8 | 提升正文质量与表格保真，对接 trafilatura | ⏳ |
+| **v0.3.0** | T9 + 配额限流 + robots.txt 校验 | 批量抓取与外部站点友好性 | ⏳ |
 
 > 上述节奏与 `docs/ROADMAP.md` 中 "v0.2.5（质量增强 + 可观测性）" 互不冲突；评测体系与可观测性属于 ROADMAP 主线，本计划专注抓取工具能力。
 

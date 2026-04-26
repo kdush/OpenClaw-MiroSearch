@@ -2,13 +2,15 @@
 # This source code is licensed under the Apache 2.0 License.
 
 import asyncio
+import atexit
 import json
 import logging
 import os
+import re
 import socket
 import time
 from ipaddress import ip_address
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 import httpx
@@ -892,6 +894,7 @@ async def sogou_search(
 DEFAULT_SCRAPE_TIMEOUT_SECONDS = _read_env_float("SCRAPE_TIMEOUT_SECONDS", 25.0, 1.0)
 DEFAULT_SCRAPE_MAX_CHARS = _read_env_int("SCRAPE_MAX_CHARS", 10000, 500)
 SCRAPE_HARD_CAP_CHARS = _read_env_int("SCRAPE_HARD_CAP_CHARS", 30000, 1000)
+SCRAPE_MAX_REDIRECT_HOPS = _read_env_int("SCRAPE_MAX_REDIRECT_HOPS", 5, 0)
 SCRAPE_USER_AGENT = os.getenv(
     "SCRAPE_USER_AGENT",
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -902,6 +905,13 @@ ALLOWED_SCRAPE_CONTENT_PREFIXES = (
     "application/xhtml",
     "text/plain",
 )
+
+# 共享 client 由 _get_scrape_client() lazy 初始化，进程结束时由 atexit 关闭。
+# 引入共享 client 是为了让 LLM 在一轮研究中连续 scrape 多个 URL 时复用 TCP/TLS,
+# 把第二条以后的请求 RTT 从「全新握手」降到「连接池命中」，明显降低尾延迟。
+_SCRAPE_CLIENT: Optional[httpx.AsyncClient] = None
+_SCRAPE_CLIENT_LOCK: Optional[asyncio.Lock] = None
+_SCRAPE_ATEXIT_REGISTERED = False
 
 
 def _is_private_or_loopback_host(host: str) -> bool:
@@ -928,6 +938,214 @@ def _is_private_or_loopback_host(host: str) -> bool:
         ):
             return True
     return False
+
+
+# ---------------------------------------------------------------------------
+# 共享 AsyncClient（T1）
+# ---------------------------------------------------------------------------
+
+
+def _close_scrape_client_at_exit() -> None:
+    """进程退出时尝试关闭共享 client，吃掉所有异常以免污染退出码。"""
+    global _SCRAPE_CLIENT
+    client = _SCRAPE_CLIENT
+    if client is None:
+        return
+    _SCRAPE_CLIENT = None
+    try:
+        # 尝试在新事件循环里 aclose
+        try:
+            asyncio.run(client.aclose())
+            return
+        except RuntimeError:
+            # 已有 loop 在运行（罕见），改走底层 transport.close
+            pass
+        transport = getattr(client, "_transport", None)
+        if transport is not None and hasattr(transport, "close"):
+            transport.close()
+    except Exception:
+        # atexit 钩子绝不抛异常
+        pass
+
+
+async def _get_scrape_client() -> httpx.AsyncClient:
+    """返回模块级共享的 httpx.AsyncClient，懒初始化 + 单例 + atexit 关闭。"""
+    global _SCRAPE_CLIENT, _SCRAPE_CLIENT_LOCK, _SCRAPE_ATEXIT_REGISTERED
+    if _SCRAPE_CLIENT_LOCK is None:
+        _SCRAPE_CLIENT_LOCK = asyncio.Lock()
+    async with _SCRAPE_CLIENT_LOCK:
+        if _SCRAPE_CLIENT is None:
+            # follow_redirects=False：T2 接管重定向链以便每跳做 SSRF 校验
+            _SCRAPE_CLIENT = httpx.AsyncClient(
+                follow_redirects=False,
+                timeout=DEFAULT_SCRAPE_TIMEOUT_SECONDS,
+                headers={
+                    "User-Agent": SCRAPE_USER_AGENT,
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+                },
+            )
+            if not _SCRAPE_ATEXIT_REGISTERED:
+                atexit.register(_close_scrape_client_at_exit)
+                _SCRAPE_ATEXIT_REGISTERED = True
+    return _SCRAPE_CLIENT
+
+
+async def _reset_scrape_client_for_tests() -> None:
+    """测试钩子：强制丢弃当前共享 client，让下一次 _get_scrape_client 重建。"""
+    global _SCRAPE_CLIENT
+    client = _SCRAPE_CLIENT
+    _SCRAPE_CLIENT = None
+    if client is not None:
+        try:
+            await client.aclose()
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# 编码识别（T4）
+# ---------------------------------------------------------------------------
+
+_META_CHARSET_RE = re.compile(
+    rb'<meta[^>]+charset\s*=\s*["\']?([\w\-:]+)', re.IGNORECASE
+)
+_META_HTTP_EQUIV_CHARSET_RE = re.compile(
+    rb'<meta[^>]+http-equiv\s*=\s*["\']?content-type["\']?'
+    rb'[^>]*content\s*=\s*["\'][^"\';]*charset\s*=\s*([\w\-:]+)',
+    re.IGNORECASE,
+)
+
+
+def _extract_header_charset(content_type: str) -> Optional[str]:
+    """从 Content-Type 头提取 charset，例如 'text/html; charset=GBK'。"""
+    if not content_type or "charset=" not in content_type.lower():
+        return None
+    for part in content_type.split(";"):
+        part = part.strip()
+        if part.lower().startswith("charset="):
+            value = part[len("charset="):].strip().strip('"\'').strip()
+            return value or None
+    return None
+
+
+def _extract_meta_charset(head_bytes: bytes) -> Optional[str]:
+    """从 HTML 头部前若干 KB 字节中识别 <meta charset> / <meta http-equiv>。"""
+    if not head_bytes:
+        return None
+    match = _META_CHARSET_RE.search(head_bytes)
+    if match:
+        try:
+            return match.group(1).decode("ascii", errors="ignore").strip()
+        except Exception:
+            return None
+    match = _META_HTTP_EQUIV_CHARSET_RE.search(head_bytes)
+    if match:
+        try:
+            return match.group(1).decode("ascii", errors="ignore").strip()
+        except Exception:
+            return None
+    return None
+
+
+def _decode_response_bytes(
+    content: bytes, header_content_type: str
+) -> Tuple[str, str]:
+    """按 header → meta → charset_normalizer → utf-8(replace) 顺序解码字节体。
+
+    返回 (text, encoding_used)。encoding_used 落在 metrics / 调试字段里，便于
+    回溯 LLM 抓到的中文乱码到底是哪个步骤兜底失败。
+    """
+    if not content:
+        return "", "utf-8"
+
+    # 1. header charset
+    charset = _extract_header_charset(header_content_type)
+    if charset:
+        try:
+            return content.decode(charset, errors="replace"), charset.lower()
+        except (LookupError, UnicodeDecodeError):
+            pass
+
+    # 2. meta charset（只看前 4KB，足够覆盖 head 区）
+    meta_charset = _extract_meta_charset(content[:4096])
+    if meta_charset:
+        try:
+            return content.decode(meta_charset, errors="replace"), meta_charset.lower()
+        except (LookupError, UnicodeDecodeError):
+            pass
+
+    # 3. charset_normalizer 自动识别（httpx 已传递依赖）
+    try:
+        from charset_normalizer import from_bytes  # 延迟导入
+
+        result = from_bytes(content).best()
+        if result is not None:
+            encoding = (result.encoding or "utf-8").lower()
+            return str(result), encoding
+    except Exception:
+        pass
+
+    # 4. utf-8 replace 兜底
+    return content.decode("utf-8", errors="replace"), "utf-8"
+
+
+# ---------------------------------------------------------------------------
+# 手动重定向（T2）
+# ---------------------------------------------------------------------------
+
+
+class _RedirectBlocked(Exception):
+    """重定向链被 SSRF / 非 http(s) / 跳数上限阻断时抛出。"""
+
+    def __init__(self, reason: str, chain: List[str]):
+        super().__init__(reason)
+        self.reason = reason
+        self.chain = chain
+
+
+async def _fetch_with_manual_redirects(
+    client: httpx.AsyncClient,
+    initial_url: str,
+    max_hops: int,
+) -> Tuple[httpx.Response, List[str]]:
+    """手动跟随 30x 重定向，每跳都做 SSRF + scheme 校验。
+
+    返回 (最终响应, 中间重定向 URL 列表，不含 initial_url)。
+    """
+    chain: List[str] = []
+    current_url = initial_url
+    for _hop in range(max_hops + 1):
+        response = await client.get(current_url)
+        if not (300 <= response.status_code < 400):
+            return response, chain
+        location = response.headers.get("location") or response.headers.get("Location")
+        if not location:
+            # 30x 但没 Location：当作终态返回
+            return response, chain
+        try:
+            next_url = str(httpx.URL(current_url).join(location))
+        except Exception as exc:
+            raise _RedirectBlocked(
+                f"invalid redirect target: {exc}", chain + [location]
+            ) from exc
+        parsed = urlparse(next_url)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            raise _RedirectBlocked(
+                "redirect target must be absolute http(s)",
+                chain + [next_url],
+            )
+        if _is_private_or_loopback_host(parsed.hostname or ""):
+            raise _RedirectBlocked(
+                "redirect target is private/loopback/multicast host",
+                chain + [next_url],
+            )
+        chain.append(next_url)
+        current_url = next_url
+    raise _RedirectBlocked(
+        f"too many redirects (hops > {max_hops})",
+        chain,
+    )
 
 
 def _extract_main_text(html: str) -> tuple[str, str]:
@@ -1001,13 +1219,27 @@ async def scrape_url(url: str, max_chars: int = DEFAULT_SCRAPE_MAX_CHARS) -> str
     Returns:
         JSON string with fields:
         - success: bool
-        - url, final_url, http_status, title, content, content_type
+        - url, final_url, http_status, title, content, content_type, encoding
         - content_length, truncated
+        - redirect_chain (list[str], only present when redirects happened)
+        - metrics: {t_request_ms, t_parse_ms, t_extract_ms, redirect_hops}
         - error (only present when success=False)
     """
+    metrics: Dict[str, Any] = {
+        "t_request_ms": 0,
+        "t_parse_ms": 0,
+        "t_extract_ms": 0,
+        "redirect_hops": 0,
+    }
+
     if not url or not isinstance(url, str):
         return json.dumps(
-            {"success": False, "error": "url is required and must be a string", "url": url},
+            {
+                "success": False,
+                "error": "url is required and must be a string",
+                "url": url,
+                "metrics": metrics,
+            },
             ensure_ascii=False,
         )
 
@@ -1018,6 +1250,7 @@ async def scrape_url(url: str, max_chars: int = DEFAULT_SCRAPE_MAX_CHARS) -> str
                 "success": False,
                 "error": "only absolute http(s) URLs are supported",
                 "url": url,
+                "metrics": metrics,
             },
             ensure_ascii=False,
         )
@@ -1028,6 +1261,7 @@ async def scrape_url(url: str, max_chars: int = DEFAULT_SCRAPE_MAX_CHARS) -> str
                 "success": False,
                 "error": "private/loopback/multicast hosts are blocked",
                 "url": url,
+                "metrics": metrics,
             },
             ensure_ascii=False,
         )
@@ -1038,102 +1272,133 @@ async def scrape_url(url: str, max_chars: int = DEFAULT_SCRAPE_MAX_CHARS) -> str
         cap_chars = DEFAULT_SCRAPE_MAX_CHARS
     cap_chars = max(500, min(cap_chars, SCRAPE_HARD_CAP_CHARS))
 
-    headers = {
-        "User-Agent": SCRAPE_USER_AGENT,
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-    }
-
+    redirect_chain: List[str] = []
+    request_started = time.perf_counter()
     try:
-        async with httpx.AsyncClient(
-            follow_redirects=True,
-            timeout=DEFAULT_SCRAPE_TIMEOUT_SECONDS,
-            headers=headers,
-        ) as client:
-            response = await client.get(url)
-    except httpx.TimeoutException:
+        client = await _get_scrape_client()
+        response, redirect_chain = await _fetch_with_manual_redirects(
+            client, url, SCRAPE_MAX_REDIRECT_HOPS
+        )
+    except _RedirectBlocked as exc:
+        metrics["t_request_ms"] = int((time.perf_counter() - request_started) * 1000)
+        metrics["redirect_hops"] = len(exc.chain)
         return json.dumps(
-            {"success": False, "error": "request timed out", "url": url},
+            {
+                "success": False,
+                "error": f"redirect_blocked: {exc.reason}",
+                "url": url,
+                "redirect_chain": exc.chain,
+                "metrics": metrics,
+            },
+            ensure_ascii=False,
+        )
+    except httpx.TimeoutException:
+        metrics["t_request_ms"] = int((time.perf_counter() - request_started) * 1000)
+        return json.dumps(
+            {
+                "success": False,
+                "error": "request timed out",
+                "url": url,
+                "metrics": metrics,
+            },
             ensure_ascii=False,
         )
     except httpx.HTTPError as exc:
+        metrics["t_request_ms"] = int((time.perf_counter() - request_started) * 1000)
         return json.dumps(
             {
                 "success": False,
                 "error": f"http error: {type(exc).__name__}: {exc}",
                 "url": url,
+                "metrics": metrics,
             },
             ensure_ascii=False,
         )
     except Exception as exc:
+        metrics["t_request_ms"] = int((time.perf_counter() - request_started) * 1000)
         return json.dumps(
             {
                 "success": False,
                 "error": f"unexpected error: {type(exc).__name__}: {exc}",
                 "url": url,
+                "metrics": metrics,
             },
             ensure_ascii=False,
         )
 
+    metrics["t_request_ms"] = int((time.perf_counter() - request_started) * 1000)
+    metrics["redirect_hops"] = len(redirect_chain)
+
     final_url = str(response.url)
-    content_type = (
-        (response.headers.get("content-type") or "").split(";")[0].strip().lower()
-    )
+    raw_content_type = response.headers.get("content-type") or ""
+    content_type = raw_content_type.split(";")[0].strip().lower()
     if content_type and not any(
         content_type.startswith(prefix) for prefix in ALLOWED_SCRAPE_CONTENT_PREFIXES
     ):
-        return json.dumps(
-            {
-                "success": False,
-                "error": f"unsupported content_type {content_type!r}; only HTML/text are extracted",
-                "url": url,
-                "final_url": final_url,
-                "http_status": response.status_code,
-                "content_type": content_type,
-            },
-            ensure_ascii=False,
-        )
+        payload: Dict[str, Any] = {
+            "success": False,
+            "error": f"unsupported content_type {content_type!r}; only HTML/text are extracted",
+            "url": url,
+            "final_url": final_url,
+            "http_status": response.status_code,
+            "content_type": content_type,
+            "metrics": metrics,
+        }
+        if redirect_chain:
+            payload["redirect_chain"] = redirect_chain
+        return json.dumps(payload, ensure_ascii=False)
 
     if response.status_code >= 400:
-        return json.dumps(
-            {
-                "success": False,
-                "error": f"http_status={response.status_code}",
-                "url": url,
-                "final_url": final_url,
-                "http_status": response.status_code,
-            },
-            ensure_ascii=False,
-        )
+        payload = {
+            "success": False,
+            "error": f"http_status={response.status_code}",
+            "url": url,
+            "final_url": final_url,
+            "http_status": response.status_code,
+            "metrics": metrics,
+        }
+        if redirect_chain:
+            payload["redirect_chain"] = redirect_chain
+        return json.dumps(payload, ensure_ascii=False)
 
+    # T4：bytes → text 解码兜底，避免 GBK/GB18030 站点中文乱码
+    parse_started = time.perf_counter()
+    decoded_text, encoding_used = _decode_response_bytes(
+        response.content, raw_content_type
+    )
+    metrics["t_parse_ms"] = int((time.perf_counter() - parse_started) * 1000)
+
+    extract_started = time.perf_counter()
     if content_type.startswith("text/plain"):
-        text_content = response.text
         normalized_lines = [
-            line.strip() for line in text_content.splitlines() if line.strip()
+            line.strip() for line in decoded_text.splitlines() if line.strip()
         ]
         text_content = "\n".join(normalized_lines)
         title = ""
     else:
-        text_content, title = _extract_main_text(response.text)
+        text_content, title = _extract_main_text(decoded_text)
+    metrics["t_extract_ms"] = int((time.perf_counter() - extract_started) * 1000)
 
     truncated = len(text_content) > cap_chars
     if truncated:
         text_content = text_content[:cap_chars]
 
-    return json.dumps(
-        {
-            "success": True,
-            "url": url,
-            "final_url": final_url,
-            "http_status": response.status_code,
-            "title": title,
-            "content": text_content,
-            "content_type": content_type or "text/html",
-            "content_length": len(text_content),
-            "truncated": truncated,
-        },
-        ensure_ascii=False,
-    )
+    payload = {
+        "success": True,
+        "url": url,
+        "final_url": final_url,
+        "http_status": response.status_code,
+        "title": title,
+        "content": text_content,
+        "content_type": content_type or "text/html",
+        "encoding": encoding_used,
+        "content_length": len(text_content),
+        "truncated": truncated,
+        "metrics": metrics,
+    }
+    if redirect_chain:
+        payload["redirect_chain"] = redirect_chain
+    return json.dumps(payload, ensure_ascii=False)
 
 
 if __name__ == "__main__":
