@@ -5,6 +5,7 @@ from .registry import ProviderRegistry
 from .searxng import SearXNGProvider
 from .serpapi import SerpAPIProvider
 from .serper import SerperProvider
+from .tavily import TavilyProvider
 
 __all__ = [
     "SearchProvider",
@@ -14,4 +15,5 @@ __all__ = [
     "SerperProvider",
     "SerpAPIProvider",
     "SearXNGProvider",
+    "TavilyProvider",
 ]

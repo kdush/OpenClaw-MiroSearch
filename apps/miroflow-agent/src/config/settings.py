@@ -22,49 +22,51 @@ from omegaconf import DictConfig
 load_dotenv()
 
 # API for Google Search
-SERPER_API_KEY = os.environ.get("SERPER_API_KEY")
+SERPER_API_KEY = os.environ.get("SERPER_API_KEY", "")
 SERPER_BASE_URL = os.environ.get("SERPER_BASE_URL", "https://google.serper.dev")
-SERPAPI_API_KEY = os.environ.get("SERPAPI_API_KEY")
-SEARXNG_BASE_URL = os.environ.get("SEARXNG_BASE_URL")
+SERPAPI_API_KEY = os.environ.get("SERPAPI_API_KEY", "")
+SEARXNG_BASE_URL = os.environ.get("SEARXNG_BASE_URL", "")
+# Tavily 为LLM/Agent优化的搜索 SaaS，作为第四路商业源
+TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
 
 # API for Web Scraping
-JINA_API_KEY = os.environ.get("JINA_API_KEY")
+JINA_API_KEY = os.environ.get("JINA_API_KEY", "")
 JINA_BASE_URL = os.environ.get("JINA_BASE_URL", "https://r.jina.ai")
 
 # API for Linux Sandbox
-E2B_API_KEY = os.environ.get("E2B_API_KEY")
+E2B_API_KEY = os.environ.get("E2B_API_KEY", "")
 
 # API for Open-Source Audio Transcription Tool
-WHISPER_BASE_URL = os.environ.get("WHISPER_BASE_URL")
-WHISPER_API_KEY = os.environ.get("WHISPER_API_KEY")
-WHISPER_MODEL_NAME = os.environ.get("WHISPER_MODEL_NAME")
+WHISPER_BASE_URL = os.environ.get("WHISPER_BASE_URL", "")
+WHISPER_API_KEY = os.environ.get("WHISPER_API_KEY", "")
+WHISPER_MODEL_NAME = os.environ.get("WHISPER_MODEL_NAME", "")
 
 # API for Open-Source VQA Tool
-VISION_API_KEY = os.environ.get("VISION_API_KEY")
-VISION_BASE_URL = os.environ.get("VISION_BASE_URL")
-VISION_MODEL_NAME = os.environ.get("VISION_MODEL_NAME")
+VISION_API_KEY = os.environ.get("VISION_API_KEY", "")
+VISION_BASE_URL = os.environ.get("VISION_BASE_URL", "")
+VISION_MODEL_NAME = os.environ.get("VISION_MODEL_NAME", "")
 
 # API for Open-Source Reasoning Tool
-REASONING_API_KEY = os.environ.get("REASONING_API_KEY")
-REASONING_BASE_URL = os.environ.get("REASONING_BASE_URL")
-REASONING_MODEL_NAME = os.environ.get("REASONING_MODEL_NAME")
+REASONING_API_KEY = os.environ.get("REASONING_API_KEY", "")
+REASONING_BASE_URL = os.environ.get("REASONING_BASE_URL", "")
+REASONING_MODEL_NAME = os.environ.get("REASONING_MODEL_NAME", "")
 
 # API for Claude Sonnet 3.7 as Commercial Tools
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 ANTHROPIC_BASE_URL = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
 
 # API Keys for Commercial Tools
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
 
 # API for Sogou Search
-TENCENTCLOUD_SECRET_ID = os.environ.get("TENCENTCLOUD_SECRET_ID")
-TENCENTCLOUD_SECRET_KEY = os.environ.get("TENCENTCLOUD_SECRET_KEY")
+TENCENTCLOUD_SECRET_ID = os.environ.get("TENCENTCLOUD_SECRET_ID", "")
+TENCENTCLOUD_SECRET_KEY = os.environ.get("TENCENTCLOUD_SECRET_KEY", "")
 
 # API for Summary LLM
-SUMMARY_LLM_API_KEY = os.environ.get("SUMMARY_LLM_API_KEY")
-SUMMARY_LLM_BASE_URL = os.environ.get("SUMMARY_LLM_BASE_URL")
-SUMMARY_LLM_MODEL_NAME = os.environ.get("SUMMARY_LLM_MODEL_NAME")
+SUMMARY_LLM_API_KEY = os.environ.get("SUMMARY_LLM_API_KEY", "")
+SUMMARY_LLM_BASE_URL = os.environ.get("SUMMARY_LLM_BASE_URL", "")
+SUMMARY_LLM_MODEL_NAME = os.environ.get("SUMMARY_LLM_MODEL_NAME", "")
 
 
 # MCP server configuration generation function
@@ -297,17 +299,23 @@ def create_mcp_server_parameters(cfg: DictConfig, agent_cfg: DictConfig):
             "SERPER_BASE_URL", SERPER_BASE_URL
         )
         dynamic_serpapi_api_key = os.environ.get("SERPAPI_API_KEY", SERPAPI_API_KEY)
+        # 多 Key 轮转池：必须显式透传给 MCP 子进程（MCP 默认 env 仅含系统变量）。
+        dynamic_serpapi_api_keys = os.environ.get("SERPAPI_API_KEYS", "")
+        dynamic_serper_api_keys = os.environ.get("SERPER_API_KEYS", "")
+        dynamic_tavily_api_key = os.environ.get("TAVILY_API_KEY", TAVILY_API_KEY)
+        dynamic_tavily_api_keys = os.environ.get("TAVILY_API_KEYS", "")
+        dynamic_tavily_search_depth = os.environ.get("TAVILY_SEARCH_DEPTH", "basic")
         dynamic_searxng_base_url = os.environ.get(
             "SEARXNG_BASE_URL", SEARXNG_BASE_URL
         )
         dynamic_search_provider_order = os.environ.get(
-            "SEARCH_PROVIDER_ORDER", "searxng,serpapi,serper"
+            "SEARCH_PROVIDER_ORDER", "searxng,serpapi,serper,tavily"
         )
         dynamic_search_provider_mode = os.environ.get(
             "SEARCH_PROVIDER_MODE", "fallback"
         )
         dynamic_search_provider_trusted_order = os.environ.get(
-            "SEARCH_PROVIDER_TRUSTED_ORDER", "serpapi,searxng,serper"
+            "SEARCH_PROVIDER_TRUSTED_ORDER", "serpapi,tavily,searxng,serper"
         )
         dynamic_search_provider_parallel_max_wait_ms = os.environ.get(
             "SEARCH_PROVIDER_PARALLEL_MAX_WAIT_MS", "4500"
@@ -352,8 +360,13 @@ def create_mcp_server_parameters(cfg: DictConfig, agent_cfg: DictConfig):
                     ],
                     env={
                         "SERPER_API_KEY": dynamic_serper_api_key or "",
+                        "SERPER_API_KEYS": dynamic_serper_api_keys or "",
                         "SERPER_BASE_URL": dynamic_serper_base_url or "",
                         "SERPAPI_API_KEY": dynamic_serpapi_api_key or "",
+                        "SERPAPI_API_KEYS": dynamic_serpapi_api_keys or "",
+                        "TAVILY_API_KEY": dynamic_tavily_api_key or "",
+                        "TAVILY_API_KEYS": dynamic_tavily_api_keys or "",
+                        "TAVILY_SEARCH_DEPTH": dynamic_tavily_search_depth or "basic",
                         "SEARXNG_BASE_URL": dynamic_searxng_base_url or "",
                         "SEARCH_PROVIDER_ORDER": dynamic_search_provider_order,
                         "SEARCH_PROVIDER_MODE": dynamic_search_provider_mode,
@@ -530,6 +543,7 @@ def get_env_info(cfg: DictConfig) -> dict:
         # API Keys (masked for security)
         "has_serper_api_key": bool(SERPER_API_KEY),
         "has_serpapi_api_key": bool(SERPAPI_API_KEY),
+        "has_tavily_api_key": bool(TAVILY_API_KEY),
         "has_jina_api_key": bool(JINA_API_KEY),
         "has_anthropic_api_key": bool(ANTHROPIC_API_KEY),
         "has_openai_api_key": bool(OPENAI_API_KEY),
