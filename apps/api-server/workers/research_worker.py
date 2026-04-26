@@ -83,17 +83,60 @@ async def run_research_job(
 
         # 创建运行时组件（每任务新建）
         cfg, main_tm, sub_tms, output_fmt, tool_defs, sub_tool_defs = await runtime.create_runtime_components(req)
+        logger.info(
+            "Task %s runtime config: llm.provider=%s llm.async_client=%s",
+            task_id,
+            getattr(cfg.llm, "provider", "unknown"),
+            getattr(cfg.llm, "async_client", "unknown"),
+        )
 
         # 取消轮询任务
         cancel_poll_interval = settings.worker.cancel_poll_interval_seconds
 
         async def check_cancel():
-            """检查取消标志。"""
+            """协作式取消监听器：定期轮询 redis 中 cancel_requested 标志。
+
+            异常处理纪律：单次 redis 读取失败（连接抖动 / 超时）不应让 watcher
+            静默退出，否则之后 cancel 信号永远收不到。捕获 ``Exception`` 后只
+            打 warning 日志，继续下一次轮询；asyncio.CancelledError 仍要传播
+            （pipeline 完成后由外层显式 cancel 该 watcher）。
+
+            Heartbeat 日志：前 3 次轮询打 INFO 日志，后续每 60 秒打一次。便于
+            诊断 watcher 是否被 event loop 调度到（历史排查中曾出现 watcher
+            启动后长时间不轮询的问题）。
+            """
+            logger.info(
+                "Cancel watcher started for task %s (poll interval=%.2fs)",
+                task_id,
+                cancel_poll_interval,
+            )
+            iteration = 0
+            heartbeat_every = max(1, int(60.0 / cancel_poll_interval))
             while True:
                 await asyncio.sleep(cancel_poll_interval)
-                if await task_store.is_cancel_requested(task_id):
-                    logger.info("Task %s cancel requested", task_id)
-                    return True
+                iteration += 1
+                if iteration <= 3 or iteration % heartbeat_every == 0:
+                    logger.info(
+                        "Cancel watcher heartbeat: task=%s iter=%d",
+                        task_id,
+                        iteration,
+                    )
+                try:
+                    if await task_store.is_cancel_requested(task_id):
+                        logger.info(
+                            "Task %s cancel requested, watcher exits (iter=%d)",
+                            task_id,
+                            iteration,
+                        )
+                        return True
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001 - 必须吞下保证 watcher 不死
+                    logger.warning(
+                        "Task %s cancel watcher redis error (continue polling): %s",
+                        task_id,
+                        exc,
+                    )
 
         # 执行 pipeline
         pipeline_task = asyncio.create_task(
@@ -119,13 +162,27 @@ async def run_research_job(
                 return_when=asyncio.FIRST_COMPLETED,
             )
 
-            # 取消未完成的任务
+            # 取消未完成的任务（含响应窗口，超时则放弃等待，避免被吞掉 CancelledError 的
+            # 下游代码导致 await pending 永远 hang）。pipeline 内部对 CancelledError
+            # 已捕获（pipeline.py），通常会在拦截后短时间内 return；watcher 是 sleep
+            # 循环，cancel 几乎立即生效。10s 是一个保守上限。
             for t in pending:
                 t.cancel()
                 try:
-                    await t
+                    await asyncio.wait_for(t, timeout=10.0)
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "Task %s background coroutine did not respond to cancel within 10s, abandoning",
+                        task_id,
+                    )
                 except asyncio.CancelledError:
                     pass
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "Task %s cancel cleanup raised unexpected error: %s",
+                        task_id,
+                        exc,
+                    )
 
             # 检查结果
             if cancel_task in done:

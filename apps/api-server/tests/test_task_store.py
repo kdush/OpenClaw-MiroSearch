@@ -2,6 +2,7 @@
 
 import pytest
 import redis.asyncio as redis
+import asyncio
 
 from services.task_store import TaskStore, TaskStatus, TaskMeta
 
@@ -68,6 +69,35 @@ async def test_update_task_status(task_store: TaskStore):
     assert meta.finished_at is not None
 
     # 清理
+    await task_store.delete_task(task_id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("activity", ["status", "stage", "event"])
+async def test_task_activity_refreshes_metadata_ttl(
+    task_store: TaskStore, activity: str
+):
+    task_id = f"test-task-ttl-{activity}"
+    meta_key = f"{task_store.KEY_TASK}:{task_id}"
+    await task_store.create_task(task_id=task_id, status=TaskStatus.RUNNING)
+    await task_store._redis.expire(meta_key, 2)
+
+    await asyncio.sleep(1.1)
+    if activity == "status":
+        await task_store.update_task_status(task_id, TaskStatus.RUNNING)
+    elif activity == "stage":
+        await task_store.update_task_stage(task_id, "agent:main")
+    else:
+        await task_store.append_event(
+            task_id,
+            "stage_heartbeat",
+            {"stage": "agent:main"},
+        )
+
+    await asyncio.sleep(1.1)
+    meta = await task_store.get_task(task_id)
+
+    assert meta is not None
     await task_store.delete_task(task_id)
 
 

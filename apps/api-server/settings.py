@@ -64,6 +64,9 @@ class WorkerSettings(BaseSettings):
     cancel_poll_interval_seconds: float = Field(
         default=0.5, alias="TASK_CANCEL_POLL_INTERVAL_SECONDS"
     )
+    force_async_llm_client: bool = Field(
+        default=True, alias="WORKER_FORCE_ASYNC_LLM_CLIENT"
+    )
 
 
 class Settings(BaseSettings):

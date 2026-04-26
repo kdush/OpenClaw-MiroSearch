@@ -187,6 +187,11 @@ class TaskStore:
             return None
         return TaskMeta.from_dict(data)
 
+    async def _refresh_task_metadata_ttl(self, task_id: str) -> None:
+        """刷新任务元数据 TTL，避免长任务运行时快照先过期。"""
+        key = f"{self.KEY_TASK}:{task_id}"
+        await self._redis.expire(key, self._metadata_ttl)
+
     async def update_task_status(
         self,
         task_id: str,
@@ -211,12 +216,14 @@ class TaskStore:
             updates["error"] = error
 
         result = await self._redis.hset(key, mapping=updates)
+        await self._refresh_task_metadata_ttl(task_id)
         return result >= 0
 
     async def update_task_stage(self, task_id: str, stage: str) -> bool:
         """更新任务当前阶段。"""
         key = f"{self.KEY_TASK}:{task_id}"
         result = await self._redis.hset(key, "current_stage", stage)
+        await self._refresh_task_metadata_ttl(task_id)
         return result >= 0
 
     # ---- 事件流 ----
@@ -237,6 +244,7 @@ class TaskStore:
         event_id = await self._redis.xadd(key, event_data, maxlen=self._event_stream_maxlen)
         # 设置事件流 TTL
         await self._redis.expire(key, self._metadata_ttl)
+        await self._refresh_task_metadata_ttl(task_id)
         return event_id
 
     async def read_events(
