@@ -6,6 +6,46 @@ import httpx
 import pytest
 
 
+def _make_simple_pdf_bytes(text: str) -> bytes:
+    escaped_text = (
+        text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+    )
+    stream = (
+        f"BT\n/F1 18 Tf\n72 720 Td\n({escaped_text}) Tj\nET\n".encode("latin-1")
+    )
+    objects = [
+        b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
+        b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n",
+        (
+            b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+            b"/Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n"
+        ),
+        (
+            b"4 0 obj\n<< /Length "
+            + str(len(stream)).encode("ascii")
+            + b" >>\nstream\n"
+            + stream
+            + b"endstream\nendobj\n"
+        ),
+        b"5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n",
+    ]
+    content = b"%PDF-1.4\n"
+    offsets = []
+    for obj in objects:
+        offsets.append(len(content))
+        content += obj
+    startxref = len(content)
+    content += b"xref\n0 6\n0000000000 65535 f \n"
+    for offset in offsets:
+        content += f"{offset:010d} 00000 n \n".encode("ascii")
+    content += (
+        b"trailer\n<< /Root 1 0 R /Size 6 >>\nstartxref\n"
+        + str(startxref).encode("ascii")
+        + b"\n%%EOF\n"
+    )
+    return content
+
+
 def _install_tencentcloud_stubs() -> None:
     """为缺失的 tencentcloud 依赖注入最小桩，避免单测导入失败。"""
     if "tencentcloud" in sys.modules:
@@ -273,7 +313,7 @@ async def test_scrape_url_extracts_main_content(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_scrape_url_rejects_non_html_content_type(monkeypatch):
+async def test_scrape_url_rejects_invalid_pdf_payload(monkeypatch):
     fn, search_mod, json_lib = _scrape_url_callable()
     monkeypatch.setattr(
         search_mod, "_is_private_or_loopback_host", lambda _host: False
@@ -299,7 +339,7 @@ async def test_scrape_url_rejects_non_html_content_type(monkeypatch):
     raw = await fn("https://example.com/file.pdf")
     payload = json_lib.loads(raw)
     assert payload["success"] is False
-    assert "unsupported content_type" in payload["error"]
+    assert "extract_failed" in payload["error"]
     assert payload["content_type"] == "application/pdf"
 
 
@@ -679,3 +719,137 @@ async def test_scrape_url_reuses_shared_client(monkeypatch):
     # 3 次连续调用应当只触发一次 client 实例化（共享 client 命中）
     assert patched.instantiation_count == 1
     assert search_mod._SCRAPE_CLIENT is not None
+
+
+@pytest.mark.asyncio
+async def test_scrape_url_extracts_pdf_content(monkeypatch):
+    fn, search_mod, json_lib = _scrape_url_callable()
+    monkeypatch.setattr(
+        search_mod, "_is_private_or_loopback_host", lambda _h: False
+    )
+    pdf_bytes = _make_simple_pdf_bytes("Shenzhen Statistical Bulletin 2024")
+
+    async def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=pdf_bytes,
+            headers={"content-type": "application/pdf"},
+            request=request,
+        )
+
+    transport = httpx.MockTransport(_handler)
+    monkeypatch.setattr(
+        search_mod.httpx, "AsyncClient", _make_patched_client(transport)
+    )
+
+    raw = await fn("https://example.com/bulletin.pdf")
+    payload = json_lib.loads(raw)
+
+    assert payload["success"] is True
+    assert payload["content_kind"] == "pdf"
+    assert payload["pages"] == 1
+    assert payload["bytes_read"] == len(pdf_bytes)
+    assert "Shenzhen Statistical Bulletin 2024" in payload["content"]
+
+
+@pytest.mark.asyncio
+async def test_scrape_url_blocks_oversized_body(monkeypatch):
+    fn, search_mod, json_lib = _scrape_url_callable()
+    monkeypatch.setattr(
+        search_mod, "_is_private_or_loopback_host", lambda _h: False
+    )
+    monkeypatch.setattr(search_mod, "SCRAPE_MAX_BODY_BYTES", 1024, raising=False)
+
+    async def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=b"a" * 2048,
+            headers={"content-type": "text/html; charset=utf-8"},
+            request=request,
+        )
+
+    transport = httpx.MockTransport(_handler)
+    monkeypatch.setattr(
+        search_mod.httpx, "AsyncClient", _make_patched_client(transport)
+    )
+
+    raw = await fn("https://example.com/huge")
+    payload = json_lib.loads(raw)
+
+    assert payload["success"] is False
+    assert "body too large" in payload["error"]
+    assert payload["bytes_read"] > 1024
+
+
+@pytest.mark.asyncio
+async def test_scrape_url_returns_structured_json_payload(monkeypatch):
+    fn, search_mod, json_lib = _scrape_url_callable()
+    monkeypatch.setattr(
+        search_mod, "_is_private_or_loopback_host", lambda _h: False
+    )
+
+    async def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"title": "公告", "items": [1, 2, 3], "source": "gov"},
+            headers={"content-type": "application/json; charset=utf-8"},
+            request=request,
+        )
+
+    transport = httpx.MockTransport(_handler)
+    monkeypatch.setattr(
+        search_mod.httpx, "AsyncClient", _make_patched_client(transport)
+    )
+
+    raw = await fn("https://example.com/data.json")
+    payload = json_lib.loads(raw)
+
+    assert payload["success"] is True
+    assert payload["content_kind"] == "json"
+    assert payload["json_type"] == "object"
+    assert payload["json_keys"] == ["title", "items", "source"]
+    assert '"公告"' in payload["content"]
+
+
+@pytest.mark.asyncio
+async def test_scrape_url_returns_structured_rss_payload(monkeypatch):
+    fn, search_mod, json_lib = _scrape_url_callable()
+    monkeypatch.setattr(
+        search_mod, "_is_private_or_loopback_host", lambda _h: False
+    )
+    rss_body = """<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Miro Releases</title>
+    <item>
+      <title>v0.2.4</title>
+      <link>https://example.com/releases/v024</link>
+      <pubDate>Sun, 27 Apr 2026 12:00:00 GMT</pubDate>
+      <description>PDF and JSON scraping support</description>
+    </item>
+  </channel>
+</rss>
+"""
+
+    async def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            text=rss_body,
+            headers={"content-type": "application/rss+xml; charset=utf-8"},
+            request=request,
+        )
+
+    transport = httpx.MockTransport(_handler)
+    monkeypatch.setattr(
+        search_mod.httpx, "AsyncClient", _make_patched_client(transport)
+    )
+
+    raw = await fn("https://example.com/releases.rss")
+    payload = json_lib.loads(raw)
+
+    assert payload["success"] is True
+    assert payload["content_kind"] == "rss"
+    assert payload["feed_title"] == "Miro Releases"
+    assert len(payload["entries"]) == 1
+    assert payload["entries"][0]["title"] == "v0.2.4"
+    assert payload["entries"][0]["link"] == "https://example.com/releases/v024"

@@ -18,6 +18,7 @@ dependencies = [
     "markitdown-mcp>=0.0.1a3",
     "google-genai",
     "aiohttp",
+    "pdfminer-six",
     "redis"
 ]
 

@@ -9,6 +9,8 @@ import os
 import re
 import socket
 import time
+import xml.etree.ElementTree as ET
+from io import BytesIO, StringIO
 from ipaddress import ip_address, ip_network
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -906,8 +908,14 @@ async def sogou_search(
 
 DEFAULT_SCRAPE_TIMEOUT_SECONDS = _read_env_float("SCRAPE_TIMEOUT_SECONDS", 25.0, 1.0)
 DEFAULT_SCRAPE_MAX_CHARS = _read_env_int("SCRAPE_MAX_CHARS", 10000, 500)
+DEFAULT_SCRAPE_MAX_BODY_BYTES = 20 * 1024 * 1024
 SCRAPE_HARD_CAP_CHARS = _read_env_int("SCRAPE_HARD_CAP_CHARS", 30000, 1000)
+SCRAPE_MAX_BODY_BYTES = _read_env_int(
+    "SCRAPE_MAX_BODY_BYTES", DEFAULT_SCRAPE_MAX_BODY_BYTES, 1024
+)
 SCRAPE_MAX_REDIRECT_HOPS = _read_env_int("SCRAPE_MAX_REDIRECT_HOPS", 5, 0)
+SCRAPE_ENABLE_PDF = _read_env_bool("SCRAPE_ENABLE_PDF", True)
+SCRAPE_FEED_MAX_ENTRIES = _read_env_int("SCRAPE_FEED_MAX_ENTRIES", 50, 1)
 SCRAPE_USER_AGENT = os.getenv(
     "SCRAPE_USER_AGENT",
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -918,6 +926,13 @@ ALLOWED_SCRAPE_CONTENT_PREFIXES = (
     "text/html",
     "application/xhtml",
     "text/plain",
+    "application/pdf",
+    "application/json",
+    "text/json",
+    "application/rss+xml",
+    "application/atom+xml",
+    "application/xml",
+    "text/xml",
 )
 
 # 共享 client 由 _get_scrape_client() lazy 初始化，进程结束时由 atexit 关闭。
@@ -1047,6 +1062,9 @@ _META_HTTP_EQUIV_CHARSET_RE = re.compile(
     rb'[^>]*content\s*=\s*["\'][^"\';]*charset\s*=\s*([\w\-:]+)',
     re.IGNORECASE,
 )
+_XML_DECL_CHARSET_RE = re.compile(
+    rb'<\?xml[^>]+encoding\s*=\s*["\']([\w\-:]+)["\']', re.IGNORECASE
+)
 
 
 def _extract_header_charset(content_type: str) -> Optional[str]:
@@ -1059,6 +1077,18 @@ def _extract_header_charset(content_type: str) -> Optional[str]:
             value = part[len("charset="):].strip().strip('"\'').strip()
             return value or None
     return None
+
+
+def _extract_xml_decl_charset(head_bytes: bytes) -> Optional[str]:
+    if not head_bytes:
+        return None
+    match = _XML_DECL_CHARSET_RE.search(head_bytes)
+    if not match:
+        return None
+    try:
+        return match.group(1).decode("ascii", errors="ignore").strip() or None
+    except Exception:
+        return None
 
 
 def _extract_meta_charset(head_bytes: bytes) -> Optional[str]:
@@ -1107,6 +1137,13 @@ def _decode_response_bytes(
         except (LookupError, UnicodeDecodeError):
             pass
 
+    xml_charset = _extract_xml_decl_charset(content[:512])
+    if xml_charset:
+        try:
+            return content.decode(xml_charset, errors="replace"), xml_charset.lower()
+        except (LookupError, UnicodeDecodeError):
+            pass
+
     # 3. charset_normalizer 自动识别（httpx 已传递依赖）
     try:
         from charset_normalizer import from_bytes  # 延迟导入
@@ -1122,10 +1159,257 @@ def _decode_response_bytes(
     return content.decode("utf-8", errors="replace"), "utf-8"
 
 
+def _normalize_extracted_text(text: str) -> str:
+    if not text:
+        return ""
+    normalized = (
+        text.replace("\x00", "")
+        .replace("\r\n", "\n")
+        .replace("\r", "\n")
+        .replace("\f", "\n")
+    )
+    normalized = re.sub(r"(?<=\w)-\n(?=\w)", "", normalized)
+    normalized = re.sub(r"\n{3,}", "\n\n", normalized)
+    return "\n".join(line.strip() for line in normalized.splitlines() if line.strip())
+
+
+def _detect_content_kind(content_type: str) -> str:
+    if not content_type:
+        return "html"
+    if content_type.startswith("text/html") or content_type.startswith(
+        "application/xhtml"
+    ):
+        return "html"
+    if content_type.startswith("text/plain"):
+        return "text"
+    if content_type.startswith("application/pdf"):
+        return "pdf"
+    if content_type.startswith("application/json") or content_type.startswith(
+        "text/json"
+    ):
+        return "json"
+    if content_type.startswith("application/rss+xml"):
+        return "rss"
+    if content_type.startswith("application/atom+xml"):
+        return "atom"
+    if content_type.startswith("application/xml") or content_type.startswith(
+        "text/xml"
+    ):
+        return "xml"
+    return "unknown"
+
+
+class _BodyTooLarge(Exception):
+    def __init__(self, bytes_read: int, max_bytes: int):
+        super().__init__(f"body too large ({bytes_read} > {max_bytes} bytes)")
+        self.bytes_read = bytes_read
+        self.max_bytes = max_bytes
+
+
+async def _read_response_body_with_limit(
+    response: httpx.Response, max_bytes: int
+) -> Tuple[bytes, int]:
+    declared_length = response.headers.get("content-length")
+    if declared_length:
+        try:
+            declared_bytes = int(declared_length)
+        except ValueError:
+            declared_bytes = 0
+        if declared_bytes > max_bytes:
+            raise _BodyTooLarge(declared_bytes, max_bytes)
+
+    content = bytearray()
+    async for chunk in response.aiter_bytes():
+        if not chunk:
+            continue
+        content.extend(chunk)
+        if len(content) > max_bytes:
+            raise _BodyTooLarge(len(content), max_bytes)
+    return bytes(content), len(content)
+
+
+def _json_type_name(value: Any) -> str:
+    if isinstance(value, dict):
+        return "object"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, bool):
+        return "boolean"
+    if value is None:
+        return "null"
+    return "number"
+
+
+def _build_json_payload(decoded_text: str) -> Dict[str, Any]:
+    data = json.loads(decoded_text)
+    payload: Dict[str, Any] = {
+        "content_kind": "json",
+        "content": decoded_text.strip(),
+        "json_type": _json_type_name(data),
+    }
+    if isinstance(data, dict):
+        payload["json_keys"] = list(data.keys())[:50]
+    elif isinstance(data, list):
+        payload["json_length"] = len(data)
+        if data and isinstance(data[0], dict):
+            payload["json_item_keys"] = list(data[0].keys())[:50]
+    return payload
+
+
+def _xml_local_name(tag: str) -> str:
+    if not tag:
+        return ""
+    if "}" in tag:
+        return tag.rsplit("}", 1)[1].lower()
+    if ":" in tag:
+        return tag.split(":", 1)[1].lower()
+    return tag.lower()
+
+
+def _find_child(node: ET.Element, *names: str) -> Optional[ET.Element]:
+    wanted = {name.lower() for name in names}
+    for child in list(node):
+        if _xml_local_name(child.tag) in wanted:
+            return child
+    return None
+
+
+def _find_children(node: ET.Element, name: str) -> List[ET.Element]:
+    wanted = name.lower()
+    return [child for child in list(node) if _xml_local_name(child.tag) == wanted]
+
+
+def _node_text(node: Optional[ET.Element]) -> str:
+    if node is None:
+        return ""
+    return _normalize_extracted_text("\n".join(part for part in node.itertext()))
+
+
+def _find_atom_link(entry: ET.Element) -> str:
+    fallback = ""
+    for link in _find_children(entry, "link"):
+        href = (link.attrib.get("href") or "").strip()
+        rel = (link.attrib.get("rel") or "alternate").strip().lower()
+        if href and rel in {"", "alternate"}:
+            return href
+        if href and not fallback:
+            fallback = href
+    return fallback
+
+
+def _summarize_feed_entries(feed_title: str, entries: List[Dict[str, str]]) -> str:
+    lines = [feed_title] if feed_title else []
+    for entry in entries:
+        parts = [entry.get("title", "").strip(), entry.get("published", "").strip()]
+        line = " | ".join(part for part in parts if part)
+        if entry.get("link"):
+            line = f"{line} | {entry['link']}" if line else entry["link"]
+        if entry.get("summary"):
+            line = f"{line} | {entry['summary']}" if line else entry["summary"]
+        if line:
+            lines.append(line)
+    return _normalize_extracted_text("\n".join(lines))
+
+
+def _build_xml_payload(decoded_text: str) -> Dict[str, Any]:
+    root = ET.fromstring(decoded_text)
+    root_name = _xml_local_name(root.tag)
+    if root_name == "rss":
+        channel = _find_child(root, "channel")
+        if channel is None:
+            channel = root
+        feed_title = _node_text(_find_child(channel, "title"))
+        entries = []
+        for item in _find_children(channel, "item")[:SCRAPE_FEED_MAX_ENTRIES]:
+            entries.append(
+                {
+                    "title": _node_text(_find_child(item, "title")),
+                    "link": _node_text(_find_child(item, "link")),
+                    "published": _node_text(
+                        _find_child(item, "pubDate", "published", "updated")
+                    ),
+                    "summary": _node_text(
+                        _find_child(item, "description", "summary", "content")
+                    ),
+                }
+            )
+        return {
+            "content_kind": "rss",
+            "feed_title": feed_title,
+            "entries": entries,
+            "content": _summarize_feed_entries(feed_title, entries),
+        }
+    if root_name == "feed":
+        feed_title = _node_text(_find_child(root, "title"))
+        entries = []
+        for entry in _find_children(root, "entry")[:SCRAPE_FEED_MAX_ENTRIES]:
+            entries.append(
+                {
+                    "title": _node_text(_find_child(entry, "title")),
+                    "link": _find_atom_link(entry),
+                    "published": _node_text(
+                        _find_child(entry, "published", "updated")
+                    ),
+                    "summary": _node_text(
+                        _find_child(entry, "summary", "content")
+                    ),
+                }
+            )
+        return {
+            "content_kind": "atom",
+            "feed_title": feed_title,
+            "entries": entries,
+            "content": _summarize_feed_entries(feed_title, entries),
+        }
+    return {
+        "content_kind": "xml",
+        "xml_root": root_name,
+        "content": _normalize_extracted_text("\n".join(part for part in root.itertext())),
+    }
+
+
+def _build_pdf_payload(content: bytes) -> Dict[str, Any]:
+    if not SCRAPE_ENABLE_PDF:
+        raise ValueError("pdf scraping is disabled")
+    from pdfminer.converter import TextConverter
+    from pdfminer.layout import LAParams
+    from pdfminer.pdfdocument import PDFDocument
+    from pdfminer.pdfinterp import PDFPageInterpreter, PDFResourceManager
+    from pdfminer.pdfpage import PDFPage
+    from pdfminer.pdfparser import PDFParser
+
+    input_buffer = BytesIO(content)
+    output_buffer = StringIO()
+    pages = 0
+    try:
+        parser = PDFParser(input_buffer)
+        document = PDFDocument(parser)
+        resource_manager = PDFResourceManager()
+        device = TextConverter(resource_manager, output_buffer, laparams=LAParams())
+        interpreter = PDFPageInterpreter(resource_manager, device)
+        try:
+            for page in PDFPage.create_pages(document):
+                pages += 1
+                interpreter.process_page(page)
+        finally:
+            device.close()
+        text = _normalize_extracted_text(output_buffer.getvalue())
+        return {
+            "content_kind": "pdf",
+            "content": text,
+            "pages": pages,
+            "text_quality": "empty" if not text else "ok",
+        }
+    finally:
+        input_buffer.close()
+        output_buffer.close()
+
+
 # ---------------------------------------------------------------------------
 # 手动重定向（T2）
 # ---------------------------------------------------------------------------
-
 
 class _RedirectBlocked(Exception):
     """重定向链被 SSRF / 非 http(s) / 跳数上限阻断时抛出。"""
@@ -1148,7 +1432,8 @@ async def _fetch_with_manual_redirects(
     chain: List[str] = []
     current_url = initial_url
     for _hop in range(max_hops + 1):
-        response = await client.get(current_url)
+        request = client.build_request("GET", current_url)
+        response = await client.send(request, stream=True)
         if not (300 <= response.status_code < 400):
             return response, chain
         location = response.headers.get("location") or response.headers.get("Location")
@@ -1158,20 +1443,24 @@ async def _fetch_with_manual_redirects(
         try:
             next_url = str(httpx.URL(current_url).join(location))
         except Exception as exc:
+            await response.aclose()
             raise _RedirectBlocked(
                 f"invalid redirect target: {exc}", chain + [location]
             ) from exc
         parsed = urlparse(next_url)
         if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            await response.aclose()
             raise _RedirectBlocked(
                 "redirect target must be absolute http(s)",
                 chain + [next_url],
             )
         if _is_private_or_loopback_host(parsed.hostname or ""):
+            await response.aclose()
             raise _RedirectBlocked(
                 "redirect target is private/loopback/multicast host",
                 chain + [next_url],
             )
+        await response.aclose()
         chain.append(next_url)
         current_url = next_url
     raise _RedirectBlocked(
@@ -1221,8 +1510,7 @@ def _extract_main_text(html: str) -> tuple[str, str]:
     else:
         text_content = soup.get_text(separator="\n", strip=True)
 
-    normalized_lines = [line.strip() for line in text_content.splitlines() if line.strip()]
-    text_content = "\n".join(normalized_lines)
+    text_content = _normalize_extracted_text(text_content)
 
     title = ""
     if soup.title and soup.title.string:
@@ -1305,11 +1593,63 @@ async def scrape_url(url: str, max_chars: int = DEFAULT_SCRAPE_MAX_CHARS) -> str
     cap_chars = max(500, min(cap_chars, SCRAPE_HARD_CAP_CHARS))
 
     redirect_chain: List[str] = []
+    response: Optional[httpx.Response] = None
+    response_content = b""
+    final_url = url
+    raw_content_type = ""
+    content_type = ""
+    content_kind = "html"
+    bytes_read = 0
     request_started = time.perf_counter()
     try:
         client = await _get_scrape_client()
         response, redirect_chain = await _fetch_with_manual_redirects(
             client, url, SCRAPE_MAX_REDIRECT_HOPS
+        )
+        metrics["redirect_hops"] = len(redirect_chain)
+        final_url = str(response.url)
+        raw_content_type = response.headers.get("content-type") or ""
+        content_type = raw_content_type.split(";")[0].strip().lower()
+        content_kind = _detect_content_kind(content_type)
+
+        if content_type and not any(
+            content_type.startswith(prefix) for prefix in ALLOWED_SCRAPE_CONTENT_PREFIXES
+        ):
+            metrics["t_request_ms"] = int((time.perf_counter() - request_started) * 1000)
+            payload: Dict[str, Any] = {
+                "success": False,
+                "error": f"unsupported content_type {content_type!r}; only HTML/text/PDF/JSON/XML are extracted",
+                "url": url,
+                "final_url": final_url,
+                "http_status": response.status_code,
+                "content_type": content_type,
+                "content_kind": content_kind,
+                "bytes_read": bytes_read,
+                "metrics": metrics,
+            }
+            if redirect_chain:
+                payload["redirect_chain"] = redirect_chain
+            return json.dumps(payload, ensure_ascii=False)
+
+        if response.status_code >= 400:
+            metrics["t_request_ms"] = int((time.perf_counter() - request_started) * 1000)
+            payload = {
+                "success": False,
+                "error": f"http_status={response.status_code}",
+                "url": url,
+                "final_url": final_url,
+                "http_status": response.status_code,
+                "content_type": content_type,
+                "content_kind": content_kind,
+                "bytes_read": bytes_read,
+                "metrics": metrics,
+            }
+            if redirect_chain:
+                payload["redirect_chain"] = redirect_chain
+            return json.dumps(payload, ensure_ascii=False)
+
+        response_content, bytes_read = await _read_response_body_with_limit(
+            response, SCRAPE_MAX_BODY_BYTES
         )
     except _RedirectBlocked as exc:
         metrics["t_request_ms"] = int((time.perf_counter() - request_started) * 1000)
@@ -1320,6 +1660,22 @@ async def scrape_url(url: str, max_chars: int = DEFAULT_SCRAPE_MAX_CHARS) -> str
                 "error": f"redirect_blocked: {exc.reason}",
                 "url": url,
                 "redirect_chain": exc.chain,
+                "metrics": metrics,
+            },
+            ensure_ascii=False,
+        )
+    except _BodyTooLarge as exc:
+        metrics["t_request_ms"] = int((time.perf_counter() - request_started) * 1000)
+        return json.dumps(
+            {
+                "success": False,
+                "error": f"body too large: {exc.bytes_read} > {exc.max_bytes} bytes",
+                "url": url,
+                "final_url": final_url,
+                "http_status": response.status_code if response is not None else None,
+                "content_type": content_type,
+                "content_kind": content_kind,
+                "bytes_read": exc.bytes_read,
                 "metrics": metrics,
             },
             ensure_ascii=False,
@@ -1357,59 +1713,63 @@ async def scrape_url(url: str, max_chars: int = DEFAULT_SCRAPE_MAX_CHARS) -> str
             },
             ensure_ascii=False,
         )
+    finally:
+        if response is not None:
+            try:
+                await response.aclose()
+            except Exception:
+                pass
 
     metrics["t_request_ms"] = int((time.perf_counter() - request_started) * 1000)
-    metrics["redirect_hops"] = len(redirect_chain)
 
-    final_url = str(response.url)
-    raw_content_type = response.headers.get("content-type") or ""
-    content_type = raw_content_type.split(";")[0].strip().lower()
-    if content_type and not any(
-        content_type.startswith(prefix) for prefix in ALLOWED_SCRAPE_CONTENT_PREFIXES
-    ):
-        payload: Dict[str, Any] = {
-            "success": False,
-            "error": f"unsupported content_type {content_type!r}; only HTML/text are extracted",
-            "url": url,
-            "final_url": final_url,
-            "http_status": response.status_code,
-            "content_type": content_type,
-            "metrics": metrics,
-        }
-        if redirect_chain:
-            payload["redirect_chain"] = redirect_chain
-        return json.dumps(payload, ensure_ascii=False)
+    structured_payload: Dict[str, Any] = {}
+    title = ""
+    text_content = ""
+    encoding_used = "utf-8"
 
-    if response.status_code >= 400:
+    try:
+        if content_kind == "pdf":
+            extract_started = time.perf_counter()
+            structured_payload = _build_pdf_payload(response_content)
+            metrics["t_extract_ms"] = int((time.perf_counter() - extract_started) * 1000)
+            text_content = structured_payload.pop("content", "")
+            encoding_used = "binary/pdf"
+        else:
+            parse_started = time.perf_counter()
+            decoded_text, encoding_used = _decode_response_bytes(
+                response_content, raw_content_type
+            )
+            metrics["t_parse_ms"] = int((time.perf_counter() - parse_started) * 1000)
+
+            extract_started = time.perf_counter()
+            if content_kind == "text":
+                text_content = _normalize_extracted_text(decoded_text)
+            elif content_kind == "html":
+                text_content, title = _extract_main_text(decoded_text)
+            elif content_kind == "json":
+                structured_payload = _build_json_payload(decoded_text)
+                text_content = structured_payload.pop("content", "")
+            else:
+                structured_payload = _build_xml_payload(decoded_text)
+                content_kind = structured_payload.get("content_kind", content_kind)
+                title = structured_payload.get("feed_title", "")
+                text_content = structured_payload.pop("content", "")
+            metrics["t_extract_ms"] = int((time.perf_counter() - extract_started) * 1000)
+    except Exception as exc:
         payload = {
             "success": False,
-            "error": f"http_status={response.status_code}",
+            "error": f"extract_failed: {type(exc).__name__}: {exc}",
             "url": url,
             "final_url": final_url,
-            "http_status": response.status_code,
+            "http_status": response.status_code if response is not None else None,
+            "content_type": content_type,
+            "content_kind": content_kind,
+            "bytes_read": bytes_read,
             "metrics": metrics,
         }
         if redirect_chain:
             payload["redirect_chain"] = redirect_chain
         return json.dumps(payload, ensure_ascii=False)
-
-    # T4：bytes → text 解码兜底，避免 GBK/GB18030 站点中文乱码
-    parse_started = time.perf_counter()
-    decoded_text, encoding_used = _decode_response_bytes(
-        response.content, raw_content_type
-    )
-    metrics["t_parse_ms"] = int((time.perf_counter() - parse_started) * 1000)
-
-    extract_started = time.perf_counter()
-    if content_type.startswith("text/plain"):
-        normalized_lines = [
-            line.strip() for line in decoded_text.splitlines() if line.strip()
-        ]
-        text_content = "\n".join(normalized_lines)
-        title = ""
-    else:
-        text_content, title = _extract_main_text(decoded_text)
-    metrics["t_extract_ms"] = int((time.perf_counter() - extract_started) * 1000)
 
     truncated = len(text_content) > cap_chars
     if truncated:
@@ -1423,11 +1783,14 @@ async def scrape_url(url: str, max_chars: int = DEFAULT_SCRAPE_MAX_CHARS) -> str
         "title": title,
         "content": text_content,
         "content_type": content_type or "text/html",
+        "content_kind": content_kind,
         "encoding": encoding_used,
         "content_length": len(text_content),
         "truncated": truncated,
+        "bytes_read": bytes_read,
         "metrics": metrics,
     }
+    payload.update(structured_payload)
     if redirect_chain:
         payload["redirect_chain"] = redirect_chain
     return json.dumps(payload, ensure_ascii=False)
