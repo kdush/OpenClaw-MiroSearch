@@ -1,7 +1,7 @@
 # 网页抓取能力迭代计划（v0.2.2 → v0.3.x）
 
 更新时间：2026-04-27
-当前版本：`v0.2.3-dev`（T1 / T2 / T4 已合并，等 v0.2.3 打 tag）
+当前版本：`v0.2.4-dev`（T1 / T2 / T3 / T4 / T5 已合并，待后续发版）
 计划范围：MCP 工具 `scrape_url`（位于 `libs/miroflow-tools/src/miroflow_tools/dev_mcp_servers/search_and_scrape_webpage.py`）的能力扩展，配合 LLM 在 `google_search` snippet 不足时主动"打开正文"。
 
 ## 0. 进度跟踪
@@ -11,8 +11,8 @@
 | T1 | 共享 `httpx.AsyncClient` + 分阶段 metrics | ✅ Done | v0.2.3 |
 | T2 | 重定向手动循环 + 每跳 SSRF 校验 + 上限 5 跳 | ✅ Done | v0.2.3 |
 | T4 | 中文编码兜底（header → meta → charset_normalizer） | ✅ Done | v0.2.3 |
-| T3 | PDF 抽取 + 20MB 上限 | ⏳ Pending | v0.2.4 |
-| T5 | JSON / RSS / Atom / XML 直通 | ⏳ Pending | v0.2.4 |
+| T3 | PDF 抽取 + 20MB 上限 | ✅ Done | v0.2.4 |
+| T5 | JSON / RSS / Atom / XML 直通 | ✅ Done | v0.2.4 |
 | T6 | trafilatura 主路径 + bs4 fallback | ⏳ Pending | v0.2.5-scrape |
 | T7 | HTML 表格转 markdown | ⏳ Pending | v0.2.5-scrape |
 | T8 | 句子 / 段落边界截断 | ⏳ Pending | v0.2.5-scrape |
@@ -216,7 +216,7 @@ v0.2.2 已上线最小可用 `scrape_url`：基于 `httpx + BeautifulSoup`，仅
 |------|------|------|------|
 | **v0.2.2**（已发布） | scrape_url 最小可用 + SSRF 防护 + 单元测试 | 让 LLM 至少能"打开 HTML 正文" | ✅ shipped |
 | **v0.2.3**（开发中） | T2 + T1 + T4 | 安全闭环 + 编码鲁棒 + 共享 client + metrics | ✅ merged on main |
-| **v0.2.4** | T3 + T5 | 把 PDF / JSON / RSS / Atom / XML 入口接上 | ⏳ next |
+| **v0.2.4** | T3 + T5 | 把 PDF / JSON / RSS / Atom / XML 入口接上 | ✅ merged on main |
 | **v0.2.5** | T6 + T7 + T8 | 提升正文质量与表格保真，对接 trafilatura | ⏳ |
 | **v0.3.0** | T9 + 配额限流 + robots.txt 校验 | 批量抓取与外部站点友好性 | ⏳ |
 

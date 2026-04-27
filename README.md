@@ -174,11 +174,16 @@ Skill acquisition and installation:
 
 ## Changelog
 
+- Release `0.2.4` highlights:
+  - `scrape_url` now supports PDF extraction with a 20MB streamed body limit
+  - JSON / RSS / Atom / XML payloads can pass through with structured fields (`json_keys`, `feed_title`, `entries`, `xml_root`)
+  - Redirect handling now uses streamed responses and closes intermediate 30x hops eagerly
+  - Local Docker end-to-end verification passed on the `app + api + worker + searxng + valkey` stack
+  - See [`docs/SCRAPING_ITERATION_PLAN.md`](docs/SCRAPING_ITERATION_PLAN.md) for the full T1–T9 scraping roadmap
 - Release `0.2.2` highlights:
   - API-mode regression fix: `mode` / `search_profile` / `search_result_num` / `verification_min_search_rounds` / `output_detail_level` are now respected end-to-end via `services/profile_resolver.py`
   - Demo crash-recovery: `BACKEND_MODE=api` plus `?task_id=xxx` URL bridge — refresh / disconnect resumes the same task via SSE replay
   - MCP tool `scrape_url`: lightweight `httpx + BeautifulSoup` scraper with SSRF guard so the LLM can "open the page" when `google_search` snippets are insufficient
-  - See [`docs/SCRAPING_ITERATION_PLAN.md`](docs/SCRAPING_ITERATION_PLAN.md) for the full T1–T9 scraping roadmap
   - Worker cancel watcher hardened against Redis hiccups; unresponsive pipelines are abandoned after a 10s timeout
   - Dockerfile uses a domestic apt mirror by default; compose builds run with `network: host`; `scripts/deploy/build_images.sh` bypasses BuildKit's `network.host` entitlement prompt
 - Release `0.2.1` highlights:
@@ -231,10 +236,10 @@ cd apps/api-server && uv run pytest tests/ -v
 
 See: [`docs/ROADMAP.md`](docs/ROADMAP.md)
 
-Current planning is divided into four phases:
+Current planning is divided into the following phases:
 
 - `v0.2.0` (production-ready) ✅: SearchProvider protocol, async task queue (arq + Valkey), SSE streaming, persistent cache, Docker Compose orchestration
-- `v0.2.2` (current) ✅: API-mode regression fix, demo crash-recovery, MCP `scrape_url` scaffold
-- `v0.2.3` ~ `v0.3.0` (scraping deep-dive): T1–T9 in [`docs/SCRAPING_ITERATION_PLAN.md`](docs/SCRAPING_ITERATION_PLAN.md) — redirect SSRF, shared `httpx.AsyncClient`, PDF / JSON / RSS support, `trafilatura`, smart truncation, batch `scrape_urls`
-- `v0.2.5` (quality + observability): Prometheus metrics, eval pipeline in CI, multi-source RRF ranking, multilingual retrieval optimization
+- `v0.2.4` (current) ✅: `scrape_url` redirect SSRF hardening, shared `httpx.AsyncClient`, PDF / JSON / RSS / Atom / XML support
+- `v0.2.5` (scraping quality + observability): T6–T8 in [`docs/SCRAPING_ITERATION_PLAN.md`](docs/SCRAPING_ITERATION_PLAN.md) — `trafilatura`, HTML table markdown, smart truncation, Prometheus metrics, eval pipeline in CI, multi-source RRF ranking, multilingual retrieval optimization
+- `v0.3.0` (batch scraping + site-friendliness): T9 in [`docs/SCRAPING_ITERATION_PLAN.md`](docs/SCRAPING_ITERATION_PLAN.md) — batch `scrape_urls`, quotas and rate limiting, robots.txt validation
 - `v1.0.0` (ecosystem distribution): Helm Chart / one-click cloud deploy, skill versioned release, compatibility matrix auto-verification

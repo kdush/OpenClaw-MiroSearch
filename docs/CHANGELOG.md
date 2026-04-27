@@ -7,8 +7,32 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
-> 下一版本（v0.2.4）将进入 [`docs/SCRAPING_ITERATION_PLAN.md`](./SCRAPING_ITERATION_PLAN.md) 的 T3 + T5：
-> PDF 抽取（pdfminer）+ 响应大小 20MB 上限、JSON / RSS / Atom / XML 直通抓取与结构化返回。
+> 下一版本（v0.2.5）将进入 [`docs/SCRAPING_ITERATION_PLAN.md`](./SCRAPING_ITERATION_PLAN.md) 的 T6 + T7 + T8：
+> `trafilatura` 主路径 + `bs4` fallback、HTML 表格转 markdown、按句子 / 段落边界智能截断。
+
+## [0.2.4] - 2026-04-27
+
+### Added
+
+- **T3 [A1/A2] `scrape_url` 支持 PDF 抽取与响应体大小上限**：新增 `SCRAPE_MAX_BODY_BYTES`（默认 20MB）并改为流式读取响应体；`application/pdf` 现在可返回 `content_kind="pdf"`、`pages`、`bytes_read`、`text_quality`，使统计公报、监管 PDF 和公告附件可直接被抓取
+- **T5 [A3] `scrape_url` 支持 JSON / RSS / Atom / XML 结构化直通**：新增 `application/json`、`text/json`、`application/rss+xml`、`application/atom+xml`、`application/xml`、`text/xml` 白名单；返回 `json_type` / `json_keys`、`feed_title` / `entries`、`xml_root` 等结构化字段，便于 LLM 直接消费 API / Feed 数据
+- **XML 声明编码识别**：在 header / meta / `charset_normalizer` 之外，新增 XML declaration 编码探测，减少 XML / Feed 抓取乱码
+- **显式依赖 `pdfminer-six`**：`libs/miroflow-tools` 及引用它的应用锁文件同步显式登记 `pdfminer-six`，避免未来依赖树变化造成 PDF 抽取运行时缺包
+- **新增 4 条 `scrape_url` 单元测试**：覆盖 PDF 正文抽取、超大响应体拒绝、JSON 结构化返回、RSS 结构化返回；同时将旧的 PDF content-type 拒绝用例更新为“坏 PDF 解析失败”语义
+
+### Changed
+
+- **手动重定向链路改为流式响应**：`_fetch_with_manual_redirects` 采用 `stream=True`，并在中间 30x hop 上及时 `aclose()`，降低连接泄漏风险
+- **正文归一化路径统一**：HTML / text / PDF / Feed 统一复用文本归一化逻辑，减少换行噪音和抽取结果抖动
+
+### Testing
+
+- **本地回归通过**：
+  - `libs/miroflow-tools`: `24 passed`
+  - `apps/api-server`: `18 passed`
+  - `apps/gradio-demo`: `20 passed`
+  - `apps/miroflow-agent`: `16 passed`
+- **本地 Docker 真实端到端验证通过**：在 `app + api + worker + searxng + valkey` 全部 `healthy` 条件下，使用 IANA 官方站点职责总结样例完成真实任务执行；最终状态 `completed`，`search_rounds=1`，最近一次任务总耗时约 `49.1s`，且 `timeout_count=0`、`rate_limit_429_count=0`
 
 ## [0.2.3] - 2026-04-27
 

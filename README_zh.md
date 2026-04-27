@@ -176,6 +176,19 @@ Skill 使用：
 
 > 完整路由环境变量说明请参见 [`apps/miroflow-agent/README.md`](apps/miroflow-agent/README.md) 和 [`docs/API_SPEC.md`](docs/API_SPEC.md)
 
+## 版本亮点
+
+- `0.2.4` 版本亮点：
+  - `scrape_url` 已支持 PDF 抽取，并带 20MB 流式响应体上限
+  - 已支持 JSON / RSS / Atom / XML 结构化直通，返回 `json_keys`、`feed_title`、`entries`、`xml_root` 等字段
+  - 重定向链路改为流式响应，并在中间 30x hop 及时关闭连接
+  - 本地 Docker `app + api + worker + searxng + valkey` 真实端到端验证已通过
+- `0.2.2` 版本亮点：
+  - API 模式严重回归修复：`mode` / `search_profile` / `search_result_num` / `verification_min_search_rounds` / `output_detail_level` 已可端到端透传
+  - Demo 断线重连：`BACKEND_MODE=api` 配合 `?task_id=xxx` 可通过 SSE 回放恢复任务
+  - MCP `scrape_url` 初版上线：基于 `httpx + BeautifulSoup`，在 `google_search` 摘要不足时让 LLM 主动打开正文
+  - 详细抓取路线图见 [`docs/SCRAPING_ITERATION_PLAN.md`](docs/SCRAPING_ITERATION_PLAN.md)
+
 ## 文档索引
 
 - 文档总览：[`docs/README.md`](docs/README.md)
@@ -183,7 +196,7 @@ Skill 使用：
 - 部署指南：[`docs/DEPLOY.md`](docs/DEPLOY.md)
 - API 规格 & Agent 接入：[`docs/API_SPEC.md`](docs/API_SPEC.md)
 - 路线图：[`docs/ROADMAP.md`](docs/ROADMAP.md)
-- 抓取能力迭代计划：[`docs/SCRAPING_ITERATION_PLAN.md`](docs/SCRAPING_ITERATION_PLAN.md)（T1-T9，对应 v0.2.3 → v0.3.0）
+- 抓取能力迭代计划：[`docs/SCRAPING_ITERATION_PLAN.md`](docs/SCRAPING_ITERATION_PLAN.md)（T1-T9，对应 v0.2.4 → v0.3.0）
 - 变更记录：[`docs/CHANGELOG.md`](docs/CHANGELOG.md)
 - Demo 说明：[`apps/gradio-demo/README.md`](apps/gradio-demo/README.md)
 - API Server 说明：[`apps/api-server/README.md`](apps/api-server/README.md)
@@ -219,7 +232,7 @@ cd apps/miroflow-agent && uv run pytest
 当前规划分为以下阶段：
 
 - `v0.2.0`（生产化）✅：异步任务队列（arq + Valkey）、SSE 流式输出、SearchProvider 协议化、持久化缓存、Docker Compose 多服务编排
-- `v0.2.2`（当前）✅：API 模式严重回归修复、Demo 断电重连、MCP `scrape_url` 抓取雏形
-- `v0.2.3` ~ `v0.3.0`（抓取能力专项）：详见 [`docs/SCRAPING_ITERATION_PLAN.md`](docs/SCRAPING_ITERATION_PLAN.md)，T1-T9 覆盖重定向 SSRF、共享连接池、PDF / JSON / RSS、`trafilatura`、智能截断、批量抓取
-- `v0.2.5`（质量增强 + 可观测性）：Prometheus 指标、Eval Pipeline CI 化、多源 RRF 融合排序、多语言检索优化
+- `v0.2.4`（当前）✅：`scrape_url` 已具备重定向 SSRF 加固、共享 `httpx.AsyncClient`、PDF / JSON / RSS / Atom / XML 支持
+- `v0.2.5`（抓取质量 + 可观测性）：详见 [`docs/SCRAPING_ITERATION_PLAN.md`](docs/SCRAPING_ITERATION_PLAN.md)，T6-T8 覆盖 `trafilatura`、HTML 表格转 markdown、智能截断，并补充 Prometheus 指标、Eval Pipeline CI 化、多源 RRF 融合排序、多语言检索优化
+- `v0.3.0`（批量抓取 + 站点友好性）：详见 [`docs/SCRAPING_ITERATION_PLAN.md`](docs/SCRAPING_ITERATION_PLAN.md)，T9 覆盖批量 `scrape_urls`、配额限流与 `robots.txt` 校验
 - `v1.0.0`（生态分发）：Helm Chart / 一键云部署、技能包版本化发布、兼容矩阵自动验证
