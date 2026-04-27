@@ -915,6 +915,7 @@ SCRAPE_MAX_BODY_BYTES = _read_env_int(
 )
 SCRAPE_MAX_REDIRECT_HOPS = _read_env_int("SCRAPE_MAX_REDIRECT_HOPS", 5, 0)
 SCRAPE_ENABLE_PDF = _read_env_bool("SCRAPE_ENABLE_PDF", True)
+SCRAPE_USE_TRAFILATURA = _read_env_bool("SCRAPE_USE_TRAFILATURA", True)
 SCRAPE_FEED_MAX_ENTRIES = _read_env_int("SCRAPE_FEED_MAX_ENTRIES", 50, 1)
 SCRAPE_USER_AGENT = os.getenv(
     "SCRAPE_USER_AGENT",
@@ -1173,6 +1174,33 @@ def _normalize_extracted_text(text: str) -> str:
     return "\n".join(line.strip() for line in normalized.splitlines() if line.strip())
 
 
+def _truncate_text_at_boundary(
+    text: str, cap_chars: int
+) -> Tuple[str, Optional[Dict[str, Any]]]:
+    if len(text) <= cap_chars:
+        return text, None
+    boundaries = ("\n\n", "\n", "。", ".", "!", "?", "！", "？")
+    positions = []
+    for boundary in boundaries:
+        index = text.rfind(boundary, 0, cap_chars + 1)
+        if index >= 0:
+            positions.append(index + len(boundary))
+    cut_at = max(positions) if positions else cap_chars
+    strategy = "soft_boundary" if positions else "hard_limit"
+    if cut_at < max(1, cap_chars // 2):
+        cut_at = cap_chars
+        strategy = "hard_limit"
+    truncated_text = text[:cut_at].rstrip()
+    if not truncated_text:
+        truncated_text = text[:cap_chars].rstrip()
+        strategy = "hard_limit"
+    return truncated_text, {
+        "strategy": strategy,
+        "original_chars": len(text),
+        "returned_chars": len(truncated_text),
+    }
+
+
 def _detect_content_kind(content_type: str) -> str:
     if not content_type:
         return "html"
@@ -1407,6 +1435,78 @@ def _build_pdf_payload(content: bytes) -> Dict[str, Any]:
         output_buffer.close()
 
 
+def _extract_html_title(html: str) -> str:
+    try:
+        from bs4 import BeautifulSoup
+    except Exception:
+        return ""
+    try:
+        soup = BeautifulSoup(html, "lxml")
+    except Exception:
+        soup = BeautifulSoup(html, "html.parser")
+    if soup.title and soup.title.string:
+        return soup.title.string.strip()[:300]
+    return ""
+
+
+def _table_cell_text(cell: Any) -> str:
+    text = cell.get_text(separator=" ", strip=True)
+    return _normalize_extracted_text(text).replace("\n", "<br>")
+
+
+def _table_to_markdown(table: Any) -> str:
+    rows = []
+    for tr in table.find_all("tr"):
+        cells = tr.find_all(["th", "td"], recursive=False)
+        if not cells:
+            cells = tr.find_all(["th", "td"])
+        row = [_table_cell_text(cell) for cell in cells]
+        if any(row):
+            rows.append(row)
+    if not rows:
+        return ""
+    column_count = max(len(row) for row in rows)
+    normalized_rows = [row + [""] * (column_count - len(row)) for row in rows]
+    header = normalized_rows[0]
+    separator = ["---"] * column_count
+    body = normalized_rows[1:]
+    lines = [
+        "| " + " | ".join(header) + " |",
+        "| " + " | ".join(separator) + " |",
+    ]
+    lines.extend("| " + " | ".join(row) + " |" for row in body)
+    return "\n".join(lines)
+
+
+def _replace_tables_with_markdown(soup: Any) -> None:
+    for table in soup.find_all("table"):
+        markdown = _table_to_markdown(table)
+        if markdown:
+            table.replace_with(f"\n{markdown}\n")
+        else:
+            table.decompose()
+
+
+def _extract_with_trafilatura(html: str) -> str:
+    if not SCRAPE_USE_TRAFILATURA:
+        return ""
+    try:
+        from trafilatura import extract
+    except Exception:
+        return ""
+    try:
+        extracted = extract(
+            html,
+            output_format="markdown",
+            include_tables=True,
+            include_comments=False,
+            favor_recall=True,
+        )
+    except Exception:
+        return ""
+    return _normalize_extracted_text(extracted or "")
+
+
 # ---------------------------------------------------------------------------
 # 手动重定向（T2）
 # ---------------------------------------------------------------------------
@@ -1471,6 +1571,11 @@ async def _fetch_with_manual_redirects(
 
 def _extract_main_text(html: str) -> tuple[str, str]:
     """从 HTML 抽正文与标题。优先 main/article/role=main，否则整页 text。"""
+    title = _extract_html_title(html)
+    trafilatura_text = _extract_with_trafilatura(html)
+    if trafilatura_text:
+        return trafilatura_text, title
+
     try:
         from bs4 import BeautifulSoup  # 延迟导入，避免无 bs4 环境直接 import 失败
     except Exception as exc:
@@ -1498,6 +1603,8 @@ def _extract_main_text(html: str) -> tuple[str, str]:
     ):
         tag.decompose()
 
+    _replace_tables_with_markdown(soup)
+
     candidates = []
     for selector in ("article", "main", "[role=main]", "#content", ".article", ".content"):
         for node in soup.select(selector):
@@ -1511,10 +1618,6 @@ def _extract_main_text(html: str) -> tuple[str, str]:
         text_content = soup.get_text(separator="\n", strip=True)
 
     text_content = _normalize_extracted_text(text_content)
-
-    title = ""
-    if soup.title and soup.title.string:
-        title = soup.title.string.strip()[:300]
 
     return text_content, title
 
@@ -1771,9 +1874,8 @@ async def scrape_url(url: str, max_chars: int = DEFAULT_SCRAPE_MAX_CHARS) -> str
             payload["redirect_chain"] = redirect_chain
         return json.dumps(payload, ensure_ascii=False)
 
-    truncated = len(text_content) > cap_chars
-    if truncated:
-        text_content = text_content[:cap_chars]
+    text_content, truncation = _truncate_text_at_boundary(text_content, cap_chars)
+    truncated = truncation is not None
 
     payload = {
         "success": True,
@@ -1791,6 +1893,8 @@ async def scrape_url(url: str, max_chars: int = DEFAULT_SCRAPE_MAX_CHARS) -> str
         "metrics": metrics,
     }
     payload.update(structured_payload)
+    if truncation:
+        payload["truncation"] = truncation
     if redirect_chain:
         payload["redirect_chain"] = redirect_chain
     return json.dumps(payload, ensure_ascii=False)

@@ -19,7 +19,8 @@ dependencies = [
     "google-genai",
     "aiohttp",
     "pdfminer-six",
-    "redis"
+    "redis",
+    "trafilatura"
 ]
 
 [build-system]

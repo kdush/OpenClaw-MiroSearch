@@ -305,7 +305,8 @@ async def test_scrape_url_extracts_main_content(monkeypatch):
     assert payload["title"] == "Demo Page"
     assert "条例标题" in payload["content"]
     assert payload["truncated"] is True
-    assert payload["content_length"] == 500
+    assert payload["content_length"] <= 500
+    assert payload["truncation"]["strategy"] == "soft_boundary"
     # 不应包含被剥离的导航/菜单/页脚
     assert "菜单" not in payload["content"]
     assert "导航" not in payload["content"]
@@ -719,6 +720,134 @@ async def test_scrape_url_reuses_shared_client(monkeypatch):
     # 3 次连续调用应当只触发一次 client 实例化（共享 client 命中）
     assert patched.instantiation_count == 1
     assert search_mod._SCRAPE_CLIENT is not None
+
+
+@pytest.mark.asyncio
+async def test_scrape_url_uses_trafilatura_markdown_primary_path(monkeypatch):
+    fn, search_mod, json_lib = _scrape_url_callable()
+    monkeypatch.setattr(
+        search_mod, "_is_private_or_loopback_host", lambda _h: False
+    )
+
+    calls = {}
+    fake_trafilatura = types.ModuleType("trafilatura")
+
+    def _fake_extract(html, **kwargs):
+        calls["html"] = html
+        calls["kwargs"] = kwargs
+        return "## Trafilatura 标题\n正文来自 trafilatura。"
+
+    fake_trafilatura.extract = _fake_extract
+    monkeypatch.setitem(sys.modules, "trafilatura", fake_trafilatura)
+
+    async def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            text=(
+                "<html><head><title>原始标题</title></head><body>"
+                "<main>bs4 fallback 正文</main></body></html>"
+            ),
+            headers={"content-type": "text/html; charset=utf-8"},
+            request=request,
+        )
+
+    transport = httpx.MockTransport(_handler)
+    monkeypatch.setattr(
+        search_mod.httpx, "AsyncClient", _make_patched_client(transport)
+    )
+
+    raw = await fn("https://example.com/article")
+    payload = json_lib.loads(raw)
+
+    assert payload["success"] is True
+    assert payload["content"] == "## Trafilatura 标题\n正文来自 trafilatura。"
+    assert payload["title"] == "原始标题"
+    assert calls["kwargs"]["output_format"] == "markdown"
+    assert calls["kwargs"]["include_tables"] is True
+    assert calls["kwargs"]["include_comments"] is False
+    assert calls["kwargs"]["favor_recall"] is True
+
+
+@pytest.mark.asyncio
+async def test_scrape_url_fallback_preserves_html_table_as_markdown(monkeypatch):
+    fn, search_mod, json_lib = _scrape_url_callable()
+    monkeypatch.setattr(
+        search_mod, "_is_private_or_loopback_host", lambda _h: False
+    )
+
+    fake_trafilatura = types.ModuleType("trafilatura")
+    fake_trafilatura.extract = lambda *_args, **_kwargs: None
+    monkeypatch.setitem(sys.modules, "trafilatura", fake_trafilatura)
+
+    async def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            text=(
+                "<html><head><title>统计表</title></head><body><main>"
+                "<h1>人口统计</h1>"
+                "<table><thead><tr><th>项目</th><th>数值</th></tr></thead>"
+                "<tbody><tr><td>常住人口</td><td>1789万</td></tr></tbody></table>"
+                "</main></body></html>"
+            ),
+            headers={"content-type": "text/html; charset=utf-8"},
+            request=request,
+        )
+
+    transport = httpx.MockTransport(_handler)
+    monkeypatch.setattr(
+        search_mod.httpx, "AsyncClient", _make_patched_client(transport)
+    )
+
+    raw = await fn("https://example.com/table")
+    payload = json_lib.loads(raw)
+
+    assert payload["success"] is True
+    assert "| 项目 | 数值 |" in payload["content"]
+    assert "| --- | --- |" in payload["content"]
+    assert "| 常住人口 | 1789万 |" in payload["content"]
+
+
+@pytest.mark.asyncio
+async def test_scrape_url_truncates_on_sentence_boundary(monkeypatch):
+    fn, search_mod, json_lib = _scrape_url_callable()
+    monkeypatch.setattr(
+        search_mod, "_is_private_or_loopback_host", lambda _h: False
+    )
+
+    fake_trafilatura = types.ModuleType("trafilatura")
+    fake_trafilatura.extract = lambda *_args, **_kwargs: None
+    monkeypatch.setitem(sys.modules, "trafilatura", fake_trafilatura)
+
+    sentence = "深圳公共交通条例要求站内全程禁烟并保留处罚依据。"
+    html = (
+        "<html><head><title>长正文</title></head><body><main><article>"
+        + "".join(f"<p>{sentence}</p>" for _ in range(40))
+        + "</article></main></body></html>"
+    )
+
+    async def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            text=html,
+            headers={"content-type": "text/html; charset=utf-8"},
+            request=request,
+        )
+
+    transport = httpx.MockTransport(_handler)
+    monkeypatch.setattr(
+        search_mod.httpx, "AsyncClient", _make_patched_client(transport)
+    )
+
+    raw = await fn("https://example.com/long", max_chars=500)
+    payload = json_lib.loads(raw)
+
+    assert payload["success"] is True
+    assert payload["truncated"] is True
+    assert payload["content"].endswith("。")
+    assert len(payload["content"]) <= 500
+    assert payload["truncation"]["strategy"] == "soft_boundary"
+    assert payload["truncation"]["original_chars"] > 500
+    assert payload["truncation"]["returned_chars"] == len(payload["content"])
 
 
 @pytest.mark.asyncio
