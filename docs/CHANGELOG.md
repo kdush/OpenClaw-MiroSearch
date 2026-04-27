@@ -7,8 +7,31 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
-> 下一版本（v0.2.5）将进入 [`docs/SCRAPING_ITERATION_PLAN.md`](./SCRAPING_ITERATION_PLAN.md) 的 T6 + T7 + T8：
+## [0.2.5] - 2026-04-27
+
+> 本版本交付 [`docs/SCRAPING_ITERATION_PLAN.md`](./SCRAPING_ITERATION_PLAN.md) 的 T6 + T7 + T8：
 > `trafilatura` 主路径 + `bs4` fallback、HTML 表格转 markdown、按句子 / 段落边界智能截断。
+
+### Added
+
+- **T6 [B1] `scrape_url` 引入 `trafilatura` 主路径**：HTML 正文抽取优先走 `trafilatura.extract(output_format="markdown", include_tables=True, include_comments=False, favor_recall=True)`，抽空或不可用时回退到现有 `bs4` 路径；新增 `SCRAPE_USE_TRAFILATURA` 开关可快速回滚
+- **T7 [B3] HTML 表格转 Markdown**：`bs4` fallback 路径将 `<table>` 转为 Markdown 表格，保留行列结构，避免统计表、法规附表在纯文本抽取中丢列
+- **T8 [B4] 句子 / 段落边界智能截断**：超长正文不再直接 `text[:cap_chars]` 硬切，优先回退到段落、换行、中文/英文句末标点边界；返回新增 `truncation` 元数据
+- **新增 3 条 `scrape_url` 单元测试**：覆盖 `trafilatura` 主路径参数、fallback 表格 Markdown 保真、软边界截断元数据
+
+### Changed
+
+- **显式依赖 `trafilatura`**：`libs/miroflow-tools` 运行依赖新增 `trafilatura`，由 `uv sync` 传递到 api / worker / demo 运行环境
+- **截断长度语义调整**：`content_length` 在截断时可能小于 `max_chars`，以保证返回内容落在自然边界
+
+### Testing
+
+- **本地回归通过**：
+  - `libs/miroflow-tools`: `27 passed`
+  - `apps/api-server`: `94 passed, 13 skipped`
+  - `apps/gradio-demo`: `39 passed`
+  - `apps/miroflow-agent`: `39 passed, 7 skipped`
+- **本地 Docker 真实端到端验证通过**：使用 `COMPOSE_ENV_FILE=.env.compose.local-e2e` 重建 `app + api + worker` 后，真实任务 SSE `tool_call` 确认命中 `scrape_url`，并成功基于 `https://www.iana.org/about` 生成完整答案
 
 ## [0.2.4] - 2026-04-27
 

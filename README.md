@@ -239,7 +239,8 @@ See: [`docs/ROADMAP.md`](docs/ROADMAP.md)
 Current planning is divided into the following phases:
 
 - `v0.2.0` (production-ready) ✅: SearchProvider protocol, async task queue (arq + Valkey), SSE streaming, persistent cache, Docker Compose orchestration
-- `v0.2.4` (current) ✅: `scrape_url` redirect SSRF hardening, shared `httpx.AsyncClient`, PDF / JSON / RSS / Atom / XML support
-- `v0.2.5` (scraping quality + observability): T6–T8 in [`docs/SCRAPING_ITERATION_PLAN.md`](docs/SCRAPING_ITERATION_PLAN.md) — `trafilatura`, HTML table markdown, smart truncation, Prometheus metrics, eval pipeline in CI, multi-source RRF ranking, multilingual retrieval optimization
+- `v0.2.4` ✅: `scrape_url` redirect SSRF hardening, shared `httpx.AsyncClient`, PDF / JSON / RSS / Atom / XML support
+- `v0.2.5` (current) ✅: T6–T8 in [`docs/SCRAPING_ITERATION_PLAN.md`](docs/SCRAPING_ITERATION_PLAN.md) — `trafilatura`, HTML table markdown, smart truncation, Prometheus metrics, eval pipeline in CI, multi-source RRF ranking, multilingual retrieval optimization
 - `v0.3.0` (batch scraping + site-friendliness): T9 in [`docs/SCRAPING_ITERATION_PLAN.md`](docs/SCRAPING_ITERATION_PLAN.md) — batch `scrape_urls`, quotas and rate limiting, robots.txt validation
 - `v1.0.0` (ecosystem distribution): Helm Chart / one-click cloud deploy, skill versioned release, compatibility matrix auto-verification
+

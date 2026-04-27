@@ -1,7 +1,7 @@
 # 网页抓取能力迭代计划（v0.2.2 → v0.3.x）
 
 更新时间：2026-04-27
-当前版本：`v0.2.4-dev`（T1 / T2 / T3 / T4 / T5 已合并，待后续发版）
+当前版本：`v0.2.5`（T1 / T2 / T3 / T4 / T5 / T6 / T7 / T8 已发布）
 计划范围：MCP 工具 `scrape_url`（位于 `libs/miroflow-tools/src/miroflow_tools/dev_mcp_servers/search_and_scrape_webpage.py`）的能力扩展，配合 LLM 在 `google_search` snippet 不足时主动"打开正文"。
 
 ## 0. 进度跟踪
@@ -13,9 +13,9 @@
 | T4 | 中文编码兜底（header → meta → charset_normalizer） | ✅ Done | v0.2.3 |
 | T3 | PDF 抽取 + 20MB 上限 | ✅ Done | v0.2.4 |
 | T5 | JSON / RSS / Atom / XML 直通 | ✅ Done | v0.2.4 |
-| T6 | trafilatura 主路径 + bs4 fallback | ⏳ Pending | v0.2.5-scrape |
-| T7 | HTML 表格转 markdown | ⏳ Pending | v0.2.5-scrape |
-| T8 | 句子 / 段落边界截断 | ⏳ Pending | v0.2.5-scrape |
+| T6 | trafilatura 主路径 + bs4 fallback | ✅ Done | v0.2.5-scrape |
+| T7 | HTML 表格转 markdown | ✅ Done | v0.2.5-scrape |
+| T8 | 句子 / 段落边界截断 | ✅ Done | v0.2.5-scrape |
 | T9 | `scrape_urls` 批量并发 | ⏳ Pending | v0.3.0-scrape |
 
 ---
@@ -156,20 +156,19 @@ v0.2.2 已上线最小可用 `scrape_url`：基于 `httpx + BeautifulSoup`，仅
 - 回滚：去掉新加 mime 走老路径
 - 风险：feedparser 对脏 XML 容错强，但对编码识别弱，需要先按 T4 解码再喂
 
-### T6 [B1] 引入 trafilatura 主路径 + bs4 fallback
+### T6 [B1] 引入 trafilatura 主路径 + bs4 fallback ✅
 
 - 目标：明显提升正文召回（trafilatura 在中文新闻 / 政府站点多源测试上比 bs4 选择器召回高一截）
 - 设计：
   - `from trafilatura import extract`，参数 `output_format="markdown"`、`include_tables=True`、`include_comments=False`、`favor_recall=True`
   - trafilatura 抽空时 fallback 现有 `_extract_main_text`
-  - 镜像装包：`apps/api-server/Dockerfile` 与 `apps/gradio-demo/Dockerfile` 显式安装 `trafilatura`，避免 worker 容器没有依赖
-  - `libs/miroflow-tools/pyproject.toml` 增 optional extra `scrape`
+  - `libs/miroflow-tools/pyproject.toml` 显式登记 `trafilatura`，由 `uv sync` 传递到 api / worker / demo 镜像
 - 测试：
   - 用本地 fixture（`tests/fixtures/news_*.html`）对比两路径召回长度，trafilatura 不应明显劣于 bs4
 - 回滚：feature flag `SCRAPE_USE_TRAFILATURA=false` 退回原路径
 - 风险：trafilatura 体积大（含 lxml），镜像层会增 10MB 左右，需要写在镜像优化条目
 
-### T7 [B3] HTML 表格转换为 markdown，保留不丢列
+### T7 [B3] HTML 表格转换为 markdown，保留不丢列 ✅
 
 - 目标：法规附表、统计表、对比表保留列对齐
 - 设计：
@@ -182,12 +181,12 @@ v0.2.2 已上线最小可用 `scrape_url`：基于 `httpx + BeautifulSoup`，仅
 - 回滚：跳过表格转换，仅输出纯文本
 - 风险：复杂跨页表表现欠佳，标注 `tables_lossy=true` 让 LLM 判断
 
-### T8 [B4] 按句句号 / 段落边界截断代替硬切字符
+### T8 [B4] 按句句号 / 段落边界截断代替硬切字符 ✅
 
 - 目标：让 LLM 引用上下文不被截断
 - 设计：
   - 截到 `cap_chars` 时回溯到最近的 `\n\n`、`。`、`.`、`!`、`?`、`！`、`？`，3 选 1 取最远那个边界
-  - 截断时附加 `truncation: {strategy: "soft_paragraph", original_chars: N, returned_chars: M}` 元数据
+  - 截断时附加 `truncation: {strategy: "soft_boundary", original_chars: N, returned_chars: M}` 元数据
 - 测试：
   - 长正文截断后末尾必须落在标点或段落边界
   - 截断不会增加正文（只能更短）
@@ -215,9 +214,9 @@ v0.2.2 已上线最小可用 `scrape_url`：基于 `httpx + BeautifulSoup`，仅
 | 版本 | 任务 | 目标 | 状态 |
 |------|------|------|------|
 | **v0.2.2**（已发布） | scrape_url 最小可用 + SSRF 防护 + 单元测试 | 让 LLM 至少能"打开 HTML 正文" | ✅ shipped |
-| **v0.2.3**（开发中） | T2 + T1 + T4 | 安全闭环 + 编码鲁棒 + 共享 client + metrics | ✅ merged on main |
-| **v0.2.4** | T3 + T5 | 把 PDF / JSON / RSS / Atom / XML 入口接上 | ✅ merged on main |
-| **v0.2.5** | T6 + T7 + T8 | 提升正文质量与表格保真，对接 trafilatura | ⏳ |
+| **v0.2.3**（已发布） | T2 + T1 + T4 | 安全闭环 + 编码鲁棒 + 共享 client + metrics | ✅ shipped |
+| **v0.2.4**（已发布） | T3 + T5 | 把 PDF / JSON / RSS / Atom / XML 入口接上 | ✅ shipped |
+| **v0.2.5**（已发布） | T6 + T7 + T8 | 提升正文质量与表格保真，对接 trafilatura | ✅ shipped |
 | **v0.3.0** | T9 + 配额限流 + robots.txt 校验 | 批量抓取与外部站点友好性 | ⏳ |
 
 > 上述节奏与 `docs/ROADMAP.md` 中 "v0.2.5（质量增强 + 可观测性）" 互不冲突；评测体系与可观测性属于 ROADMAP 主线，本计划专注抓取工具能力。

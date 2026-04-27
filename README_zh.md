@@ -232,7 +232,7 @@ cd apps/miroflow-agent && uv run pytest
 当前规划分为以下阶段：
 
 - `v0.2.0`（生产化）✅：异步任务队列（arq + Valkey）、SSE 流式输出、SearchProvider 协议化、持久化缓存、Docker Compose 多服务编排
-- `v0.2.4`（当前）✅：`scrape_url` 已具备重定向 SSRF 加固、共享 `httpx.AsyncClient`、PDF / JSON / RSS / Atom / XML 支持
-- `v0.2.5`（抓取质量 + 可观测性）：详见 [`docs/SCRAPING_ITERATION_PLAN.md`](docs/SCRAPING_ITERATION_PLAN.md)，T6-T8 覆盖 `trafilatura`、HTML 表格转 markdown、智能截断，并补充 Prometheus 指标、Eval Pipeline CI 化、多源 RRF 融合排序、多语言检索优化
+- `v0.2.4` ✅：`scrape_url` 已具备重定向 SSRF 加固、共享 `httpx.AsyncClient`、PDF / JSON / RSS / Atom / XML 支持
+- `v0.2.5`（当前）✅：详见 [`docs/SCRAPING_ITERATION_PLAN.md`](docs/SCRAPING_ITERATION_PLAN.md)，T6-T8 覆盖 `trafilatura`、HTML 表格转 markdown、智能截断，并补充 Prometheus 指标、Eval Pipeline CI 化、多源 RRF 融合排序、多语言检索优化
 - `v0.3.0`（批量抓取 + 站点友好性）：详见 [`docs/SCRAPING_ITERATION_PLAN.md`](docs/SCRAPING_ITERATION_PLAN.md)，T9 覆盖批量 `scrape_urls`、配额限流与 `robots.txt` 校验
 - `v1.0.0`（生态分发）：Helm Chart / 一键云部署、技能包版本化发布、兼容矩阵自动验证
