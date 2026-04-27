@@ -15,7 +15,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - **T1 [C1] scrape_url 共享 `httpx.AsyncClient` + 分阶段耗时 metrics**：模块级 `_SCRAPE_CLIENT` 懒初始化，`atexit` 关闭；返回 JSON 新增 `metrics: {t_request_ms, t_parse_ms, t_extract_ms, redirect_hops}`，让 LLM 一轮研究中连续抓取多个 URL 时复用 TCP/TLS，大幅降低尾延迟
 - **T2 [D2/D3] 重定向手动循环 + 每跳 SSRF 校验 + 上限 5 跳**：默认 `follow_redirects=False`，自实现 30x 跟随；每一跳重新校验 scheme + `_is_private_or_loopback_host`，跳到内网 / 跳数超 `SCRAPE_MAX_REDIRECT_HOPS`（默认 5）立刻返回 `error="redirect_blocked: ..."`，并保留 `redirect_chain` 字段
 - **T4 [B2] 中文编码兜底（header → meta → charset_normalizer）**：bytes 路径解码，Content-Type charset → `<meta charset>` / `<meta http-equiv>` → `charset_normalizer.from_bytes(...).best()` → utf-8(replace) 四级回退；返回字段新增 `encoding`，专治 GBK / GB18030 政府站点中文乱码
-- 新增 8 条单元测试覆盖：metrics 字段 / redirect 链跟随 / redirect 私网拒绝 / 超 5 跳拒绝 / GBK header 解码 / meta charset 兜底 / charset_normalizer 兜底 / 共享 client 复用
+- **Docker fake-ip DNS 兼容开关**：新增 `SCRAPE_PROXY_FAKE_IP_CIDRS`，用于显式允许代理/TUN 环境中域名解析到的 fake-ip 网段（如 `198.18.0.0/15`）；该开关只对域名解析结果生效，不允许 IP 字面量绕过 SSRF 拦截
+- 新增 11 条单元测试覆盖：metrics 字段 / redirect 链跟随 / redirect 私网拒绝 / 超 5 跳拒绝 / GBK header 解码 / meta charset 兜底 / charset_normalizer 兜底 / 共享 client 复用 / fake-ip DNS 默认拒绝 / fake-ip 显式允许 / IP 字面量仍拒绝
 
 ## [0.2.2] - 2026-04-26
 
