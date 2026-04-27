@@ -349,6 +349,9 @@ def create_mcp_server_parameters(cfg: DictConfig, agent_cfg: DictConfig):
             "SEARCH_CONFIDENCE_HIGH_CONF_DOMAINS",
             "reuters.com,apnews.com,bbc.com,aljazeera.com,state.gov,un.org,iaea.org,who.int",
         )
+        dynamic_scrape_proxy_fake_ip_cidrs = os.environ.get(
+            "SCRAPE_PROXY_FAKE_IP_CIDRS", ""
+        )
         configs.append(
             {
                 "name": "search_and_scrape_webpage",
@@ -382,6 +385,7 @@ def create_mcp_server_parameters(cfg: DictConfig, agent_cfg: DictConfig):
                         "SEARCH_CONFIDENCE_MIN_PROVIDER_COVERAGE": dynamic_search_confidence_min_provider_coverage,
                         "SEARCH_CONFIDENCE_MIN_HIGH_CONF_HITS": dynamic_search_confidence_min_high_conf_hits,
                         "SEARCH_CONFIDENCE_HIGH_CONF_DOMAINS": dynamic_search_confidence_high_conf_domains,
+                        "SCRAPE_PROXY_FAKE_IP_CIDRS": dynamic_scrape_proxy_fake_ip_cidrs,
                         "TENCENTCLOUD_SECRET_ID": TENCENTCLOUD_SECRET_ID,
                         "TENCENTCLOUD_SECRET_KEY": TENCENTCLOUD_SECRET_KEY,
                     },

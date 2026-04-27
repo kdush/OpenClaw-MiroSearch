@@ -9,7 +9,7 @@ import os
 import re
 import socket
 import time
-from ipaddress import ip_address
+from ipaddress import ip_address, ip_network
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
@@ -117,6 +117,19 @@ def _read_env_bool(name: str, default: bool) -> bool:
     if raw_value is None:
         return default
     return raw_value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _read_env_ip_networks(name: str) -> Tuple[Any, ...]:
+    networks = []
+    for raw_value in os.getenv(name, "").split(","):
+        value = raw_value.strip()
+        if not value:
+            continue
+        try:
+            networks.append(ip_network(value, strict=False))
+        except ValueError:
+            continue
+    return tuple(networks)
 
 
 SEARCH_PROVIDER_PARALLEL_MAX_WAIT_MS = _read_env_int(
@@ -900,6 +913,7 @@ SCRAPE_USER_AGENT = os.getenv(
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) MiroflowResearch/1.0 Chrome/126.0.0.0 Safari/537.36",
 )
+SCRAPE_PROXY_FAKE_IP_CIDRS = _read_env_ip_networks("SCRAPE_PROXY_FAKE_IP_CIDRS")
 ALLOWED_SCRAPE_CONTENT_PREFIXES = (
     "text/html",
     "application/xhtml",
@@ -914,10 +928,35 @@ _SCRAPE_CLIENT_LOCK: Optional[asyncio.Lock] = None
 _SCRAPE_ATEXIT_REGISTERED = False
 
 
+def _parse_ip_literal(host: str) -> Optional[Any]:
+    try:
+        return ip_address(host.strip("[]"))
+    except ValueError:
+        return None
+
+
+def _is_blocked_scrape_ip(ip: Any) -> bool:
+    return (
+        ip.is_loopback
+        or ip.is_private
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_multicast
+        or ip.is_unspecified
+    )
+
+
+def _is_configured_fake_ip(ip: Any) -> bool:
+    return any(ip in network for network in SCRAPE_PROXY_FAKE_IP_CIDRS)
+
+
 def _is_private_or_loopback_host(host: str) -> bool:
     """阻止 LLM 通过 scrape_url 访问内网/loopback，简单 SSRF 防护。"""
     if not host:
         return True
+    ip_literal = _parse_ip_literal(host)
+    if ip_literal is not None:
+        return _is_blocked_scrape_ip(ip_literal)
     try:
         infos = socket.getaddrinfo(host, None)
     except Exception:
@@ -928,14 +967,7 @@ def _is_private_or_loopback_host(host: str) -> bool:
             ip = ip_address(info[4][0])
         except Exception:
             continue
-        if (
-            ip.is_loopback
-            or ip.is_private
-            or ip.is_link_local
-            or ip.is_reserved
-            or ip.is_multicast
-            or ip.is_unspecified
-        ):
+        if _is_blocked_scrape_ip(ip) and not _is_configured_fake_ip(ip):
             return True
     return False
 

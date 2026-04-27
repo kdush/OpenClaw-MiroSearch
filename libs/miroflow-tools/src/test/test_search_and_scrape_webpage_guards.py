@@ -326,6 +326,65 @@ def _make_patched_client(transport: httpx.MockTransport):
     return _PatchedClient
 
 
+def test_scrape_url_fake_ip_dns_requires_explicit_config(monkeypatch):
+    monkeypatch.delenv("SCRAPE_PROXY_FAKE_IP_CIDRS", raising=False)
+    search_mod = _load_search_module()
+    monkeypatch.setattr(
+        search_mod.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [(None, None, None, "", ("198.18.0.100", 0))],
+    )
+
+    assert search_mod._is_private_or_loopback_host("example.com") is True
+
+
+def test_scrape_url_allows_configured_fake_ip_dns_but_rejects_ip_literals(
+    monkeypatch,
+):
+    monkeypatch.setenv("SCRAPE_PROXY_FAKE_IP_CIDRS", "198.18.0.0/15")
+    search_mod = _load_search_module()
+    monkeypatch.setattr(
+        search_mod.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [(None, None, None, "", ("198.18.0.100", 0))],
+    )
+
+    assert search_mod._is_private_or_loopback_host("example.com") is False
+    assert search_mod._is_private_or_loopback_host("198.18.0.100") is True
+    assert search_mod._is_private_or_loopback_host("127.0.0.1") is True
+
+
+@pytest.mark.asyncio
+async def test_scrape_url_allows_configured_fake_ip_dns(monkeypatch):
+    monkeypatch.setenv("SCRAPE_PROXY_FAKE_IP_CIDRS", "198.18.0.0/15")
+    fn, search_mod, json_lib = _scrape_url_callable()
+    monkeypatch.setattr(
+        search_mod.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [(None, None, None, "", ("198.18.0.100", 0))],
+    )
+
+    async def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            text="<html><body><main>fake ip dns passed</main></body></html>",
+            headers={"content-type": "text/html; charset=utf-8"},
+            request=request,
+        )
+
+    transport = httpx.MockTransport(_handler)
+    monkeypatch.setattr(
+        search_mod.httpx, "AsyncClient", _make_patched_client(transport)
+    )
+
+    raw = await fn("https://example.com/fake-ip")
+    payload = json_lib.loads(raw)
+
+    assert payload["success"] is True
+    assert payload["content"] == "fake ip dns passed"
+    assert payload["metrics"]["redirect_hops"] == 0
+
+
 @pytest.mark.asyncio
 async def test_scrape_url_returns_metrics_and_encoding_fields(monkeypatch):
     fn, search_mod, json_lib = _scrape_url_callable()
