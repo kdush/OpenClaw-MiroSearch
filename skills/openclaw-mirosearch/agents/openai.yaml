@@ -1,0 +1,4 @@
+interface:
+  display_name: "OpenClaw MiroSearch"
+  short_description: "面向 OpenClaw 的高质量联网研究与异步任务编排技能"
+  default_prompt: "使用 $openclaw-mirosearch 通过 FastAPI API 执行一次高质量联网研究任务。"
