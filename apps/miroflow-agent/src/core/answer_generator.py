@@ -607,7 +607,7 @@ class AnswerGenerator:
         ) = await self.handle_llm_call(
             system_prompt,
             failure_summary_history,
-            tool_definitions,
+            [],  # 不传 tool_definitions：failure summary 禁止工具调用
             turn_count + 10,  # Use a different step id
             "Main Agent | Failure Experience Summary",
             agent_type="failure_summary",
@@ -972,7 +972,7 @@ class AnswerGenerator:
         ) = await self.generate_final_answer_with_retries(
             system_prompt=system_prompt,
             message_history=message_history,
-            tool_definitions=tool_definitions,
+            tool_definitions=[],  # 不传 tool_definitions：总结阶段禁止工具调用，且避免 OpenRouter 等网关因模型不支持 tool use 而返回 404
             turn_count=turn_count,
             task_description=task_description,
         )
