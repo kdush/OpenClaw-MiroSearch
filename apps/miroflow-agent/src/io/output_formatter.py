@@ -149,8 +149,25 @@ class OutputFormatter:
         if boxed_result:
             summary_lines.append(boxed_result)
         elif final_answer_text:
-            summary_lines.append("No \\boxed{} content found.")
-            boxed_result = FORMAT_ERROR_MESSAGE
+            # No \boxed{} found but model did produce content.
+            # Fall back to a cleaned version of the full answer text instead of
+            # FORMAT_ERROR_MESSAGE, so models that don't use \boxed{} format
+            # (e.g. qwen3.6) can still produce valid results without triggering
+            # unnecessary retries or "not converged" warnings.
+            cleaned = re.sub(
+                r"<think>.*?</think>", "", final_answer_text, flags=re.DOTALL
+            ).strip()
+            cleaned = re.sub(r"\\boxed\{[^}]*\}", "", cleaned).strip()
+            if cleaned:
+                boxed_result = cleaned
+                summary_lines.append(cleaned)
+                summary_lines.append(
+                    "\n(Note: model did not use \\boxed{} format; "
+                    "using full answer text as fallback.)"
+                )
+            else:
+                summary_lines.append("No \\boxed{} content found.")
+                boxed_result = FORMAT_ERROR_MESSAGE
 
         # Token usage statistics and cost estimation - use client method
         if client and hasattr(client, "format_token_usage_summary"):
