@@ -1,0 +1,4 @@
+interface:
+  display_name: "SearXNG Search"
+  short_description: "面向本项目内置 SearXNG 的简单网页检索与低成本事实查询技能"
+  default_prompt: "使用 $searxng 通过本项目内置的 SearXNG 实例执行一次简单搜索。"

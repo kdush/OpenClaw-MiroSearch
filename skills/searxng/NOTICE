@@ -1,0 +1,16 @@
+本目录包含基于第三方 OpenClaw skill 改造的分发内容。
+
+上游来源：
+- 技能名：`searxng`
+- 参考页面：`https://openclaw.army/skills/abk234/searxng/`
+- 下载样本：ClawHub `searxng-1` 压缩包（获取日期：2026-05-02）
+- 上游声明许可证：MIT-0
+
+本仓库保留的改动：
+- 将 `SKILL.md` 调整为当前仓库可校验的 frontmatter 结构
+- 将配置说明改为优先兼容 `SEARXNG_BASE_URL`
+- 将默认实例地址改为本项目 Docker Compose 对外端口 `http://127.0.0.1:27080`
+- 将 TLS 校验改为通过 `SEARXNG_VERIFY_SSL` 控制，不再硬编码 `verify=False`
+- 新增 `agents/openai.yaml` 以适配当前技能分发方式
+
+第三方许可证全文见同目录 `LICENSE.upstream-MIT-0`。
