@@ -7,6 +7,13 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-05-02
+
+### Fixed
+
+- **禁止 failure summary 和总结阶段传入 tool_definitions**：failure summary 阶段无需工具调用；总结阶段禁止工具调用，避免 OpenRouter 等网关因模型不支持 tool use 返回 404
+- **找不到 `\boxed{}` 时回退到完整答案文本**：兼容 qwen3.6 等不使用 `\boxed{}` 格式的模型，避免 `FORMAT_ERROR_MESSAGE` 触发不必要的重试或 "not converged" 警告
+
 ## [0.2.5] - 2026-04-27
 
 > 本版本交付 [`docs/SCRAPING_ITERATION_PLAN.md`](./SCRAPING_ITERATION_PLAN.md) 的 T6 + T7 + T8：
