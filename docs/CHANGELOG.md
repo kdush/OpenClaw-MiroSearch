@@ -7,6 +7,19 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.2.7] - 2026-05-02
+
+### Added
+
+- **新增 `searxng` 独立技能**：提供轻量级搜索入口，适配成本优先的调用场景，包含 `agents/openai.yaml`、`scripts/searxng.py`、SKILL.md
+- **新增 `openclaw-search-skills-bundle.zip` 聚合技能包**：整合多个搜索相关技能
+- **新增 `openclaw-mirosearch/agents/openai.yaml`**：适配 OpenClaw Agent 技能调用规范
+
+### Changed
+
+- **README 从 Gradio API 示例改为 FastAPI REST API 示例**：新增 `caller_id` 参数说明、任务取消方式、`/health` 健康检查、`/v1/research` 完整路径与 SSE 流式说明
+- **`SKILL.md` 改为核心约定格式**：强调 FastAPI 闭环为推荐方式，简化 v0.2.2 旧变更说明
+
 ## [0.2.6] - 2026-05-02
 
 ### Fixed
