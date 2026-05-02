@@ -16,12 +16,15 @@
 
 默认地址：`http://127.0.0.1:8090`
 
+OpenClaw 集成默认优先使用这一套接口；只有在必须复用 Demo Web 页面或兼容旧链路时，才回退到 Gradio。
+
 1. 探活：`GET /health`
 2. 提交：`POST /v1/research`，返回 `task_id`
 3. 获取结果（二选一）：
-   - 轮询：`GET /v1/research/{task_id}`，`status=completed` 时取 `result`
+   - 轮询：`GET /v1/research/{task_id}`，`status=completed` 或 `cached` 时取 `result`
    - 流式：`GET /v1/research/{task_id}/stream`，实时 SSE 事件
 4. 取消：`POST /v1/research/{task_id}/cancel`
+5. 批量取消：`POST /v1/research/cancel?caller_id=...`
 
 ### Gradio API（兼容）
 
@@ -55,6 +58,7 @@
 - `search_result_num=20`
 - `verification_min_search_rounds=3`
 - `output_detail_level=balanced`
+- `caller_id=<会话唯一标识>`
 
 ### 3.2 高质量或事实核查
 
@@ -84,7 +88,8 @@ python3 scripts/call_openclaw_mirosearch.py \
   --search-profile parallel-trusted \
   --search-result-num 20 \
   --verification-min-search-rounds 3 \
-  --output-detail-level balanced
+  --output-detail-level balanced \
+  --caller-id "openclaw-session-001"
 ```
 
 ### Gradio（兼容）
@@ -105,6 +110,9 @@ python3 scripts/call_openclaw_mirosearch.py \
 
 - 若结果出现 `No \boxed{} content found in the final answer.`：
   - 代表"本轮未收敛，可重试"，不代表服务离线
+- 若多个并发任务需要一起停止：
+  - FastAPI 优先用 `POST /v1/research/cancel?caller_id=...`
+  - Gradio 优先用 `POST /gradio_api/call/stop_current_by_caller`
 - 若 SearXNG 页面出现"大量引擎超时"：
   - 优先判断是否网络可达性问题（不是服务崩溃）
   - 中国大陆无代理建议禁用 `google/duckduckgo/brave/startpage/wikipedia` 等高超时源

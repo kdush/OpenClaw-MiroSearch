@@ -25,7 +25,7 @@ OpenClaw-MiroSearch 是一个面向智能体场景的开源联网检索工程，
 - **6 种研究模式**：`production-web` / `verified` / `research` / `balanced`（默认） / `quota` / `thinking`
 - **6 种检索路由**：`searxng-first` / `serp-first` / `multi-route` / `parallel` / `parallel-trusted` / `searxng-only`
 - **多源检索**：SearXNG、SerpAPI、Serper —— 支持并发聚合与置信度补检
-- **统一 API**：`run_research_once` 提供 6 参数全维控制（模式、路由、深度、输出篇幅）
+- **双接口接入**：FastAPI 标准 REST 接口（推荐，`/v1/research`）+ Gradio 兼容接口（`run_research_once`）
 - **运行态可观测**：阶段心跳（检索/推理/校验/总结）、陈旧任务自动收敛
 
 > 完整 API 规格与参数说明请参见 [`docs/API_SPEC.md`](docs/API_SPEC.md)
@@ -99,40 +99,53 @@ DEFAULT_SEARCH_PROFILE="parallel-trusted"
 uv run main.py
 ```
 
-默认地址：`http://127.0.0.1:8080`
+默认地址：`http://127.0.0.1:8090`
 
 ### 4. 健康检查
 
 ```bash
-curl -sS 'http://127.0.0.1:8080/gradio_api/info'
+curl -sS 'http://127.0.0.1:8090/health'
 ```
 
 ## API 调用示例
 
-统一接口（6 参数）：
+推荐使用 FastAPI API（异步任务队列）：
 
 ```bash
-BASE_URL="http://127.0.0.1:8080"
+BASE_URL="http://127.0.0.1:8090"
 QUERY="中国大陆有哪些厂商推出了 OpenClaw 变体？"
 MODE="verified"
 PROFILE="parallel-trusted"
 RESULT_NUM=30
 MIN_ROUNDS=4
 DETAIL_LEVEL="balanced" # compact / balanced / detailed
+CALLER_ID="openclaw-session-001"
 
-EVENT_ID=$(curl -sS -H 'Content-Type: application/json' \
-  -d "{\"data\":[\"$QUERY\",\"$MODE\",\"$PROFILE\",$RESULT_NUM,$MIN_ROUNDS,\"$DETAIL_LEVEL\"]}" \
-  "$BASE_URL/gradio_api/call/run_research_once" | python3 -c 'import sys,json;print(json.load(sys.stdin)["event_id"])')
+TASK_ID=$(curl -sS -X POST "$BASE_URL/v1/research" \
+  -H 'Content-Type: application/json' \
+  -d "{\"query\":\"$QUERY\",\"mode\":\"$MODE\",\"search_profile\":\"$PROFILE\",\"search_result_num\":$RESULT_NUM,\"verification_min_search_rounds\":$MIN_ROUNDS,\"output_detail_level\":\"$DETAIL_LEVEL\",\"caller_id\":\"$CALLER_ID\"}" \
+  | python3 -c 'import sys,json;print(json.load(sys.stdin)["task_id"])')
 
-curl -sS "$BASE_URL/gradio_api/call/run_research_once/$EVENT_ID"
+curl -sS "$BASE_URL/v1/research/$TASK_ID"
 ```
 
-终止当前任务：
+实时查看任务事件：
 
 ```bash
-curl -sS -H 'Content-Type: application/json' \
-  -d '{"data":[]}' \
-  "$BASE_URL/gradio_api/call/stop_current"
+curl -sS -N "$BASE_URL/v1/research/$TASK_ID/stream"
+```
+
+按 `caller_id` 取消当前会话任务：
+
+```bash
+curl -sS -X POST "$BASE_URL/v1/research/cancel?caller_id=$CALLER_ID"
+```
+
+如需兼容旧链路或直接复用 Demo UI，仍可使用 Gradio API：
+
+```bash
+BASE_URL="http://127.0.0.1:8080"
+curl -sS "$BASE_URL/gradio_api/info"
 ```
 
 ## 面向 OpenClaw / AI Agent
@@ -145,18 +158,22 @@ curl -sS -H 'Content-Type: application/json' \
 
 推荐给 AI Agent 的调用闭环：
 
-1. 先调 `GET /gradio_api/info` 探活
-1. 发起 `run_research_once`
-1. 轮询 `event: complete`
-1. 只消费 `complete` 的最终 Markdown
+1. 先调 `GET /health` 探活
+1. 发起 `POST /v1/research`
+1. 轮询 `GET /v1/research/{task_id}` 或订阅 `GET /v1/research/{task_id}/stream`
+1. `status=completed` 或 `cached` 时，只消费最终 Markdown
 
 Skill 使用建议（先分流）：
 
-- 简单搜索（快速网页检索、单事实查询）：优先使用 `searxng` skill；链接：<https://clawhub.ai/abk234/searxng>
+- 简单搜索（快速网页检索、单事实查询）：优先使用仓库内分发的 `searxng` skill
+  - 仓库目录：`skills/searxng/`
+  - 打包文件：`skills/searxng.zip`
 - 深度检索或高质量检索（多来源交叉、核查、研究报告）：使用 `openclaw-mirosearch` skill
 
 Skill 安装：
 
+- 推荐双 skill 打包：`skills/openclaw-search-skills-bundle.zip`
+- 简单搜索 skill：`skills/searxng/`
 - 仓库目录：`skills/openclaw-mirosearch/`
 - 打包文件：`skills/openclaw-mirosearch.zip`
 - 安装说明：[`skills/openclaw-mirosearch/references/skill-install.md`](skills/openclaw-mirosearch/references/skill-install.md)

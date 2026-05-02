@@ -40,11 +40,16 @@ v0.2.0 起提供两套 API，**AI Agent 推荐使用 FastAPI API**。当前 skil
 |------|------|------|--------|------|
 | `query` | string | 是 | — | 研究问题 |
 | `mode` | string | 否 | `balanced` | 研究模式 |
-| `search_profile` | string | 否 | `searxng-first` | 检索路由 |
+| `search_profile` | string | 否 | `parallel-trusted` | 检索路由 |
 | `search_result_num` | int | 否 | `20` | 每轮检索结果数 |
 | `verification_min_search_rounds` | int | 否 | `3` | 最少检索轮次（verified 模式） |
 | `output_detail_level` | string | 否 | `detailed` | 输出篇幅 |
 | `caller_id` | string | 否 | — | 调用方标识 |
+
+建议：
+
+- 调用方始终显式传入 `mode`、`search_profile`、`search_result_num`、`verification_min_search_rounds`、`output_detail_level`
+- 需要批量取消或会话隔离时显式传入 `caller_id`
 
 响应（异步入队）：
 
@@ -72,13 +77,13 @@ v0.2.0 起提供两套 API，**AI Agent 推荐使用 FastAPI API**。当前 skil
 }
 ```
 
-`status` 枚举：`queued` → `running` → `completed` / `failed` / `cancelled`
+`status` 枚举：`queued` → `running` → `completed` / `failed` / `cancelled` / `cached`
 
 ### 3) SSE 流式监听
 
 `GET /v1/research/{task_id}/stream`
 
-返回 SSE 事件流，已完成任务返回历史事件，运行中任务实时推送：
+返回 SSE 事件流，已完成任务返回历史事件，运行中任务实时推送。常见事件包括：
 
 ```
 event: start_of_workflow
@@ -90,17 +95,53 @@ data: {"phase": "检索", "turn": 1, "detail": "执行工具 google_search", ...
 event: tool_call
 data: {"tool_name": "google_search", "tool_input": {...}}
 
+event: final_output
+data: {"markdown": "..."}
+
 event: done
-data: {}
+data: {"status": "completed"}
 ```
+
+说明：
+
+- `done.data.status` 可能为 `completed`、`failed`、`cancelled` 或 `cached`
+- 进度类事件名称以服务端实际产出为准，常见为 `stage_heartbeat`
 
 ### 4) 取消任务
 
 `POST /v1/research/{task_id}/cancel`
 
+### 4.1) 按 caller_id 批量取消
+
+`POST /v1/research/cancel?caller_id=<caller_id>`
+
+不传 `caller_id` 时，取消所有运行中任务。
+
+响应：
+
+```json
+{
+  "cancelled": 2,
+  "task_ids": ["task-a", "task-b"]
+}
+```
+
 ### 5) 健康检查
 
 `GET /health`
+
+### 6) 最近运行指标
+
+`GET /v1/metrics/last`
+
+用于获取最近一次任务的结构化运行指标；若尚无数据，返回：
+
+```json
+{
+  "status": "no_data",
+  "message": "尚无已完成的任务"
+}
+```
 
 ### cURL 示例
 
@@ -116,6 +157,12 @@ curl -sS "http://127.0.0.1:8090/v1/research/$TASK_ID"
 
 # SSE 流式监听
 curl -sS -N "http://127.0.0.1:8090/v1/research/$TASK_ID/stream"
+
+# 按 caller_id 批量取消
+curl -sS -X POST "http://127.0.0.1:8090/v1/research/cancel?caller_id=my-agent-001"
+
+# 查看最近一次运行指标
+curl -sS "http://127.0.0.1:8090/v1/metrics/last"
 ```
 
 ### 脚本调用
@@ -201,8 +248,9 @@ python3 scripts/call_openclaw_mirosearch.py \
 ## 面向 AI Agent 的调用约定
 
 - **优先使用 FastAPI API**，支持异步并发与任务持久化
-- FastAPI 终态：轮询 `status=completed`，取 `result` 字段
+- FastAPI 终态：轮询 `status=completed` 或 `status=cached`，取 `result` 字段
 - Gradio 终态：等待 SSE `event: complete`
 - `No \boxed{} content found in the final answer.` 代表未收敛，不代表服务故障
 - 推荐将 `output_detail_level` 显式传入，避免依赖服务端默认值
+- 推荐始终传入 `caller_id`，便于隔离并发任务和定向取消
 - 可读取 SSE 的 `stage_heartbeat` 事件展示阶段进度（检索/推理/校验/总结）

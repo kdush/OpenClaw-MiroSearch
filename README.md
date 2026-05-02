@@ -25,7 +25,7 @@ This project is modified from [MiroMindAI/MiroThinker](https://github.com/MiroMi
 - **6 research modes**: `production-web` / `verified` / `research` / `balanced` (default) / `quota` / `thinking`
 - **6 search routing profiles**: `searxng-first` / `serp-first` / `multi-route` / `parallel` / `parallel-trusted` / `searxng-only`
 - **Multi-source search**: SearXNG, SerpAPI, Serper — with parallel aggregation and confidence-based supplemental retrieval
-- **Unified API**: `run_research_once` with 6 parameters for full control over mode, routing, depth, and output detail
+- **Dual integration interfaces**: FastAPI standard REST API (recommended, `/v1/research`) plus Gradio-compatible `run_research_once`
 - **Runtime observability**: stage heartbeat (search/reasoning/verification/summary), stale-task auto-reconciliation
 - **Independent API server**: FastAPI-based `apps/api-server/` with standard REST endpoints (`/v1/research`), Bearer Token auth, and request rate limiting
 - **Result caching**: in-memory LRU + TTL cache to avoid redundant search/LLM costs for identical queries
@@ -96,40 +96,53 @@ Model configuration notes:
 uv run main.py
 ```
 
-Default address: `http://127.0.0.1:8080`
+Default address: `http://127.0.0.1:8090`
 
 ### 4. Health Check
 
 ```bash
-curl -sS 'http://127.0.0.1:8080/gradio_api/info'
+curl -sS 'http://127.0.0.1:8090/health'
 ```
 
 ## API Usage Example
 
-Unified interface with 6 parameters:
+Recommended FastAPI API flow (async task queue):
 
 ```bash
-BASE_URL="http://127.0.0.1:8080"
+BASE_URL="http://127.0.0.1:8090"
 QUERY="Which Chinese companies have released OpenClaw variants?"
 MODE="verified"
 PROFILE="parallel-trusted"
 RESULT_NUM=30
 MIN_ROUNDS=4
 DETAIL_LEVEL="balanced" # compact / balanced / detailed
+CALLER_ID="openclaw-session-001"
 
-EVENT_ID=$(curl -sS -H 'Content-Type: application/json' \
-  -d "{\"data\":[\"$QUERY\",\"$MODE\",\"$PROFILE\",$RESULT_NUM,$MIN_ROUNDS,\"$DETAIL_LEVEL\"]}" \
-  "$BASE_URL/gradio_api/call/run_research_once" | python3 -c 'import sys,json;print(json.load(sys.stdin)["event_id"])')
+TASK_ID=$(curl -sS -X POST "$BASE_URL/v1/research" \
+  -H 'Content-Type: application/json' \
+  -d "{\"query\":\"$QUERY\",\"mode\":\"$MODE\",\"search_profile\":\"$PROFILE\",\"search_result_num\":$RESULT_NUM,\"verification_min_search_rounds\":$MIN_ROUNDS,\"output_detail_level\":\"$DETAIL_LEVEL\",\"caller_id\":\"$CALLER_ID\"}" \
+  | python3 -c 'import sys,json;print(json.load(sys.stdin)["task_id"])')
 
-curl -sS "$BASE_URL/gradio_api/call/run_research_once/$EVENT_ID"
+curl -sS "$BASE_URL/v1/research/$TASK_ID"
 ```
 
-Stop current task:
+Stream live task events:
 
 ```bash
-curl -sS -H 'Content-Type: application/json' \
-  -d '{"data":[]}' \
-  "$BASE_URL/gradio_api/call/stop_current"
+curl -sS -N "$BASE_URL/v1/research/$TASK_ID/stream"
+```
+
+Cancel tasks for the current caller session:
+
+```bash
+curl -sS -X POST "$BASE_URL/v1/research/cancel?caller_id=$CALLER_ID"
+```
+
+If you need legacy compatibility or want to reuse the Demo UI directly, Gradio API remains available:
+
+```bash
+BASE_URL="http://127.0.0.1:8080"
+curl -sS "$BASE_URL/gradio_api/info"
 ```
 
 ## For OpenClaw / AI Agents
@@ -142,21 +155,24 @@ Project positioning:
 
 Recommended agent calling loop:
 
-1. Call `GET /gradio_api/info` for health check
-1. Initiate `run_research_once`
-1. Poll for `event: complete`
-1. Consume only final Markdown from `complete`
+1. Call `GET /health` for health check
+1. Submit `POST /v1/research`
+1. Poll `GET /v1/research/{task_id}` or subscribe to `GET /v1/research/{task_id}/stream`
+1. When `status=completed` or `cached`, consume only the final Markdown
 
 Skill guidance:
 
-- Simple search, single-fact lookup, and cost-first usage: use the `searxng` skill
-  - Link: <https://clawhub.ai/abk234/searxng>
+- Simple search, single-fact lookup, and cost-first usage: use the repository-distributed `searxng` skill
+  - Repository: `skills/searxng/`
+  - Packaged file: `skills/searxng.zip`
 - Deep research or high-quality retrieval: use the `openclaw-mirosearch` skill
   - Skill docs: [`skills/openclaw-mirosearch/SKILL.md`](skills/openclaw-mirosearch/SKILL.md)
   - Usage docs: [`skills/openclaw-mirosearch/references/usage.md`](skills/openclaw-mirosearch/references/usage.md)
 
 Skill acquisition and installation:
 
+- Recommended dual-skill bundle: `skills/openclaw-search-skills-bundle.zip`
+- Simple search skill: `skills/searxng/`
 - Repository: `skills/openclaw-mirosearch/`
 - Packaged file: `skills/openclaw-mirosearch.zip`
 - Installation guide: [`skills/openclaw-mirosearch/references/skill-install.md`](skills/openclaw-mirosearch/references/skill-install.md)
@@ -243,4 +259,3 @@ Current planning is divided into the following phases:
 - `v0.2.5` (current) ✅: T6–T8 in [`docs/SCRAPING_ITERATION_PLAN.md`](docs/SCRAPING_ITERATION_PLAN.md) — `trafilatura`, HTML table markdown, smart truncation, Prometheus metrics, eval pipeline in CI, multi-source RRF ranking, multilingual retrieval optimization
 - `v0.3.0` (batch scraping + site-friendliness): T9 in [`docs/SCRAPING_ITERATION_PLAN.md`](docs/SCRAPING_ITERATION_PLAN.md) — batch `scrape_urls`, quotas and rate limiting, robots.txt validation
 - `v1.0.0` (ecosystem distribution): Helm Chart / one-click cloud deploy, skill versioned release, compatibility matrix auto-verification
-
