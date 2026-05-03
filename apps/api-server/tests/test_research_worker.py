@@ -55,7 +55,14 @@ async def test_run_research_job_success(mock_task_store, mock_pipeline_runtime):
         mock_task_store.store_result = AsyncMock()
         mock_task_store.append_event = AsyncMock()
 
-        mock_execute.return_value = ("Final result", "answer", "/logs/task.log")
+        mock_execute.return_value = {
+            "status": "completed",
+            "final_summary": "Final result",
+            "final_boxed_answer": "answer",
+            "log_file_path": "/logs/task.log",
+            "failure_experience_summary": None,
+            "error": None,
+        }
 
         from workers.research_worker import run_research_job
 
@@ -152,6 +159,48 @@ def _make_payload(task_id: str = "test-task-cancel") -> TaskPayload:
         verification_min_search_rounds=3,
         output_detail_level="detailed",
         caller_id="caller-x",
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_research_job_marks_pipeline_failed_result_as_failed(
+    mock_task_store, mock_pipeline_runtime
+):
+    """pipeline 返回 status="failed" 的 dict 时，worker 应落库 FAILED 而非 COMPLETED。"""
+    payload = _make_payload("test-task-pipeline-failed-result")
+
+    async def failed_pipeline(*_args, **_kwargs):
+        return {
+            "status": "failed",
+            "final_summary": "Error executing task test-task-pipeline-failed-result",
+            "final_boxed_answer": "",
+            "log_file_path": "/logs/task.log",
+            "failure_experience_summary": None,
+            "error": "LLM timeout",
+        }
+
+    mock_task_store.update_task_status = AsyncMock()
+    mock_task_store.is_cancel_requested = AsyncMock(return_value=False)
+    mock_task_store.store_result = AsyncMock()
+    mock_task_store.append_event = AsyncMock()
+
+    with patch("workers.research_worker.TaskStore.create", return_value=mock_task_store), \
+         patch("workers.research_worker.get_pipeline_runtime", return_value=mock_pipeline_runtime), \
+         patch("workers.research_worker._execute_pipeline", side_effect=failed_pipeline):
+        from workers.research_worker import run_research_job
+
+        result = await run_research_job({}, payload.to_dict())
+
+    assert result["status"] == "failed"
+    mock_task_store.update_task_status.assert_any_call(
+        "test-task-pipeline-failed-result",
+        TaskStatus.FAILED,
+        error="LLM timeout",
+    )
+    mock_task_store.append_event.assert_any_call(
+        "test-task-pipeline-failed-result",
+        "error",
+        {"error": "LLM timeout"},
     )
 
 

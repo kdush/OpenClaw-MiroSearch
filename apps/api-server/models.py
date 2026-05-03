@@ -117,6 +117,15 @@ class ResearchTaskStatusResponse(BaseModel):
     meta: ResearchTaskMeta
     result: Optional[str] = None
     event_count: int = 0
+    result_quality: "ResultQuality" = Field(default_factory=lambda: ResultQuality())
+
+
+class ResultQuality(BaseModel):
+    """最终答案的格式和质量信息。"""
+
+    format_valid: bool = True
+    fallback_used: bool = False
+    issues: list[str] = Field(default_factory=list)
 
 
 class ResearchTaskProgress(BaseModel):

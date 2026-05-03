@@ -231,6 +231,153 @@ def test_build_summary_section_humanizes_fallback():
     assert "No \\boxed{} content found in the final answer." not in rendered
 
 
+def test_normalize_latex_noop_without_backslash():
+    demo_main = _load_demo_main()
+    text = "普通 Markdown：**加粗**、*斜体*、- 列表项\n\n## 二级标题"
+    assert demo_main._normalize_latex_like_markup(text) == text
+
+
+def test_normalize_latex_unwraps_outer_boxed():
+    demo_main = _load_demo_main()
+    text = "\\boxed{\\textbf{核心结论}：示例内容。}"
+    out = demo_main._normalize_latex_like_markup(text)
+    # 最外层 \boxed{} 被剥掉，内部 \textbf 转 Markdown
+    assert "\\boxed" not in out
+    assert "**核心结论**：示例内容。" == out
+
+
+def test_normalize_latex_keeps_embedded_boxed_when_not_wrapping_whole():
+    demo_main = _load_demo_main()
+    text = "前置说明。\\boxed{短结论}\n\n后置备注。"
+    out = demo_main._normalize_latex_like_markup(text)
+    # 整段不只包含 \boxed{...}，不做外层剥离；但内部 \boxed{X} 会替换为 **X**
+    assert "**短结论**" in out
+    assert "前置说明" in out and "后置备注" in out
+    assert "\\boxed" not in out
+
+
+def test_normalize_latex_preserves_empty_boxed_marker():
+    """fallback 文案依赖 `No \\boxed{} content found` 字面匹配，空 \\boxed{} 必须保留。"""
+    demo_main = _load_demo_main()
+    text = "No \\boxed{} content found in the final answer."
+    out = demo_main._normalize_latex_like_markup(text)
+    assert "\\boxed{}" in out
+    assert "No \\boxed{} content found in the final answer." == out
+
+
+def test_normalize_latex_inline_commands_to_markdown():
+    demo_main = _load_demo_main()
+    text = (
+        "\\textbf{粗体} \\emph{斜体1} \\textit{斜体2} "
+        "\\underline{下划线} \\texttt{代码}"
+    )
+    out = demo_main._normalize_latex_like_markup(text)
+    assert "**粗体**" in out
+    assert "*斜体1*" in out
+    assert "*斜体2*" in out
+    assert "<u>下划线</u>" in out
+    assert "`代码`" in out
+    assert "\\text" not in out and "\\emph" not in out
+
+
+def test_normalize_latex_section_commands_to_headings():
+    demo_main = _load_demo_main()
+    text = (
+        "\\section*{一、 执行摘要}\n正文一。\n"
+        "\\subsection*{1.1 背景}\n正文二。\n"
+        "\\subsubsection*{1.1.1 细节}\n正文三。"
+    )
+    out = demo_main._normalize_latex_like_markup(text)
+    assert "## 一、 执行摘要" in out
+    assert "### 1.1 背景" in out
+    assert "#### 1.1.1 细节" in out
+    assert "\\section" not in out
+
+
+def test_normalize_latex_itemize_to_markdown_list():
+    demo_main = _load_demo_main()
+    text = (
+        "\\begin{itemize} "
+        "\\item \\textbf{项一}：说明一。 "
+        "\\item \\textbf{项二}：说明二。 "
+        "\\end{itemize}"
+    )
+    out = demo_main._normalize_latex_like_markup(text)
+    assert "- **项一**：说明一" in out
+    assert "- **项二**：说明二" in out
+    assert "\\begin" not in out and "\\item" not in out and "\\end" not in out
+
+
+def test_normalize_latex_nested_commands():
+    demo_main = _load_demo_main()
+    text = "\\section*{\\textbf{嵌套标题}}"
+    out = demo_main._normalize_latex_like_markup(text)
+    assert "## **嵌套标题**" in out
+
+
+def test_normalize_latex_escaped_chars():
+    demo_main = _load_demo_main()
+    text = "利润率 70\\% 与 \\$100 及 A\\&B \\#1"
+    out = demo_main._normalize_latex_like_markup(text)
+    assert "70%" in out and "$100" in out and "A&B" in out and "#1" in out
+
+
+def test_normalize_latex_line_break_command():
+    demo_main = _load_demo_main()
+    text = "第一行\\\\ 第二行"
+    out = demo_main._normalize_latex_like_markup(text)
+    # \\ 后紧跟空白，应替换为 Markdown 硬换行（两个空格 + \n）
+    assert "  \n" in out
+    assert "\\\\" not in out
+
+
+def test_normalize_latex_end_to_end_report_shape():
+    """回归 demo 页问题场景：整份报告被 \\boxed{} 包裹且夹杂多种 LaTeX 命令。"""
+    demo_main = _load_demo_main()
+    text = (
+        "\\boxed{ \\textbf{DeepSeek-V4 模型水平调研报告}\n"
+        "\\textbf{报告日期}：2026年5月2日\n\n"
+        "\\section*{一、 执行摘要}\n"
+        "这是摘要正文。\n\n"
+        "\\section*{二、 模型矩阵}\n"
+        "\\begin{itemize}\n"
+        "\\item \\textbf{Pro}：1.6T 参数。\n"
+        "\\item \\textbf{Flash}：284B 参数。\n"
+        "\\end{itemize}\n"
+        "}"
+    )
+    out = demo_main._normalize_latex_like_markup(text)
+    # 最外层 \boxed 被剥离
+    assert not out.startswith("\\boxed")
+    assert "\\boxed" not in out
+    # 所有 LaTeX 控制命令都被转义掉
+    for marker in ("\\textbf", "\\section", "\\begin", "\\end", "\\item"):
+        assert marker not in out
+    # 生成了预期的 Markdown 结构
+    assert "**DeepSeek-V4 模型水平调研报告**" in out
+    assert "**报告日期**：2026年5月2日" in out
+    assert "## 一、 执行摘要" in out
+    assert "## 二、 模型矩阵" in out
+    assert "- **Pro**：1.6T 参数。" in out
+    assert "- **Flash**：284B 参数。" in out
+
+
+def test_build_summary_section_normalizes_latex_heavy_block():
+    demo_main = _load_demo_main()
+    blocks = [
+        "\\boxed{\\textbf{结论标题}\\section*{要点}\\begin{itemize}"
+        "\\item 要点一 \\item 要点二\\end{itemize}}"
+    ]
+    rendered = "".join(demo_main._build_summary_section(blocks))
+    assert "## 📋 研究总结" in rendered
+    assert "**结论标题**" in rendered
+    assert "## 要点" in rendered
+    assert "- 要点一" in rendered and "- 要点二" in rendered
+    # 原始 LaTeX 命令不应直接出现在渲染结果中
+    for marker in ("\\boxed", "\\textbf", "\\section", "\\begin", "\\item", "\\end"):
+        assert marker not in rendered
+
+
 def test_summary_section_has_blank_line_after_html_block():
     """避免回归：search-step-board </div> 与 ## 📋 研究总结 之间必须有空行，
     否则 CommonMark 会把 `##` 视为 HTML block 的延续，标题无法渲染。
@@ -254,3 +401,19 @@ def test_summary_section_has_blank_line_after_html_block():
     assert "\n\n" in between, (
         f"HTML block 与下一个 markdown 标题之间必须空行，实际 between={between!r}"
     )
+
+
+def test_update_state_with_final_output_renders_summary():
+    """final_output 事件应创建 Final Summary agent 并在渲染时展示内容。"""
+    demo_main = _load_demo_main()
+    state = demo_main._init_render_state()
+
+    state = demo_main._update_state_with_event(
+        state,
+        {"event": "final_output", "data": {"markdown": "# 缓存结果\n\n正文"}},
+    )
+    markdown = demo_main._render_markdown(state)
+
+    assert "## \U0001f4cb 研究总结" in markdown
+    assert "# 缓存结果" in markdown
+    assert "等待开始研究" not in markdown

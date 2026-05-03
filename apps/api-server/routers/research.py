@@ -26,6 +26,7 @@ from models import (
     ResearchResponse,
     ResearchTaskMeta,
     ResearchTaskStatusResponse,
+    ResultQuality,
 )
 from services.task_queue import TaskPayload, get_task_queue
 from services.task_store import TaskStatus, get_task_store
@@ -134,6 +135,7 @@ async def get_task_status(
 
     result = await task_store.get_result(task_id)
     event_count = await task_store.get_event_stream_length(task_id)
+    quality = await task_store.get_result_quality(task_id)
 
     return ResearchTaskStatusResponse(
         task_id=task_id,
@@ -156,6 +158,7 @@ async def get_task_status(
         ),
         result=result,
         event_count=event_count,
+        result_quality=ResultQuality(**(quality or {})),
     )
 
 

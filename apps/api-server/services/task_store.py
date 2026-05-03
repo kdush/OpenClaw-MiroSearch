@@ -314,6 +314,20 @@ class TaskStore:
         key = f"{self.KEY_TASK}:{task_id}:result"
         return await self._redis.get(key)
 
+    async def store_result_quality(self, task_id: str, quality: dict) -> bool:
+        """存储结果质量信息。"""
+        key = f"{self.KEY_TASK}:{task_id}:quality"
+        await self._redis.set(
+            key, json.dumps(quality, ensure_ascii=False), ex=self._result_ttl
+        )
+        return True
+
+    async def get_result_quality(self, task_id: str) -> Optional[dict]:
+        """获取结果质量信息，无数据时返回 None。"""
+        key = f"{self.KEY_TASK}:{task_id}:quality"
+        data = await self._redis.get(key)
+        return json.loads(data) if data else None
+
     # ---- 取消机制 ----
 
     async def request_cancel(self, task_id: str) -> bool:

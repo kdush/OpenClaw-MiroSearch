@@ -69,18 +69,21 @@ class TaskEventSink:
 
         # stage_heartbeat: 更新当前阶段
         if event_type == "stage_heartbeat":
-            stage = data.get("stage", "")
-            if stage:
-                await self._store.update_task_stage(self._task_id, stage)
+            phase = str(data.get("phase") or "").strip()
+            detail = str(data.get("detail") or "").strip()
+            if phase and detail:
+                await self._store.update_task_stage(self._task_id, f"{phase}:{detail}")
+            elif phase:
+                await self._store.update_task_stage(self._task_id, phase)
 
         # start_of_agent: 更新阶段为 agent 启动
         elif event_type == "start_of_agent":
-            agent_name = data.get("agent", "unknown")
+            agent_name = str(data.get("agent_name") or data.get("agent") or "unknown").strip()
             await self._store.update_task_stage(self._task_id, f"agent:{agent_name}")
 
         # tool_call: 更新阶段为工具调用
         elif event_type == "tool_call":
-            tool_name = data.get("tool", "unknown")
+            tool_name = str(data.get("tool_name") or data.get("tool") or "unknown").strip()
             await self._store.update_task_stage(self._task_id, f"tool:{tool_name}")
 
         # run_metrics: 持久化最近运行指标

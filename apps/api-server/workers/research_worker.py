@@ -193,15 +193,39 @@ async def run_research_job(
                 return {"status": "cancelled", "task_id": task_id}
 
             # pipeline 完成
-            result = pipeline_task.result()
-            final_summary, final_boxed_answer, log_file_path = result
+            pipeline_result = pipeline_task.result()
+            status = (pipeline_result or {}).get("status", "")
+            error = (pipeline_result or {}).get("error")
 
-            # 存储结果
-            if final_summary:
-                await task_store.store_result(task_id, final_summary)
-
-            await task_store.update_task_status(task_id, TaskStatus.COMPLETED)
-            return {"status": "completed", "task_id": task_id, "log_file": log_file_path}
+            # 根据结构化状态决定落库
+            if status == "completed":
+                final_summary = pipeline_result.get("final_summary", "")
+                if final_summary:
+                    await task_store.store_result(task_id, final_summary)
+                quality = pipeline_result.get("quality")
+                if quality:
+                    await task_store.store_result_quality(task_id, quality)
+                await task_store.update_task_status(task_id, TaskStatus.COMPLETED)
+                return {
+                    "status": "completed",
+                    "task_id": task_id,
+                    "log_file": pipeline_result.get("log_file_path", ""),
+                }
+            elif status == "failed":
+                error_msg = str(error or "unknown error")
+                await task_store.update_task_status(task_id, TaskStatus.FAILED, error=error_msg)
+                await task_store.append_event(task_id, "error", {"error": error_msg})
+                return {"status": "failed", "task_id": task_id, "error": error_msg}
+            elif status == "cancelled":
+                await task_store.update_task_status(task_id, TaskStatus.CANCELLED)
+                await task_store.append_event(task_id, "cancelled", {"reason": "pipeline_cancelled"})
+                return {"status": "cancelled", "task_id": task_id}
+            else:
+                # 未知状态：按 failed 处理
+                unknown_msg = f"Unknown pipeline status: {status}"
+                await task_store.update_task_status(task_id, TaskStatus.FAILED, error=unknown_msg)
+                await task_store.append_event(task_id, "error", {"error": unknown_msg})
+                return {"status": "failed", "task_id": task_id, "error": unknown_msg}
 
         except asyncio.CancelledError:
             event_sink.cancel()
@@ -239,8 +263,11 @@ async def _execute_pipeline(
     tool_defs,
     sub_tool_defs,
     log_dir: str,
-):
-    """执行 pipeline 并返回结果。"""
+) -> dict:
+    """执行 pipeline 并返回结构化结果 dict。
+
+    兼容旧 tuple 和新 dict 两种返回格式，统一规范化为 dict。
+    """
     from src.core.pipeline import execute_task_pipeline
 
     result = await execute_task_pipeline(
@@ -257,8 +284,18 @@ async def _execute_pipeline(
         sub_agent_tool_definitions=sub_tool_defs,
     )
 
-    # result: (final_summary, final_boxed_answer, log_file_path, failure_experience_summary)
-    return result[0], result[1], result[2]
+    if isinstance(result, dict):
+        return result
+
+    # 兼容旧 tuple: (final_summary, final_boxed_answer, log_file_path, failure_experience_summary)
+    return {
+        "status": "completed",
+        "final_summary": result[0],
+        "final_boxed_answer": result[1],
+        "log_file_path": result[2],
+        "failure_experience_summary": result[3] if len(result) > 3 else None,
+        "error": None,
+    }
 
 
 class WorkerSettings:

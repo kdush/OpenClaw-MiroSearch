@@ -34,6 +34,26 @@ from ..logging.task_logger import (
 from .orchestrator import Orchestrator
 
 
+def _build_pipeline_result(
+    *,
+    status: str,
+    final_summary: str,
+    final_boxed_answer: str,
+    log_file_path: str,
+    failure_experience_summary: Optional[str] = None,
+    error: Optional[str] = None,
+) -> dict:
+    """构建结构化 pipeline 结果，供 worker 根据 status 决定落库状态。"""
+    return {
+        "status": status,
+        "final_summary": final_summary,
+        "final_boxed_answer": final_boxed_answer,
+        "log_file_path": log_file_path,
+        "failure_experience_summary": failure_experience_summary,
+        "error": error,
+    }
+
+
 async def execute_task_pipeline(
     cfg: DictConfig,
     task_id: str,
@@ -157,11 +177,12 @@ async def execute_task_pipeline(
             )
 
         log_file_path = task_log.save()
-        return (
-            final_summary,
-            final_boxed_answer,
-            log_file_path,
-            failure_experience_summary,
+        return _build_pipeline_result(
+            status="completed",
+            final_summary=final_summary,
+            final_boxed_answer=final_boxed_answer,
+            log_file_path=log_file_path,
+            failure_experience_summary=failure_experience_summary,
         )
 
     except asyncio.CancelledError:
@@ -178,7 +199,13 @@ async def execute_task_pipeline(
         task_log.status = "cancelled"
         task_log.error = cancel_message
         log_file_path = task_log.save()
-        return cancel_message, "", log_file_path, None
+        return _build_pipeline_result(
+            status="cancelled",
+            final_summary=cancel_message,
+            final_boxed_answer="",
+            log_file_path=log_file_path,
+            error=cancel_message,
+        )
 
     except Exception as e:
         error_details = traceback.format_exc()
@@ -202,7 +229,13 @@ async def execute_task_pipeline(
 
         log_file_path = task_log.save()
 
-        return error_message, "", log_file_path, None
+        return _build_pipeline_result(
+            status="failed",
+            final_summary=error_message,
+            final_boxed_answer="",
+            log_file_path=log_file_path,
+            error=error_details,
+        )
 
     finally:
         # 保证状态机总是落到终态，避免出现 status=running 导致前端一直等待。

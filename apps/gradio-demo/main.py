@@ -1956,6 +1956,8 @@ _REFERENCES_HEADING_RE = re.compile(
     r"(?:[ \t]*\*+)?[ \t]*$"
 )
 _REFERENCE_ENTRY_RE = re.compile(r"\[(\d{1,4})\][^\n]*?(https?://\S+)")
+# 规范化参考文献条目之间的换行：确保每条 [N] 前有双换行，Markdown 渲染时才能正确分行
+_REFERENCE_NEWLINE_RE = re.compile(r"(?<!\n)\n(\[\d{1,4}\])")
 _CITATION_RE = re.compile(r"\[(\d{1,4})\]")
 _CODE_SEGMENT_RE = re.compile(r"```[\s\S]*?```|`[^`\n]+`")
 _REFERENCE_URL_TRAILING = ".,;:)]>。，、；：）】》」’”"
@@ -2002,6 +2004,8 @@ def _linkify_reference_citations(markdown_text: str) -> str:
         cursor = end
     pieces.append(_CITATION_RE.sub(_replace_citation, body[cursor:]))
 
+    # 规范化参考文献条目之间的换行，确保 Markdown 渲染时每条 [N] 独占一行
+    references_section = _REFERENCE_NEWLINE_RE.sub(r"\n\n\1", references_section)
     return "".join(pieces) + references_section
 
 
@@ -2010,6 +2014,195 @@ FORMAT_ERROR_MARKERS = (
     "No \\boxed{} content found.",
     "Task incomplete - reached maximum turns",
 )
+
+
+# LaTeX → Markdown 规范化：部分 LLM 会把整份报告塞进 \boxed{...} 或直接混用
+# \textbf{}、\section*{}、\begin{itemize}\item 等 LaTeX 控制命令。Gradio 默认
+# Markdown 组件只识别少量 KaTeX 分隔符，不会解析这些命令，会把它们作为字面文本
+# 显示。此处在下游渲染链路中对常见命令做一次保守转换，避免 UI 出现成片未渲染的
+# LaTeX 控制序列（最终答案展示场景）。
+#
+# 保守原则：
+#  1. 只处理显式的 LaTeX 命令（`\cmd{...}` 或 `\begin{env}`/`\end{env}`）以及
+#     几个 LaTeX 特有的字符转义（\%、\$、\&、\#）；不触碰 \_、\*、\{、\} 等
+#     可能是 Markdown 本身的转义写法，保持对正常 Markdown 的兼容。
+#  2. 花括号匹配支持嵌套，并跳过 `\{`/`\}` 转义。
+#  3. 规范化只作为展示层兜底，不影响上游保存的原始 `final_answer_text`/
+#     `final_boxed_answer`。
+_LATEX_CMD_OPEN_RE_CACHE: Dict[str, "re.Pattern[str]"] = {}
+
+_LATEX_STRIP_ENV_NAMES = (
+    "itemize",
+    "enumerate",
+    "description",
+    "center",
+    "flushleft",
+    "flushright",
+)
+
+_LATEX_SECTION_REPLACEMENTS = (
+    ("subsubsection*", "\n\n#### {inner}\n\n"),
+    ("subsubsection", "\n\n#### {inner}\n\n"),
+    ("subsection*", "\n\n### {inner}\n\n"),
+    ("subsection", "\n\n### {inner}\n\n"),
+    ("section*", "\n\n## {inner}\n\n"),
+    ("section", "\n\n## {inner}\n\n"),
+    ("paragraph", "\n\n**{inner}**\n\n"),
+)
+
+_LATEX_INLINE_REPLACEMENTS = (
+    ("textbf", "**{inner}**"),
+    ("mathbf", "**{inner}**"),
+    ("textit", "*{inner}*"),
+    ("mathit", "*{inner}*"),
+    ("emph", "*{inner}*"),
+    ("underline", "<u>{inner}</u>"),
+    ("texttt", "`{inner}`"),
+    ("boxed", "**{inner}**"),
+)
+
+_LATEX_ESCAPE_PAIRS = (
+    ("\\%", "%"),
+    ("\\$", "$"),
+    ("\\&", "&"),
+    ("\\#", "#"),
+)
+
+
+def _latex_cmd_open_pattern(cmd: str) -> "re.Pattern[str]":
+    """构造 ``\\cmd{`` 开头的匹配正则，结果带缓存。"""
+    cached = _LATEX_CMD_OPEN_RE_CACHE.get(cmd)
+    if cached is not None:
+        return cached
+    pattern = re.compile(r"\\" + re.escape(cmd) + r"\s*\{")
+    _LATEX_CMD_OPEN_RE_CACHE[cmd] = pattern
+    return pattern
+
+
+def _replace_latex_cmd(text: str, cmd: str, replacement_fmt: str) -> str:
+    """
+    将 ``\\cmd{X}`` 形式的 LaTeX 命令替换为 ``replacement_fmt.format(inner=X)``，
+    支持嵌套花括号与 ``\\{``/``\\}`` 转义。未闭合的 ``\\cmd{`` 会原样保留。
+    """
+    if not text or "\\" not in text or cmd not in text:
+        return text
+    pattern = _latex_cmd_open_pattern(cmd)
+    out: List[str] = []
+    cursor = 0
+    n = len(text)
+    while cursor < n:
+        match = pattern.search(text, cursor)
+        if not match:
+            out.append(text[cursor:])
+            break
+        out.append(text[cursor:match.start()])
+        content_start = match.end()
+        depth = 1
+        j = content_start
+        while j < n and depth > 0:
+            ch = text[j]
+            if ch == "\\" and j + 1 < n:
+                # 跳过 \{、\} 等转义序列，避免干扰花括号配平
+                j += 2
+                continue
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    inner = text[content_start:j]
+                    if inner.strip() == "":
+                        # 空命令（如 \boxed{}）原样保留，避免干扰后续字面匹配
+                        # （例如 fallback 文案依赖 "No \\boxed{} content found" 这一 marker）
+                        out.append(text[match.start():j + 1])
+                    else:
+                        out.append(replacement_fmt.format(inner=inner))
+                    cursor = j + 1
+                    break
+            j += 1
+        else:
+            # 未找到匹配的右花括号，保留原文（从本次命令起点往后），终止循环
+            out.append(text[match.start():])
+            cursor = n
+            break
+    return "".join(out)
+
+
+_OUTER_BOXED_OPEN_RE = re.compile(r"^\s*\\boxed\s*\{", re.DOTALL)
+
+
+def _unwrap_outer_boxed(text: str) -> str:
+    """当整段文本恰好被单个最外层 ``\\boxed{...}`` 包围时剥掉该层；否则原样返回。"""
+    if not text:
+        return text
+    match = _OUTER_BOXED_OPEN_RE.match(text)
+    if not match:
+        return text
+    depth = 1
+    j = match.end()
+    n = len(text)
+    while j < n:
+        ch = text[j]
+        if ch == "\\" and j + 1 < n:
+            j += 2
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                if text[j + 1:].strip() == "":
+                    return text[match.end():j].strip()
+                return text
+        j += 1
+    return text
+
+
+def _strip_latex_environments(text: str) -> str:
+    """移除 ``\\begin{env}``/``\\end{env}``（保留内部内容），并用空行分隔便于 Markdown 列表识别。"""
+    if not text or "\\begin" not in text and "\\end" not in text:
+        return text
+    for env in _LATEX_STRIP_ENV_NAMES:
+        begin_pat = re.compile(r"\\begin\s*\{\s*" + re.escape(env) + r"\*?\s*\}\s*")
+        end_pat = re.compile(r"\\end\s*\{\s*" + re.escape(env) + r"\*?\s*\}\s*")
+        text = begin_pat.sub("\n\n", text)
+        text = end_pat.sub("\n\n", text)
+    return text
+
+
+def _normalize_latex_like_markup(text: str) -> str:
+    """
+    将常见 LaTeX 控制序列转换为 Markdown 等价物，兜底渲染层。
+
+    处理范围：
+      - 整段被 ``\\boxed{...}`` 包围时剥掉外层；
+      - ``\\section*{}``/``\\subsection*{}``/``\\paragraph{}`` 等标题 → ``##``/``###``/``**..**``；
+      - ``\\textbf{}``/``\\emph{}``/``\\texttt{}``/``\\boxed{}`` 等行内命令 → Markdown 等价；
+      - ``\\begin{itemize|enumerate|description|center|flushleft|flushright}`` 环境 → 空行；
+      - ``\\item`` → ``\\n- ``；
+      - ``\\\\`` 行末换行 → Markdown 硬换行；
+      - LaTeX 特有转义 ``\\%``/``\\$``/``\\&``/``\\#`` → 字面字符。
+
+    若文本不包含任何反斜杠，直接返回，保证正常 Markdown 不受影响。
+    """
+    if not text or "\\" not in text:
+        return text
+    t = _unwrap_outer_boxed(text)
+    t = _strip_latex_environments(t)
+    for cmd, fmt in _LATEX_SECTION_REPLACEMENTS:
+        t = _replace_latex_cmd(t, cmd, fmt)
+    for cmd, fmt in _LATEX_INLINE_REPLACEMENTS:
+        t = _replace_latex_cmd(t, cmd, fmt)
+    # \item 转换为 Markdown 列表项；配合上面的环境替换，列表前会有空行
+    t = re.sub(r"\\item\b[ \t]*", "\n- ", t)
+    # LaTeX 换行命令 \\（行末）→ Markdown 硬换行（两个空格 + 换行）
+    t = re.sub(r"\\\\(?=\s)", "  \n", t)
+    # LaTeX 特有字符转义
+    for src, dst in _LATEX_ESCAPE_PAIRS:
+        t = t.replace(src, dst)
+    # 合并多余空行
+    t = re.sub(r"\n{3,}", "\n\n", t)
+    return t.strip()
 
 
 def _humanize_pipeline_fallback(text: str) -> str:
@@ -2038,7 +2231,10 @@ def _build_summary_section(final_summary_blocks: List[str]) -> List[str]:
     # 有一个空行，否则 CommonMark 会把 `## 📋 研究总结` 视为 HTML block 的延续，
     # 导致 `## ` 字面显示而非作为标题渲染。
     lines = ["", "## 📋 研究总结\n\n"]
-    rewritten = (_humanize_pipeline_fallback(block) for block in final_summary_blocks)
+    # 先做 LaTeX → Markdown 规范化，避免 LLM 把整份报告塞进 \boxed{} 或混用
+    # \textbf{}/\section*{}/\begin{itemize} 等命令时，前端出现成片未渲染的字面 LaTeX
+    normalized = (_normalize_latex_like_markup(block) for block in final_summary_blocks)
+    rewritten = (_humanize_pipeline_fallback(block) for block in normalized)
     lines.extend(_linkify_reference_citations(block) for block in rewritten)
     return lines
 
@@ -2398,6 +2594,32 @@ def _update_state_with_event(state: dict, message: dict):
         runtime_stage = state.setdefault("runtime_stage", {})
         runtime_stage["phase"] = "异常"
         runtime_stage["detail"] = "执行出现错误"
+        runtime_stage["updated_at"] = time.time()
+    elif event == "final_output":
+        markdown = ""
+        if isinstance(data, dict):
+            markdown = str(data.get("markdown") or "")
+        elif isinstance(data, str):
+            markdown = data
+        if not markdown.strip():
+            return state
+        agent_id = "final-output"
+        if agent_id not in state["agents"]:
+            state["agents"][agent_id] = {
+                "agent_name": "Final Summary",
+                "tool_call_order": [],
+                "tools": {},
+            }
+            state["agent_order"].append(agent_id)
+        call_id = "final-output-message"
+        agent = state["agents"][agent_id]
+        if call_id not in agent["tools"]:
+            agent["tools"][call_id] = {"tool_name": "message", "content": ""}
+            agent["tool_call_order"].append(call_id)
+        agent["tools"][call_id]["content"] = markdown
+        runtime_stage = state.setdefault("runtime_stage", {})
+        runtime_stage["phase"] = "完成"
+        runtime_stage["detail"] = "最终结果已生成"
         runtime_stage["updated_at"] = time.time()
     else:
         if event == "heartbeat":
@@ -4602,7 +4824,7 @@ def build_demo():
         )
 
         # Event handlers
-        run_btn.click(
+        run_event = run_btn.click(
             fn=gradio_run,
             inputs=[
                 inp,
@@ -4643,9 +4865,11 @@ def build_demo():
             fn=stop_current_ui,
             inputs=[ui_state],
             outputs=[run_btn, stop_btn],
+            cancels=[run_event],
             api_name=False,
+            queue=False,
         )
-        api_btn.click(
+        api_run_event = api_btn.click(
             fn=run_research_once,
             inputs=[
                 inp,
@@ -4662,7 +4886,9 @@ def build_demo():
             fn=stop_current_api,
             inputs=[],
             outputs=[api_stop_output],
+            cancels=[api_run_event],
             api_name="stop_current",
+            queue=False,
         )
         api_stop_by_caller_btn = gr.Button(value="api-stop-caller", visible=False)
         api_stop_by_caller_output = gr.JSON(visible=False)
@@ -4670,7 +4896,9 @@ def build_demo():
             fn=stop_current_api,
             inputs=[api_caller_id],
             outputs=[api_stop_by_caller_output],
+            cancels=[api_run_event],
             api_name="stop_current_by_caller",
+            queue=False,
         )
 
         # GET /metrics/last — 返回最近一次任务的结构化运行指标

@@ -104,6 +104,7 @@ async def test_get_task_status(mock_task_store):
         mock_task_store.get_task = AsyncMock(return_value=meta)
         mock_task_store.get_result = AsyncMock(return_value=None)
         mock_task_store.get_event_stream_length = AsyncMock(return_value=5)
+        mock_task_store.get_result_quality = AsyncMock(return_value=None)
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get("/v1/research/test-task-001")
@@ -186,3 +187,42 @@ async def test_cancel_by_caller(mock_task_store):
         data = response.json()
         assert data["cancelled"] == 2
         assert len(data["task_ids"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_get_task_status_includes_result_quality(mock_task_store, mock_task_queue):
+    """GET /v1/research/{task_id} 应返回 result_quality 字段。"""
+    meta = TaskMeta(
+        task_id="task-1",
+        status=TaskStatus.COMPLETED,
+        caller_id="caller-1",
+        query="test query",
+        mode="balanced",
+        search_profile="parallel-trusted",
+        search_result_num=20,
+        verification_min_search_rounds=3,
+        output_detail_level="detailed",
+        created_at=1234567890.0,
+    )
+
+    mock_task_store.create_task = AsyncMock()
+    mock_task_store.get_task = AsyncMock(return_value=meta)
+    mock_task_store.get_result = AsyncMock(return_value="Final result markdown")
+    mock_task_store.get_event_stream_length = AsyncMock(return_value=5)
+    mock_task_store.get_result_quality = AsyncMock(return_value={
+        "format_valid": True,
+        "fallback_used": False,
+        "issues": [],
+    })
+
+    with patch("routers.research.get_task_store", return_value=mock_task_store), \
+         patch("routers.research.get_task_queue", return_value=mock_task_queue):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get("/v1/research/task-1")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert "result_quality" in data
+    assert data["result_quality"]["format_valid"] is True
+    assert data["result_quality"]["fallback_used"] is False
+    assert data["result_quality"]["issues"] == []

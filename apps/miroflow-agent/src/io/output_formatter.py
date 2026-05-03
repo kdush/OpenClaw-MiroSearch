@@ -181,3 +181,69 @@ class OutputFormatter:
             log_string = "Token usage information not available."
 
         return "\n".join(summary_lines), boxed_result, log_string
+
+    def format_final_summary_payload(
+        self, final_answer_text: str, client=None
+    ) -> dict:
+        """格式化最终摘要并返回结构化质量信息。
+
+        与 format_final_summary_and_log() 的区别：返回值包含 quality 字典，
+        区分"是否找到 \\boxed{} 格式"和"是否有可展示的回退文本"。
+
+        Args:
+            final_answer_text: 模型的最终回答文本
+            client: 可选的 LLM 客户端（用于 token 统计）
+
+        Returns:
+            dict with keys: summary, boxed_answer, usage_log, quality
+            quality: {"format_valid": bool, "fallback_used": bool, "issues": list}
+        """
+        # 复用现有格式化逻辑生成 summary 文本和 usage_log
+        _, _, usage_log = self.format_final_summary_and_log(
+            final_answer_text, client
+        )
+
+        # 构建 summary（含 boxed 提取结果的完整文本）
+        summary_lines = []
+        summary_lines.append("\n" + "=" * 30 + " Final Answer " + "=" * 30)
+        summary_lines.append(final_answer_text)
+        summary_lines.append("\n" + "-" * 20 + " Extracted Result " + "-" * 20)
+
+        boxed_result = self._extract_boxed_content(final_answer_text)
+        quality = {"format_valid": False, "fallback_used": False, "issues": []}
+
+        if boxed_result:
+            summary_lines.append(boxed_result)
+            quality["format_valid"] = True
+        elif final_answer_text:
+            cleaned = re.sub(
+                r"<think>.*?</think>", "", final_answer_text, flags=re.DOTALL
+            ).strip()
+            cleaned = re.sub(r"\\boxed\{[^}]*\}", "", cleaned).strip()
+            if cleaned:
+                boxed_result = cleaned
+                summary_lines.append(cleaned)
+                summary_lines.append(
+                    "\n(Note: model did not use \\boxed{} format; "
+                    "using full answer text as fallback.)"
+                )
+                quality["fallback_used"] = True
+                quality["issues"].append("missing_boxed")
+            else:
+                summary_lines.append("No \\boxed{} content found.")
+                boxed_result = FORMAT_ERROR_MESSAGE
+        else:
+            summary_lines.append("No \\boxed{} content found.")
+            boxed_result = FORMAT_ERROR_MESSAGE
+
+        # Token usage statistics
+        if client and hasattr(client, "format_token_usage_summary"):
+            token_summary_lines, _ = client.format_token_usage_summary()
+            summary_lines.extend(token_summary_lines)
+
+        return {
+            "summary": "\n".join(summary_lines),
+            "boxed_answer": boxed_result,
+            "usage_log": usage_log,
+            "quality": quality,
+        }

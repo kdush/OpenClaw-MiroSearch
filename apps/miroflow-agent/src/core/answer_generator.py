@@ -712,11 +712,14 @@ class AnswerGenerator:
             )
 
             if final_answer_text:
-                final_summary, final_boxed_answer, usage_log = (
-                    self.output_formatter.format_final_summary_and_log(
-                        final_answer_text, self.llm_client
-                    )
+                payload = self.output_formatter.format_final_summary_payload(
+                    final_answer_text, self.llm_client
                 )
+                final_summary = payload["summary"]
+                final_boxed_answer = payload["boxed_answer"]
+                usage_log = payload["usage_log"]
+                format_valid = payload["quality"]["format_valid"]
+
                 if self._is_summary_too_short(final_answer_text):
                     self.task_log.log_step(
                         "warning",
@@ -731,7 +734,7 @@ class AnswerGenerator:
                         )
                         continue
 
-                if final_boxed_answer != FORMAT_ERROR_MESSAGE:
+                if format_valid:
                     self.task_log.log_step(
                         "info",
                         "Main Agent | Final Answer",
@@ -739,17 +742,35 @@ class AnswerGenerator:
                     )
                     break
                 else:
-                    self.task_log.log_step(
-                        "warning",
-                        "Main Agent | Final Answer",
-                        f"No boxed answer on attempt {retry_idx + 1}, retrying...",
-                    )
                     if retry_idx < self.max_final_answer_retries - 1:
+                        self.task_log.log_step(
+                            "warning",
+                            "Main Agent | Final Answer",
+                            f"No valid \\boxed{{}} format on attempt {retry_idx + 1}, retrying with format fix...",
+                        )
                         if (
                             message_history
                             and message_history[-1]["role"] == "assistant"
                         ):
                             message_history.pop()
+                        message_history.append(
+                            {
+                                "role": "user",
+                                "content": (
+                                    "Your answer did not use the required \\boxed{} format. "
+                                    "Please wrap your final answer in \\boxed{your answer}."
+                                ),
+                            }
+                        )
+                        continue
+                    else:
+                        # 重试耗尽：保留 fallback 正文用于展示，但记录格式无效
+                        self.task_log.log_step(
+                            "warning",
+                            "Main Agent | Final Answer",
+                            f"No valid \\boxed{{}} format after all retries; "
+                            f"using fallback text (format_valid={format_valid}).",
+                        )
             else:
                 self.task_log.log_step(
                     "warning",
@@ -931,38 +952,8 @@ class AnswerGenerator:
         failure_experience_summary = None
         usage_log = ""
 
-        # CASE: Context management ON + reached max turns + NOT final retry
-        # 非 Demo 模式下跳过总结生成，避免盲猜；Demo 模式继续尝试基于现有上下文生成可读总结
-        if (
-            context_management_enabled
-            and reached_max_turns
-            and not is_final_retry
-            and not self.demo_mode
-        ):
-            self.task_log.log_step(
-                "info",
-                "Main Agent | Final Answer (Context Management Mode)",
-                "Reached max turns. Skipping answer generation to avoid blind guessing.",
-            )
-
-            if save_callback:
-                save_callback(system_prompt, message_history)
-
-            if self.retry_with_summary:
-                failure_experience_summary = await self.generate_failure_summary(
-                    system_prompt, message_history, tool_definitions, turn_count
-                )
-
-            return (
-                "Task incomplete - reached maximum turns. Will retry with failure experience.",
-                FORMAT_ERROR_MESSAGE,
-                failure_experience_summary,
-                usage_log,
-                message_history,
-            )
-
-        # ALL OTHER CASES: Generate final answer first
-        # (including final retry with reached_max_turns - last chance to get an answer)
+        # Always attempt summary generation — even at max turns. A best-effort
+        # summary from available context is better than returning nothing.
         (
             final_answer_text,
             final_summary,
