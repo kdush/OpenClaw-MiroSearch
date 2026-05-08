@@ -79,6 +79,7 @@ def test_build_demo_syncs_task_id_bridge_for_load_and_run_stream():
         and any(target[1] == "load" for target in dependency["targets"])
     ]
     assert len(load_dependencies) == 1
+    assert task_id_bridge_id in load_dependencies[0]["inputs"]
     assert task_id_bridge_id in load_dependencies[0]["outputs"]
 
     run_stream_dependencies = [
@@ -88,6 +89,80 @@ def test_build_demo_syncs_task_id_bridge_for_load_and_run_stream():
     ]
     assert len(run_stream_dependencies) == 1
     assert task_id_bridge_id in run_stream_dependencies[0]["outputs"]
+
+
+def test_stop_buttons_cancel_run_events_without_waiting_in_queue():
+    demo_main = _load_demo_main()
+    demo = demo_main.build_demo()
+    components = demo.config["components"]
+    dependencies = demo.config["dependencies"]
+
+    component_id_by_elem_id = {}
+    component_id_by_value = {}
+    for component in components:
+        props = component.get("props", {})
+        elem_id = props.get("elem_id")
+        value = props.get("value")
+        if elem_id:
+            component_id_by_elem_id[elem_id] = component.get("id")
+        if value:
+            component_id_by_value[value] = component.get("id")
+
+    run_stream_dependency = next(
+        dependency
+        for dependency in dependencies
+        if dependency.get("api_name") == "run_research_stream"
+    )
+    run_once_dependency = next(
+        dependency
+        for dependency in dependencies
+        if dependency.get("api_name") == "run_research_once"
+    )
+    stop_ui_id = component_id_by_elem_id["stop-btn"]
+    stop_api_id = component_id_by_value["api-stop"]
+    stop_by_caller_id = component_id_by_value["api-stop-caller"]
+
+    stop_ui_logic_dependency = next(
+        dependency
+        for dependency in dependencies
+        if dependency.get("targets") == [(stop_ui_id, "click")]
+        and dependency.get("outputs")
+    )
+    stop_ui_cancel_dependency = next(
+        dependency
+        for dependency in dependencies
+        if dependency.get("targets") == [(stop_ui_id, "click")]
+        and run_stream_dependency["id"] in dependency.get("cancels", [])
+    )
+    stop_api_logic_dependency = next(
+        dependency
+        for dependency in dependencies
+        if dependency.get("api_name") == "stop_current"
+    )
+    stop_api_cancel_dependency = next(
+        dependency
+        for dependency in dependencies
+        if dependency.get("targets") == [(stop_api_id, "click")]
+        and run_once_dependency["id"] in dependency.get("cancels", [])
+    )
+    stop_by_caller_logic_dependency = next(
+        dependency
+        for dependency in dependencies
+        if dependency.get("api_name") == "stop_current_by_caller"
+    )
+    stop_by_caller_cancel_dependency = next(
+        dependency
+        for dependency in dependencies
+        if dependency.get("targets") == [(stop_by_caller_id, "click")]
+        and run_once_dependency["id"] in dependency.get("cancels", [])
+    )
+
+    assert stop_ui_logic_dependency["queue"] is False
+    assert stop_ui_cancel_dependency["queue"] is False
+    assert stop_api_logic_dependency["queue"] is False
+    assert stop_api_cancel_dependency["queue"] is False
+    assert stop_by_caller_logic_dependency["queue"] is False
+    assert stop_by_caller_cancel_dependency["queue"] is False
 
 
 def test_build_demo_head_prefills_task_id_bridge_from_url():

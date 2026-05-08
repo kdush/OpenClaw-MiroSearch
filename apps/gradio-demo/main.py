@@ -3228,7 +3228,8 @@ def stop_current_ui(ui_state: Optional[dict] = None):
 
 async def reconnect_or_init(
     ui_state: Optional[dict],
-    request: gr.Request,
+    task_id_bridge: Optional[str] = "",
+    request: Optional[gr.Request] = None,
 ):
     """页面加载时根据 URL `?task_id=...` 决定是否重连任务。
 
@@ -3252,12 +3253,18 @@ async def reconnect_or_init(
         yield idle_tuple
         return
 
+    if request is None and hasattr(task_id_bridge, "query_params"):
+        request = task_id_bridge
+        task_id_bridge = ""
+
     query_params = getattr(request, "query_params", {}) or {}
     # query_params 可能是 dict / Mapping 类型
     try:
         task_id = query_params.get("task_id") if hasattr(query_params, "get") else None
     except Exception:
         task_id = None
+    if not task_id:
+        task_id = str(task_id_bridge or "").strip() or None
     if not task_id:
         yield idle_tuple
         return
@@ -4851,9 +4858,15 @@ def build_demo():
         # 页面加载时根据 URL ?task_id 决定空闲态 / 重连进行中的任务
         demo.load(
             fn=reconnect_or_init,
-            inputs=[ui_state],
+            inputs=[ui_state, task_id_box],
             outputs=[out_md, run_btn, stop_btn, ui_state, task_id_box],
             api_name=False,
+            js="""
+            (uiState, taskIdBridge) => {
+                const urlTaskId = new URL(window.location.href).searchParams.get('task_id') || '';
+                return [uiState, urlTaskId || taskIdBridge || ''];
+            }
+            """,
         )
         mode_selector.change(
             fn=_update_verification_rounds_visibility,

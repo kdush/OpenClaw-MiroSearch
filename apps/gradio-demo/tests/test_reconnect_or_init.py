@@ -81,3 +81,56 @@ async def test_reconnect_or_init_first_frame_uses_running_placeholder(monkeypatc
     assert stop_update["interactive"] is True
     assert ui_state["task_id"] == "task-running-1"
     assert task_id_bridge == "task-running-1"
+
+
+@pytest.mark.asyncio
+async def test_reconnect_or_init_uses_task_id_bridge_when_request_has_no_query(
+    monkeypatch,
+):
+    demo_main = _load_demo_main()
+
+    async def fake_get_task(task_id: str):
+        return {
+            "task_id": task_id,
+            "status": "running",
+            "event_count": 1,
+            "meta": {
+                "task_id": task_id,
+                "status": "running",
+                "mode": "balanced",
+                "search_profile": "parallel",
+                "search_result_num": 10,
+                "verification_min_search_rounds": 3,
+                "output_detail_level": "balanced",
+            },
+        }
+
+    async def fake_stream_task_events(task_id: str, cancel_check=None):
+        yield {
+            "event": "stage_heartbeat",
+            "data": {
+                "phase": "检索",
+                "turn": 1,
+                "detail": "恢复历史任务",
+                "timestamp": 1.0,
+            },
+        }
+
+    monkeypatch.setattr(demo_main.api_client, "get_task", fake_get_task)
+    monkeypatch.setattr(
+        demo_main.api_client,
+        "stream_task_events",
+        fake_stream_task_events,
+    )
+
+    request = SimpleNamespace(query_params={})
+    agen = demo_main.reconnect_or_init({}, "task-from-bridge", request)
+    first_markdown, run_update, stop_update, ui_state, task_id_bridge = await agen.__anext__()
+    await agen.aclose()
+
+    assert "等待开始研究" not in first_markdown
+    assert "当前任务已启动" in first_markdown
+    assert run_update["interactive"] is False
+    assert stop_update["interactive"] is True
+    assert ui_state["task_id"] == "task-from-bridge"
+    assert task_id_bridge == "task-from-bridge"
