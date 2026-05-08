@@ -7,6 +7,26 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.2.8] - 2026-05-08
+
+### Fixed
+
+- **Gradio 页面刷新后按 `?task_id=` 自动重连任务**：`demo.load` 现在通过前端桥接值把浏览器 URL 中的 `task_id` 传回后端，`reconnect_or_init` 同时兼容旧的 request 参数调用方式，避免刷新后落回空闲态
+- **OpenClaw-MiroSearch 调用脚本降级重试避免回退循环**：新增单调向后的降级步骤计算，持续未收敛时不再在相邻策略之间来回递归
+
+### Changed
+
+- **调用脚本优先使用 FastAPI SSE 追踪进度**：`call_openclaw_mirosearch.py` 会优先监听 `/v1/research/{task_id}/stream`，不可用时回退轮询，并在检测到未收敛结果时自动降级重试
+- **技能文档补充脚本重试行为说明**：明确 SSE 进度展示、未收敛结果判定和降级重试顺序
+
+### Testing
+
+- **本地回归通过**：
+  - `apps/gradio-demo`: `54 passed`
+  - `apps/gradio-demo` ruff changed-file check: passed
+  - `call_openclaw_mirosearch.py` / 脚本测试文件 py_compile: passed
+- **远端旧容器验证通过**：已同步到 `tower:/root/openclaw-mirosearch` 并原地补丁 `openclaw-mirosearch-app-1`；Gradio `28080/gradio_api/info` 与 API `8090/health` 均返回 `200`，app 容器状态 `running healthy`
+
 ## [0.2.7] - 2026-05-02
 
 ### Added
