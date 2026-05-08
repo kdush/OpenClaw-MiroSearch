@@ -69,6 +69,11 @@ description: 面向 OpenClaw 或其他智能体的深度检索与高质量联网
 
 - **FastAPI**：任务状态为 `completed` 或 `cached` 时，`result` 字段为最终 Markdown
 - **Gradio**：以 SSE `event: complete` 作为结束信号
+- 调用脚本 `call_openclaw_mirosearch.py` 内置 SSE 流式进度追踪 + 自动降级重试：
+  1. 优先通过 SSE stream 实时展示进度（`stage_heartbeat` 事件）
+  2. 若结果包含 `"Task incomplete"` 或 `"No \boxed{} content found"`，自动触发降级重试
+  3. 降级顺序：mode 从严格到宽松（verified → research → balanced → quota），search_profile 切换到更宽容的路由
+  4. 若所有降级均失败，返回包含部分内容的首次结果（而非空结果）
 - 若返回 `No \boxed{} content found in the final answer.`，视为"本轮失败可重试"
 - 建议降级顺序：
   1. 原参数重试 1 次

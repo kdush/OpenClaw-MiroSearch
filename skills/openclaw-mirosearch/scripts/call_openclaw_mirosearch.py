@@ -37,6 +37,36 @@ VALID_OUTPUT_DETAIL_LEVELS = ("compact", "balanced", "detailed")
 VALID_API_MODES = ("fastapi", "gradio")
 DEFAULT_SEARCH_PROFILE = "parallel-trusted"
 
+# 标记 "任务未完全收敛" 的哨兵文本
+_INCOMPLETE_MARKER = "Task incomplete - reached maximum turns"
+_FORMAT_ERROR_MARKER = "No \\boxed{} content found in the final answer."
+
+# 降级重试顺序（mode → search_profile 回退）
+_DEGRADE_STEPS = [
+    ("verified", "searxng-first"),
+    ("research", "parallel-trusted"),
+    ("balanced", "parallel-trusted"),
+    ("balanced", "searxng-first"),
+    ("quota", "searxng-only"),
+]
+
+
+def _next_degrade_step(current_mode: str, current_profile: str) -> tuple[str, str] | None:
+    for index, (mode, profile) in enumerate(_DEGRADE_STEPS):
+        if current_mode == mode and current_profile == profile:
+            next_index = index + 1
+            return (
+                _DEGRADE_STEPS[next_index]
+                if next_index < len(_DEGRADE_STEPS)
+                else None
+            )
+
+    for mode, profile in _DEGRADE_STEPS:
+        if current_mode == mode or current_profile == profile:
+            return (mode, profile)
+
+    return "balanced", "searxng-first"
+
 
 def _normalize_base_url(base_url: str) -> str:
     return base_url.rstrip("/")
@@ -112,7 +142,7 @@ def run_research_fastapi(
     caller_id: str | None = None,
     bearer_token: str | None = None,
 ) -> str:
-    """通过 FastAPI API Server 提交异步任务并轮询结果（推荐）。"""
+    """通过 FastAPI API Server 提交异步任务、SSE 流式追踪进度，并兜底重试。"""
     base_url = _normalize_base_url(base_url)
     submit_url = f"{base_url}/v1/research"
 
@@ -132,6 +162,9 @@ def run_research_fastapi(
     if bearer_token:
         headers["Authorization"] = f"Bearer {bearer_token}"
 
+    def _make_auth_headers():
+        return {"Authorization": f"Bearer {bearer_token}"} if bearer_token else {}
+
     req = request.Request(submit_url, data=data, headers=headers, method="POST")
     try:
         with request.urlopen(req, timeout=timeout) as resp:
@@ -145,21 +178,87 @@ def run_research_fastapi(
         raise RuntimeError(f"提交任务失败，未返回 task_id: {submit_resp}")
 
     status = submit_resp.get("status")
-    # 缓存命中，直接返回结果
     if status == "cached" and submit_resp.get("result"):
         return str(submit_resp["result"])
 
     print(f"任务已提交: task_id={task_id}, status={status}", file=sys.stderr)
 
-    # 轮询任务状态
-    deadline = time.time() + timeout
-    poll_url = f"{base_url}/v1/research/{task_id}"
-    poll_headers = {}
-    if bearer_token:
-        poll_headers["Authorization"] = f"Bearer {bearer_token}"
+    result = _wait_task_fastapi(base_url, task_id, timeout, _make_auth_headers())
 
+    if result is None:
+        raise TimeoutError(f"等待结果超时（{timeout}s），task_id={task_id}")
+
+    if _is_incomplete_result(result):
+        print(f"  检测到未完全收敛的结果，尝试降级重试...", file=sys.stderr)
+        return _retry_with_degrade(
+            base_url, query, mode, search_profile, search_result_num,
+            verification_min_search_rounds, output_detail_level, timeout,
+            caller_id, bearer_token, first_result=result,
+        )
+
+    return result
+
+
+def _wait_task_fastapi(
+    base_url: str,
+    task_id: str,
+    timeout: int,
+    auth_headers: callable,
+) -> str | None:
+    """通过 SSE 流式等待任务完成，返回结果文本或 None（超时/异常）。"""
+    stream_url = f"{base_url}/v1/research/{task_id}/stream"
+    poll_url = f"{base_url}/v1/research/{task_id}"
+
+    deadline = time.time() + timeout
+    last_heartbeat = ""
+
+    # 先尝试 SSE 流式
+    try:
+        req = request.Request(stream_url, headers=auth_headers(), method="GET")
+        with request.urlopen(req, timeout=min(30, max(5, int(timeout * 0.3)))) as resp:
+            chunks: list[bytes] = []
+            while time.time() < deadline:
+                chunk = resp.read(4096)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                text = b"".join(chunks).decode("utf-8", errors="replace")
+                events = _parse_sse_events(text)
+                for ev_name, payload in events:
+                    if ev_name == "done":
+                        done_data = json.loads(payload)
+                        done_status = done_data.get("status", "")
+                        if done_status == "completed":
+                            result = _fetch_poll_result(poll_url, auth_headers())
+                            return result
+                        elif done_status in ("failed", "cancelled"):
+                            return str(done_data)
+                        else:
+                            return _fetch_poll_result(poll_url, auth_headers())
+                    if ev_name == "stage_heartbeat":
+                        hb = json.loads(payload) if payload else {}
+                        key = f"{hb.get('phase','?')}/{hb.get('turn',0)}+{hb.get('detail','')}"
+                        if key != last_heartbeat:
+                            print(f"  → {hb.get('phase','')}: {hb.get('detail','')}", file=sys.stderr)
+                            last_heartbeat = key
+                time.sleep(0.5)
+    except Exception as exc:
+        print(f"  SSE 流式不可用，回退到轮询模式: {exc}", file=sys.stderr)
+
+    # 回退到轮询
+    return _poll_task_result(poll_url, timeout, auth_headers, deadline)
+
+
+def _poll_task_result(
+    poll_url: str,
+    timeout: int,
+    auth_headers: callable,
+    deadline: float,
+) -> str | None:
+    """轮询任务状态直到完成或超时。"""
+    last_stage = ""
     while time.time() < deadline:
-        poll_req = request.Request(poll_url, headers=poll_headers, method="GET")
+        poll_req = request.Request(poll_url, headers=auth_headers(), method="GET")
         try:
             with request.urlopen(poll_req, timeout=30) as resp:
                 poll_resp = json.loads(resp.read().decode("utf-8"))
@@ -170,23 +269,84 @@ def run_research_fastapi(
         current_status = poll_resp.get("status", "")
         if current_status == "completed":
             result = poll_resp.get("result")
-            if result:
-                return str(result)
-            raise RuntimeError(f"任务完成但无结果: {poll_resp}")
+            return str(result) if result else None
         elif current_status == "failed":
-            raise RuntimeError(f"任务执行失败: {poll_resp}")
+            result = poll_resp.get("result")
+            return str(result) if result else f"任务执行失败: {poll_resp}"
         elif current_status == "cancelled":
-            raise RuntimeError("任务已被取消")
+            return "任务已被取消"
 
-        # 打印进度
         meta = poll_resp.get("meta", {})
         stage = meta.get("current_stage", "")
         event_count = poll_resp.get("event_count", 0)
-        print(f"  状态: {current_status}, 阶段: {stage}, 事件数: {event_count}", file=sys.stderr)
+        if stage != last_stage:
+            print(f"  状态: {current_status}, 阶段: {stage}, 事件: {event_count}", file=sys.stderr)
+            last_stage = stage
 
         time.sleep(3)
 
-    raise TimeoutError(f"等待结果超时（{timeout}s），task_id={task_id}")
+    return None
+
+
+def _fetch_poll_result(poll_url: str, auth_headers: dict) -> str | None:
+    """从轮询端点拉取最新结果。"""
+    try:
+        req = request.Request(poll_url, headers=auth_headers, method="GET")
+        with request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            if data.get("status") == "completed":
+                return str(data.get("result", ""))
+    except Exception:
+        pass
+    return None
+
+
+def _is_incomplete_result(result: str) -> bool:
+    """判断结果是否标记为未完全收敛。"""
+    return bool(result) and (_INCOMPLETE_MARKER in result or _FORMAT_ERROR_MARKER in result)
+
+
+def _retry_with_degrade(
+    base_url: str,
+    query: str,
+    current_mode: str,
+    current_profile: str,
+    search_result_num: int,
+    verification_min_search_rounds: int,
+    output_detail_level: str,
+    timeout: int,
+    caller_id: str | None,
+    bearer_token: str | None,
+    first_result: str,
+) -> str:
+    """按降级顺序重试：每次降低 mode 严格度或切换到更宽容的 profile。"""
+    degrade_target = _next_degrade_step(current_mode, current_profile)
+    if degrade_target is None:
+        return first_result
+    new_mode, new_profile = degrade_target
+
+    print(
+        f"  降级重试: {current_mode}/{current_profile} → {new_mode}/{new_profile}",
+        file=sys.stderr,
+    )
+
+    try:
+        retry_result = run_research_fastapi(
+            base_url=base_url,
+            query=query,
+            mode=new_mode,
+            search_profile=new_profile,
+            search_result_num=search_result_num,
+            verification_min_search_rounds=verification_min_search_rounds,
+            output_detail_level=output_detail_level,
+            timeout=timeout,
+            caller_id=caller_id,
+            bearer_token=bearer_token,
+        )
+        return retry_result
+    except Exception as exc:
+        print(f"  降级重试也失败: {exc}，返回首次结果", file=sys.stderr)
+        return first_result
 
 
 def run_research_gradio(
