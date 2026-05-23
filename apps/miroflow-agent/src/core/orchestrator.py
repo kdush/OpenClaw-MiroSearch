@@ -310,6 +310,9 @@ class Orchestrator:
             # 心跳是辅助信息，不能影响主流程
             pass
 
+    async def _emit_final_output(self, markdown: str) -> None:
+        await self.stream.update("final_output", {"markdown": markdown})
+
     @staticmethod
     def _normalize_domain(url: str) -> str:
         if not url:
@@ -1654,6 +1657,7 @@ class Orchestrator:
             save_callback=self._save_message_history,
         )
 
+        await self._emit_final_output(final_summary)
         await self.stream.tool_call("show_text", {"text": final_boxed_answer})
         await self.stream.end_llm("Final Summary")
         await self.stream.end_agent("Final Summary", self.current_agent_id)

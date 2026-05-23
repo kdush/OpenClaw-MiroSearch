@@ -6,7 +6,6 @@
 - 验证 404、心跳、取消等边界场景
 """
 
-import asyncio
 import json
 import time
 from unittest.mock import AsyncMock, patch
@@ -280,3 +279,79 @@ async def test_stream_incremental_events(mock_task_store):
         # 验证增量读取：第一次 last_event_id=None，第二次应传入 "1-0"
         assert captured_last_ids[0] is None
         assert captured_last_ids[1] == "1-0"
+
+
+@pytest.mark.asyncio
+async def test_stream_terminal_batch_emits_done_without_extra_block(mock_task_store):
+    task_id = "stream-test-terminal-batch"
+    meta_completed = _make_meta(task_id, TaskStatus.COMPLETED)
+    events_batch = [_make_event("1-0", "final_output", {"markdown": "# Done"})]
+
+    read_calls = []
+
+    async def mock_read_events(tid, last_event_id=None, block_ms=5000, count=100):
+        read_calls.append(
+            {"last_event_id": last_event_id, "block_ms": block_ms, "count": count}
+        )
+        if len(read_calls) == 1:
+            return events_batch
+        return []
+
+    with patch("routers.research.get_task_store", return_value=mock_task_store):
+        mock_task_store.get_task = AsyncMock(return_value=meta_completed)
+        mock_task_store.read_events = AsyncMock(side_effect=mock_read_events)
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(f"/v1/research/{task_id}/stream")
+
+    parsed = _parse_sse_events(resp.text)
+    event_types = [e.get("event") for e in parsed]
+
+    assert event_types == ["final_output", "done"]
+    assert len(read_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_stream_final_output_emits_done_even_before_status_side_effect(
+    mock_task_store,
+):
+    task_id = "stream-test-final-output-race"
+    meta_running = _make_meta(task_id, TaskStatus.RUNNING)
+    meta_completed = _make_meta(task_id, TaskStatus.COMPLETED)
+    events_batch = [_make_event("1-0", "final_output", {"markdown": "# Done"})]
+
+    read_calls = []
+    get_task_calls = {"count": 0}
+
+    async def mock_read_events(tid, last_event_id=None, block_ms=5000, count=100):
+        read_calls.append(
+            {"last_event_id": last_event_id, "block_ms": block_ms, "count": count}
+        )
+        if len(read_calls) == 1:
+            return events_batch
+        return []
+
+    async def mock_get_task(tid):
+        get_task_calls["count"] += 1
+        if get_task_calls["count"] <= 2:
+            return meta_running
+        return meta_completed
+
+    with patch("routers.research.get_task_store", return_value=mock_task_store):
+        mock_task_store.get_task = AsyncMock(side_effect=mock_get_task)
+        mock_task_store.read_events = AsyncMock(side_effect=mock_read_events)
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(f"/v1/research/{task_id}/stream")
+
+    parsed = _parse_sse_events(resp.text)
+    event_types = [e.get("event") for e in parsed]
+    done_event = [e for e in parsed if e.get("event") == "done"][0]
+
+    assert event_types == ["final_output", "done"]
+    assert done_event["data"]["status"] == "completed"
+    assert len(read_calls) == 1

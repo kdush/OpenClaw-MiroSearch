@@ -4,6 +4,7 @@ import pytest
 from unittest.mock import AsyncMock
 
 from services.task_event_sink import TaskEventSink
+from services.task_store import TaskStatus
 
 
 @pytest.mark.asyncio
@@ -19,3 +20,17 @@ async def test_task_event_sink_maps_actual_event_fields_to_stage():
     store.update_task_stage.assert_any_call("task-1", "检索:第 1 轮")
     store.update_task_stage.assert_any_call("task-1", "agent:Final Summary")
     store.update_task_stage.assert_any_call("task-1", "tool:google_search")
+
+
+@pytest.mark.asyncio
+async def test_task_event_sink_marks_completed_when_final_output_arrives():
+    store = AsyncMock()
+    sink = TaskEventSink(store, "task-final")
+
+    await sink.put({"event": "final_output", "data": {"markdown": "# Final result"}})
+
+    store.store_result.assert_awaited_once_with("task-final", "# Final result")
+    store.update_task_status.assert_awaited_once_with(
+        "task-final",
+        TaskStatus.COMPLETED,
+    )

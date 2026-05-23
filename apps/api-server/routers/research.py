@@ -37,6 +37,11 @@ logger = logging.getLogger("api-server")
 
 router = APIRouter(prefix="/v1/research", tags=["research"])
 
+SSE_HEARTBEAT_INTERVAL_SECONDS = 15
+SSE_EVENT_READ_BLOCK_MS = 5000
+SSE_EVENT_READ_COUNT = 100
+SSE_TERMINAL_EVENT_STATUS = {"final_output": TaskStatus.COMPLETED}
+
 # 结果缓存（保持内存实现）
 _result_cache = ResultCache(
     max_size=settings.result_cache_max_size,
@@ -179,7 +184,6 @@ async def stream_research(
 
     async def _event_generator():
         last_event_id = None
-        heartbeat_interval = 15  # 心跳间隔（秒）
         last_heartbeat = time.time()
 
         while True:
@@ -187,12 +191,17 @@ async def stream_research(
             events = await task_store.read_events(
                 task_id,
                 last_event_id=last_event_id,
-                block_ms=5000,
-                count=100,
+                block_ms=SSE_EVENT_READ_BLOCK_MS,
+                count=SSE_EVENT_READ_COUNT,
             )
+            terminal_event_status = None
 
             for event in events:
                 last_event_id = event["id"]
+                terminal_event_status = (
+                    terminal_event_status
+                    or SSE_TERMINAL_EVENT_STATUS.get(event["event"])
+                )
                 yield {
                     "event": event["event"],
                     "data": _json.dumps(event["data"], ensure_ascii=False),
@@ -208,15 +217,21 @@ async def stream_research(
                 TaskStatus.CACHED,
             ):
                 # 事件流读取完毕后输出 done
-                if not events:
+                if len(events) < SSE_EVENT_READ_COUNT:
                     yield {
                         "event": "done",
                         "data": _json.dumps({"status": current.status.value}),
                     }
                     break
+            elif terminal_event_status is not None:
+                yield {
+                    "event": "done",
+                    "data": _json.dumps({"status": terminal_event_status.value}),
+                }
+                break
 
             # 发送心跳
-            if time.time() - last_heartbeat > heartbeat_interval:
+            if time.time() - last_heartbeat > SSE_HEARTBEAT_INTERVAL_SECONDS:
                 yield {"event": "heartbeat", "data": "{}"}
                 last_heartbeat = time.time()
 

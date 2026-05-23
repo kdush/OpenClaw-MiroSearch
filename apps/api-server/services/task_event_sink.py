@@ -11,7 +11,7 @@ execute_task_pipeline() 当前只要求 stream_queue 提供 async def put(item)�
 """
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from services.task_store import TaskStore, TaskStatus
 
@@ -95,6 +95,10 @@ class TaskEventSink:
             markdown = data.get("markdown", "")
             if markdown:
                 await self._store.store_result(self._task_id, markdown)
+                await self._store.update_task_status(
+                    self._task_id,
+                    TaskStatus.COMPLETED,
+                )
 
     def cancel(self) -> None:
         """标记取消，后续事件不再写入。"""
