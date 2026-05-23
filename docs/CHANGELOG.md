@@ -7,6 +7,25 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.2.9] - 2026-05-24
+
+### Fixed
+
+- **SSE 流在 `final_output` 后立即发送 `done`**：修复此前 SSE 生成器在终态事件批次到达后仍额外阻塞一次 Redis 读取才发送 `done` 的问题，客户端现在收到 `final_output` 后立即收到 `done`，无多余等待
+- **`TaskEventSink` 收到 `final_output` 时自动推进任务状态为 `COMPLETED`**：任务结果与完成状态现在在同一个事件处理帧内原子写入，避免状态与结果不一致
+
+### Added
+
+- **Orchestrator 新增 `_emit_final_output` 方法**：最终总结生成后通过 `stream.update` 发送 `final_output` 事件，携带 `{"markdown": ...}` 结构化结果
+- **compose.yaml / compose.host-network.yaml 补充 `BACKEND_MODE=api`**：app 服务明确声明后端模式，避免容器启动时误用内嵌模式
+
+### Testing
+
+- 新增 `test_sse_stream.py`：终态事件批次后立即发送 `done`、竞态场景（`final_output` 先到状态尚未更新）
+- 新增 `test_task_event_sink.py`：`final_output` 事件存储结果并推进 `COMPLETED` 状态
+- 新增 `test_orchestrator_final_output.py`：`_emit_final_output` 正确发送 `markdown` 字段
+- 新增 `test_compose_config.py`：验证两份 compose 文件均包含 `BACKEND_MODE: api`
+
 ## [0.2.8] - 2026-05-08
 
 ### Fixed
