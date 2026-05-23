@@ -15,6 +15,7 @@ services:
     env_file:
       - ${COMPOSE_ENV_FILE:-.env.compose}
     environment:
+      BACKEND_MODE: api
       HOST: 0.0.0.0
       PORT: 8080
       API_BASE_URL: ${GRADIO_API_BASE_URL:-http://api:8090}

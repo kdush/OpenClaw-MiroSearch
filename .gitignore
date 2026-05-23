@@ -220,6 +220,8 @@ data/
 
 .idea/
 .windsurf/
+.claude/
+CLAUDE.md
 
 .DS_Store
 
