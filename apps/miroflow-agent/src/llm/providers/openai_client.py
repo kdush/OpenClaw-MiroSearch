@@ -178,6 +178,37 @@ class OpenAIClient(BaseClient):
         return normalized_text[: self.tool_result_max_chars] + "...(truncated)"
 
     @staticmethod
+    def _stringify_message_field(value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value
+        if isinstance(value, list):
+            parts = []
+            for item in value:
+                if isinstance(item, dict):
+                    text = item.get("text") or item.get("content") or item.get("summary")
+                    if text:
+                        parts.append(str(text))
+                elif item:
+                    parts.append(str(item))
+            return "\n".join(parts)
+        return str(value)
+
+    @classmethod
+    def _extract_message_text(cls, message: Any) -> str:
+        content = cls._stringify_message_field(getattr(message, "content", None)).strip()
+        if content:
+            return content
+        for field_name in ("reasoning", "reasoning_content"):
+            reasoning_text = cls._stringify_message_field(
+                getattr(message, field_name, None)
+            ).strip()
+            if reasoning_text:
+                return reasoning_text
+        return ""
+
+    @staticmethod
     def _extract_retry_after(error: RateLimitError, default: float = 10.0) -> float:
         """从 RateLimitError 的 response header 中提取 Retry-After 秒数。"""
         try:
@@ -346,12 +377,16 @@ class OpenAIClient(BaseClient):
             if self.repetition_penalty != 1.0:
                 params["extra_body"]["repetition_penalty"] = self.repetition_penalty
 
-            if "deepseek-v3-1" in self.model_name:
+            if "deepseek-v3-1" in request_model_name or "deepseek-v4" in request_model_name:
                 params["extra_body"]["thinking"] = {"type": "enabled"}
 
             # summary/fast 场景不需要深度推理，显式禁用 thinking 以加速响应
             if agent_type in SUMMARY_AGENT_TYPES or agent_type in FAST_AGENT_TYPES:
                 params["extra_body"]["thinking"] = {"type": "disabled"}
+                params["extra_body"]["reasoning"] = {
+                    "effort": "none",
+                    "exclude": True,
+                }
 
             # auto-detect if we need to continue from the last assistant message
             if messages_for_llm and messages_for_llm[-1].get("role") == "assistant":
@@ -434,7 +469,7 @@ class OpenAIClient(BaseClient):
                 if hasattr(response.choices[0], "message") and hasattr(
                     response.choices[0].message, "content"
                 ):
-                    resp_content = response.choices[0].message.content or ""
+                    resp_content = self._extract_message_text(response.choices[0].message)
                 else:
                     resp_content = getattr(response.choices[0], "text", "")
 
@@ -579,21 +614,27 @@ class OpenAIClient(BaseClient):
         from ...utils.parsing_utils import fix_server_name_in_text
 
         if llm_response.choices[0].finish_reason == "stop":
-            assistant_response_text = llm_response.choices[0].message.content or ""
+            assistant_response_text = self._extract_message_text(
+                llm_response.choices[0].message
+            )
             assistant_response_text = fix_server_name_in_text(assistant_response_text)
 
             message_history.append(
                 {"role": "assistant", "content": assistant_response_text}
             )
         elif llm_response.choices[0].finish_reason == "tool_calls":
-            assistant_response_text = llm_response.choices[0].message.content or ""
+            assistant_response_text = self._extract_message_text(
+                llm_response.choices[0].message
+            )
             assistant_response_text = fix_server_name_in_text(assistant_response_text)
             message_history.append(
                 {"role": "assistant", "content": assistant_response_text}
             )
 
         elif llm_response.choices[0].finish_reason == "length":
-            assistant_response_text = llm_response.choices[0].message.content or ""
+            assistant_response_text = self._extract_message_text(
+                llm_response.choices[0].message
+            )
             assistant_response_text = fix_server_name_in_text(assistant_response_text)
             if assistant_response_text == "":
                 assistant_response_text = "LLM response is empty."
