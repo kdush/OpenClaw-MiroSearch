@@ -7,6 +7,39 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.2.10] - 2026-05-24
+
+### Added
+
+- **Gradio 研究结论导出 MVP**：结果区新增导出格式选择、导出按钮和下载文件组件，支持 Markdown（`.md`）、PDF（`.pdf`）和 Word（`.docx`）三种格式；导出文件名增加随机后缀，避免同秒重复导出互相覆盖
+- **导出功能回归测试**：新增 Markdown / PDF / Word 文件生成、导出按钮可见下载文件、导出异常友好返回、同秒导出文件名唯一性等测试
+
+### Changed
+
+- **默认模型切换为千问系列**：Gradio 默认模型改为 `qwen/qwen3.6-plus`，快速 / 摘要模型默认改为 `qwen/qwen3.6-35b-a3b`；`.env.example` 同步改为 OpenRouter + Qwen 示例配置
+- **Gradio 中间过程展示优化**：非最终总结的 `message` / `show_text` 内容改为可展开的思考卡片展示，减少刷新回放后正文区噪音
+
+### Fixed
+
+- **OpenAI / OpenRouter 兼容模型空响应兼容**：`OpenAIClient` 在 `message.content` 为空时回退读取 `message.reasoning` / `message.reasoning_content`，兼容 Qwen / DeepSeek 等 reasoning-only 响应；摘要 / 快速模型请求禁用 OpenRouter reasoning tokens，减少 final summary 阶段空正文风险
+- **搜索失败显式返回结构化错误**：`google_search` 在所有搜索源失败或返回空结果时返回 `success=false`、`error`、空 `organic/results` 和搜索源异常信息，避免上层误判为空成功结果
+- **Gradio 搜索失败展示**：搜索结果渲染会显示「检索失败」、错误详情、搜索源异常和链路跟踪，提升排障可观测性
+- **导出失败不再抛出前端 traceback**：导出文件写入失败时返回隐藏下载组件并显示「导出失败」标签，同时写入 warning 日志
+
+### Deployment
+
+- **已部署到 `tower`**：同步源码到 `tower:/mnt/user/appdata/openclaw-mirosearch`，重建 `openclaw-mirosearch-api:latest` 与 `openclaw-mirosearch:latest`，并滚动重启 `api`、`worker`、`app`
+- **补齐 `searxng` 服务**：在 `tower` 上重新启动缺失的 `openclaw-mirosearch-searxng-1` 容器，并确认健康检查通过
+
+### Testing
+
+- **本地回归通过**：
+  - `apps/gradio-demo`: `31 passed`
+  - `libs/miroflow-tools`: `28 passed`
+  - `apps/miroflow-agent`: `15 passed`
+  - 目标文件 ruff check: passed
+- **远端部署验证通过**：`tower` 上 `app`、`api`、`worker`、`searxng`、`valkey` 均为 `healthy`；API `/health` 返回 `{"status":"ok","version":"0.1.0"}`，Gradio `/gradio_api/info` 包含 `/run_research_stream`，SearXNG `/healthz` 返回 `OK`
+
 ## [0.2.9] - 2026-05-24
 
 ### Fixed
