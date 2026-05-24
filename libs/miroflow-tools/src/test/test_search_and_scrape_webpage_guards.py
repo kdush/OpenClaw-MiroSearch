@@ -1,4 +1,5 @@
 import importlib
+import json
 import sys
 import types
 
@@ -177,6 +178,37 @@ def test_format_provider_error_forbidden_json():
     exc = httpx.HTTPStatusError("forbidden", request=request, response=response)
     message = search_mod._format_provider_error("searxng", exc)
     assert "http_403_json_forbidden" in message
+
+
+@pytest.mark.asyncio
+async def test_google_search_reports_failure_when_all_providers_fail(monkeypatch):
+    search_mod = _load_search_module()
+
+    from miroflow_tools.dev_mcp_servers.providers.registry import ProviderRegistry
+
+    class _FailingProvider:
+        @property
+        def name(self):
+            return "broken"
+
+        def is_available(self):
+            return True
+
+        async def search(self, _params):
+            raise RuntimeError("provider boom")
+
+    fake_registry = ProviderRegistry()
+    fake_registry.register(_FailingProvider())
+    monkeypatch.setattr(search_mod, "_registry", fake_registry)
+    monkeypatch.setattr(search_mod, "SEARCH_PROVIDER_ORDER", "broken")
+    monkeypatch.setattr(search_mod, "SEARCH_PROVIDER_MODE", "fallback")
+
+    raw = await search_mod.google_search("test query", num=3)
+    payload = json.loads(raw)
+
+    assert payload["success"] is False
+    assert "provider boom" in payload["error"]
+    assert payload["organic"] == []
 
 
 @pytest.mark.asyncio

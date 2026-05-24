@@ -752,6 +752,31 @@ async def google_search(
 
         # Build comprehensive response
         response_provider = search_params.get("provider", search_provider)
+        if not organic_results:
+            error_message = (
+                "; ".join(provider_errors)
+                if provider_errors
+                else "No organic search results returned by configured providers"
+            )
+            response_data = {
+                "success": False,
+                "error": error_message,
+                "organic": [],
+                "results": [],
+                "searchParameters": search_params,
+                "provider": response_provider,
+            }
+            confidence_info = search_params.get("confidence")
+            if confidence_info is not None:
+                response_data["confidence"] = confidence_info
+            route_trace = search_params.get("route_trace")
+            if route_trace is not None:
+                response_data["route_trace"] = route_trace
+            if provider_errors:
+                response_data["provider_fallback"] = provider_errors
+            response_data = decode_http_urls_in_dict(response_data)
+            return json.dumps(response_data, ensure_ascii=False)
+
         response_data = {
             "organic": organic_results,
             "searchParameters": search_params,
