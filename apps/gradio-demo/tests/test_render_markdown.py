@@ -2,6 +2,7 @@ import importlib.util
 import json
 import os
 import sys
+import zipfile
 from pathlib import Path
 
 
@@ -229,6 +230,249 @@ def test_build_summary_section_humanizes_fallback():
     assert "未能" in rendered
     # 原始字符串不应直接展示
     assert "No \\boxed{} content found in the final answer." not in rendered
+
+
+def test_build_summary_section_strips_output_formatter_diagnostics():
+    """OutputFormatter 注入的 Final Answer / Extracted Result / Token Usage 分段
+    属于面向 CLI/评测日志的调试信息，前端展示时必须剔除，避免在 UI 出现重复正文、
+    token 统计和 'Pricing is disabled' 等噪声（回归 demo 页面的截图问题）。"""
+    demo_main = _load_demo_main()
+    raw_block = (
+        "============================== Final Answer ==============================\n"
+        "腾讯魔方工作室近期核心动态为《暗区突围》与《三角洲行动》双产品线成功运营。\n"
+        "\n"
+        "-------------------- Extracted Result --------------------\n"
+        "腾讯魔方工作室近期核心动态为《暗区突围》与《三角洲行动》双产品线成功运营。\n"
+        "\n"
+        "-------------------- Token Usage --------------------\n"
+        "Total Input Tokens: 10217\n"
+        "Total Cache Input Tokens: 0\n"
+        "Total Output Tokens: 4306\n"
+        "-----------------------------------------\n"
+        "Pricing is disabled - no cost information available\n"
+        "-----------------------------------------\n"
+    )
+    rendered = "".join(demo_main._build_summary_section([raw_block]))
+    assert "## 📋 研究总结" in rendered
+    assert "腾讯魔方工作室近期核心动态" in rendered
+    # 调试分段标记与配套噪声不应出现在 UI 渲染输出中
+    for marker in (
+        "Final Answer",
+        "Extracted Result",
+        "Token Usage",
+        "Total Input Tokens",
+        "Pricing is disabled",
+    ):
+        assert marker not in rendered, f"诊断标记残留: {marker}"
+
+
+def test_render_markdown_deduplicates_sanitized_final_summary_blocks():
+    """流式 message 与刷新回放 final_output 可能分别携带同一份总结：
+    一份是纯正文，一份带 OutputFormatter 诊断分段。UI 应先清洗再去重，
+    保证流式输出和刷新后的最终渲染一致。"""
+    demo_main = _load_demo_main()
+    conclusion = "腾讯魔方工作室近期核心动态为双产品线成功运营。"
+    diagnostic_block = (
+        "============================== Final Answer ==============================\n"
+        f"{conclusion}\n"
+        "\n"
+        "-------------------- Extracted Result --------------------\n"
+        f"{conclusion}\n"
+        "\n"
+        "-------------------- Token Usage --------------------\n"
+        "Total Input Tokens: 10217\n"
+        "Pricing is disabled - no cost information available\n"
+    )
+    state = {
+        "errors": [],
+        "agent_order": ["final-stream", "final-output"],
+        "agents": {
+            "final-stream": {
+                "agent_name": "Final Summary",
+                "tool_call_order": ["stream-message"],
+                "tools": {
+                    "stream-message": {
+                        "tool_name": "message",
+                        "content": conclusion,
+                    }
+                },
+            },
+            "final-output": {
+                "agent_name": "Final Summary",
+                "tool_call_order": ["final-output-message"],
+                "tools": {
+                    "final-output-message": {
+                        "tool_name": "message",
+                        "content": diagnostic_block,
+                    }
+                },
+            },
+        },
+    }
+
+    rendered = demo_main._render_markdown(
+        state,
+        render_mode="summary_with_details",
+        final_summary_merge_strategy="all_unique",
+    )
+
+    assert rendered.count(conclusion) == 1
+    assert "Extracted Result" not in rendered
+    assert "Token Usage" not in rendered
+
+
+def test_format_search_results_shows_structured_search_failure():
+    demo_main = _load_demo_main()
+    rendered = demo_main._format_search_results(
+        {"q": "test query"},
+        {
+            "result": json.dumps(
+                {
+                    "success": False,
+                    "error": "searxng: timeout",
+                    "organic": [],
+                    "provider_fallback": ["searxng: timeout"],
+                },
+                ensure_ascii=False,
+            )
+        },
+    )
+
+    assert "检索失败" in rendered
+    assert "searxng: timeout" in rendered
+
+
+def test_default_model_family_uses_qwen_when_env_missing(monkeypatch):
+    import dotenv
+
+    monkeypatch.setattr(dotenv, "load_dotenv", lambda *args, **kwargs: False)
+    for env_name in (
+        "DEFAULT_MODEL_NAME",
+        "MODEL_TOOL_NAME",
+        "MODEL_FAST_NAME",
+        "MODEL_THINKING_NAME",
+        "MODEL_SUMMARY_NAME",
+    ):
+        monkeypatch.delenv(env_name, raising=False)
+
+    demo_main = _load_demo_main()
+
+    assert demo_main.DEFAULT_MODEL_NAME.startswith("qwen")
+    assert demo_main.DEFAULT_MODEL_TOOL_NAME.startswith("qwen")
+    assert demo_main.DEFAULT_MODEL_FAST_NAME.startswith("qwen")
+    assert demo_main.DEFAULT_MODEL_THINKING_NAME.startswith("qwen")
+    assert demo_main.DEFAULT_MODEL_SUMMARY_NAME.startswith("qwen")
+
+
+def test_create_export_file_writes_markdown_pdf_and_docx(tmp_path):
+    demo_main = _load_demo_main()
+    markdown = (
+        "# 研究结论\n\n"
+        "腾讯魔方工作室近期核心动态为双产品线成功运营。\n\n"
+        "## References\n\n"
+        "[1] https://example.com/report"
+    )
+
+    md_path = Path(
+        demo_main._create_export_file(
+            markdown,
+            "md",
+            output_dir=tmp_path,
+            task_id="task-123",
+        )
+    )
+    pdf_path = Path(
+        demo_main._create_export_file(
+            markdown,
+            "pdf",
+            output_dir=tmp_path,
+            task_id="task-123",
+        )
+    )
+    docx_path = Path(
+        demo_main._create_export_file(
+            markdown,
+            "docx",
+            output_dir=tmp_path,
+            task_id="task-123",
+        )
+    )
+
+    assert md_path.suffix == ".md"
+    assert "腾讯魔方工作室" in md_path.read_text(encoding="utf-8")
+    assert pdf_path.suffix == ".pdf"
+    assert pdf_path.read_bytes().startswith(b"%PDF-")
+    assert b"STSong-Light" in pdf_path.read_bytes()
+    assert docx_path.suffix == ".docx"
+    assert zipfile.is_zipfile(docx_path)
+    with zipfile.ZipFile(docx_path) as archive:
+        document_xml = archive.read("word/document.xml").decode("utf-8")
+    assert "腾讯魔方工作室" in document_xml
+
+
+def test_export_conclusion_returns_visible_file_update(tmp_path, monkeypatch):
+    demo_main = _load_demo_main()
+    monkeypatch.setattr(demo_main, "EXPORT_OUTPUT_DIR", tmp_path)
+
+    update = demo_main._export_conclusion(
+        "# 研究结论\n\n这是导出正文。",
+        "md",
+        {"task_id": "task-abc"},
+    )
+
+    assert update["visible"] is True
+    exported_path = Path(update["value"])
+    assert exported_path.exists()
+    assert "task-abc" in exported_path.name
+    assert "这是导出正文" in exported_path.read_text(encoding="utf-8")
+
+
+def test_create_export_file_uses_unique_filename_with_same_second(tmp_path, monkeypatch):
+    demo_main = _load_demo_main()
+    monkeypatch.setattr(demo_main.time, "strftime", lambda _format: "20260524-231500")
+
+    first_path = Path(
+        demo_main._create_export_file(
+            "# 研究结论\n\n第一次导出。",
+            "md",
+            output_dir=tmp_path,
+            task_id="task-same-second",
+        )
+    )
+    second_path = Path(
+        demo_main._create_export_file(
+            "# 研究结论\n\n第二次导出。",
+            "md",
+            output_dir=tmp_path,
+            task_id="task-same-second",
+        )
+    )
+
+    assert first_path != second_path
+    assert first_path.exists()
+    assert second_path.exists()
+    assert "第一次导出" in first_path.read_text(encoding="utf-8")
+    assert "第二次导出" in second_path.read_text(encoding="utf-8")
+
+
+def test_export_conclusion_returns_hidden_file_update_when_export_fails(monkeypatch):
+    demo_main = _load_demo_main()
+
+    def _raise_export_error(*_args, **_kwargs):
+        raise OSError("permission denied")
+
+    monkeypatch.setattr(demo_main, "_create_export_file", _raise_export_error)
+
+    update = demo_main._export_conclusion(
+        "# 研究结论\n\n这是导出正文。",
+        "md",
+        {"task_id": "task-error"},
+    )
+
+    assert update["visible"] is False
+    assert update["value"] is None
+    assert "导出失败" in update["label"]
+    assert "permission denied" in update["label"]
 
 
 def test_normalize_latex_noop_without_backslash():
