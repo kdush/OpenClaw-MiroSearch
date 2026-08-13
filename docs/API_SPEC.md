@@ -24,7 +24,15 @@
 
 ```json
 {
-  "data": ["<query>", "<mode>", "<search_profile>", 20, 3, "<output_detail_level>"]
+  "data": [
+    "<query>",
+    "<mode>",
+    "<search_profile>",
+    20,
+    3,
+    "<output_detail_level>",
+    "<caller_id>"
+  ]
 }
 ```
 
@@ -36,8 +44,15 @@
 - `search_result_num`：单轮检索条数（可选，`10/20/30`）
 - `verification_min_search_rounds`：最少检索轮次（可选，仅 `verified` 生效）
 - `output_detail_level`：输出篇幅档位（可选，`compact/balanced/detailed`）
-- `render_mode`：渲染模式（可选，通常无需手动指定）
 - `caller_id`：调用方标识（可选，v0.1.9+；用于会话级任务隔离，配合 `stop_current` 定向取消）
+
+### 兼容性与迁移
+
+下一发布版本开始，Gradio HTTP 端点的第 7 个数组项固定为 `caller_id`。仍按旧版
+6 项数组调用的客户端需要追加一个稳定的调用方标识；如暂时不需要定向取消，也可以
+显式传入空字符串。直接调用 Python 函数 `run_research_once()` 的旧代码不受影响，
+其第 7 个位置参数仍是 `render_mode`；新增的 `caller_id` 只能通过第 8 个位置参数或
+关键字参数传入。
 
 ### 响应
 
@@ -62,7 +77,9 @@
 终态约定：
 
 - 任务完成以 `event: complete` 为准
-- 若 `complete` 内容为 `No \boxed{} content found in the final answer.`，表示本轮未收敛，建议按降级策略重试
+- `complete.data[0]` 为最终 Markdown 或明确的失败/取消说明
+- 缺少 `\boxed{}` 不再单独判定失败：存在可展示正文时会作为格式降级结果返回；
+  只有没有可用正文时才进入失败终态
 
 心跳约定：
 
@@ -75,11 +92,16 @@
 
 ```json
 {
-  "data": []
+  "data": ["<caller_id>"]
 }
 ```
 
-作用：请求终止所有活跃任务（向后兼容，0 参数）。
+作用：按 `caller_id` 定向取消排队中或运行中的任务。空值只返回
+`caller_id_required`，绝不退化为全局取消。
+
+旧版 `{"data": []}` 的全局取消调用需要迁移为 `{"data": ["<caller_id>"]}`，并与
+创建任务时的 `caller_id` 保持一致。服务端不会为旧调用恢复全局取消语义；需要按
+明确任务取消时，请改用 FastAPI 的 `POST /v1/research/{task_id}/cancel`。
 
 ### 3.1) stop_current_by_caller（v0.1.9+）
 
@@ -198,7 +220,9 @@
 
 ### 认证
 
-设置 `API_TOKENS` 环境变量启用 Bearer Token 认证（逗号分隔支持多 Token）。留空则跳过认证。
+设置 `API_TOKENS` 环境变量启用 Bearer Token 认证（逗号分隔支持多
+Token）。默认 fail-closed：Token 留空且未显式设置 `AUTH_DISABLED=1`
+时，受保护端点返回 `503`；`AUTH_DISABLED=1` 仅用于本机开发。
 
 ```bash
 curl -H "Authorization: Bearer your-token" http://127.0.0.1:8090/v1/research
@@ -212,7 +236,7 @@ curl -H "Authorization: Bearer your-token" http://127.0.0.1:8090/v1/research
 | GET | `/v1/research/{task_id}` | 查询任务状态、元数据与结果 |
 | GET | `/v1/research/{task_id}/stream` | SSE 流式获取任务实时进度事件 |
 | POST | `/v1/research/{task_id}/cancel` | 取消指定任务 |
-| POST | `/v1/research/cancel` | 按 `caller_id` 批量取消 |
+| POST | `/v1/research/cancel` | 按必填查询参数 `caller_id` 批量取消 |
 | GET | `/v1/metrics/last` | 最近任务运行指标 |
 | GET | `/health` | 健康检查 |
 
@@ -234,8 +258,16 @@ curl -X POST http://127.0.0.1:8090/v1/research \
 缓存命中时（同步返回）：
 
 ```json
-{"task_id": "xxxx", "status": "cached", "result": "...markdown..."}
+{"task_id": "cached-xxxx", "status": "cached"}
 ```
+
+缓存正文与普通任务一致，通过 `GET /v1/research/{task_id}` 或 SSE
+`final_output` 事件读取；缓存由 API 与 Worker 通过 Valkey 共享。
+
+SSE 在业务终态事件（`error`、`cancelled` 或 `final_output`）持久化后才提交
+任务终态；客户端收到 `done` 前，服务端还会非阻塞补读一次事件流，避免并发
+窗口漏事件。`done.data.status` 为最终状态，失败或取消时
+`done.data.error` 会携带终态说明。
 
 任务状态查询（`GET /v1/research/{task_id}`）：
 
@@ -262,13 +294,16 @@ curl -X POST http://127.0.0.1:8090/v1/research \
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
-| `query` | string | 是 | — | 研究问题 |
-| `mode` | string | 否 | `balanced` | 研究模式（枚举同上） |
-| `search_profile` | string | 否 | `searxng-first` | 检索路由（枚举同上） |
-| `search_result_num` | int | 否 | `20` | 每轮检索结果数 |
-| `verification_min_search_rounds` | int | 否 | `3` | 最少检索轮次（verified 模式） |
-| `output_detail_level` | string | 否 | `detailed` | 输出篇幅（枚举同上） |
+| `query` | string | 是 | — | 研究问题；去除首尾空白后不能为空 |
+| `mode` | string | 否 | `DEFAULT_RESEARCH_MODE` | 研究模式（枚举同上） |
+| `search_profile` | string | 否 | `DEFAULT_SEARCH_PROFILE` | 检索路由（枚举同上） |
+| `search_result_num` | int | 否 | `DEFAULT_SEARCH_RESULT_NUM` | 每轮检索结果数，仅支持 `10/20/30` |
+| `verification_min_search_rounds` | int | 否 | `DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS` | 最少检索轮次，范围 `1..8`，仅 verified 模式影响缓存键 |
+| `output_detail_level` | string | 否 | `DEFAULT_OUTPUT_DETAIL_LEVEL` | 输出篇幅（枚举同上） |
 | `caller_id` | string | 否 | — | 调用方标识，用于定向取消 |
+
+上述可选字段省略或传 `null` 时读取部署默认值；非法部署默认值会记录告警并
+回退到安全内置值。
 
 ### 限流
 
@@ -284,6 +319,7 @@ curl -X POST http://127.0.0.1:8090/v1/research \
 | `404` | 任务不存在 |
 | `422` | 参数校验失败（如 mode 不在枚举范围内） |
 | `429` | 请求限流，按 `Retry-After` 头等待后重试 |
+| `503` | 未配置 API Token且未显式启用本地开发认证绕过，或任务队列暂不可用 |
 
 ---
 

@@ -21,7 +21,8 @@ services:
       API_BASE_URL: ${GRADIO_API_BASE_URL:-http://api:8090}
       SEARXNG_BASE_URL: ${SEARXNG_BASE_URL:-http://searxng:8080}
     ports:
-      - "${APP_PORT:-8080}:8080"
+      # 默认仅绑定回环，避免开箱即对公网裸奔；需对外暴露时设 BIND_HOST=0.0.0.0
+      - "${BIND_HOST:-127.0.0.1}:${APP_PORT:-8080}:8080"
     healthcheck:
       test:
         - CMD-SHELL
@@ -48,7 +49,8 @@ services:
       VALKEY_HOST: valkey
       VALKEY_PORT: 6379
     ports:
-      - "${API_PORT:-8090}:8090"
+      # 默认仅绑定回环；需对外暴露时设 BIND_HOST=0.0.0.0 并务必配置 API_TOKENS
+      - "${BIND_HOST:-127.0.0.1}:${API_PORT:-8090}:8090"
     depends_on:
       valkey:
         condition: service_healthy
@@ -110,7 +112,7 @@ services:
       SEARXNG_BASE_URL: ${SEARXNG_PUBLIC_BASE_URL:-http://localhost:${SEARXNG_HOST_PORT:-27080}/}
       SEARXNG_REDIS_URL: redis://valkey:6379/0
     ports:
-      - "${SEARXNG_HOST_PORT:-27080}:8080"
+      - "${BIND_HOST:-127.0.0.1}:${SEARXNG_HOST_PORT:-27080}:8080"
     depends_on:
       valkey:
         condition: service_healthy

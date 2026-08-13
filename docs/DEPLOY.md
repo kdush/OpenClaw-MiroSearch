@@ -26,6 +26,29 @@ Required / 至少需要填写：
 
 - `BASE_URL`
 - `API_KEY`
+- 生产或共享部署：`API_TOKENS=<随机强 Token>`，并将
+  `API_BEARER_TOKEN` 设为 `API_TOKENS` 中的同一个 Token
+
+Authentication defaults / 认证默认策略：
+
+- API 默认 fail-closed。`API_TOKENS` 为空且 `AUTH_DISABLED=0` 时，
+  `/v1/*` 受保护端点返回 `503`。
+- `.env.compose.example` 默认只绑定回环地址，并显式选择本机开发模式：
+  `AUTH_DISABLED=1`，`API_TOKENS` 与 `API_BEARER_TOKEN` 留空。
+- 生产或共享部署必须改为 `AUTH_DISABLED=0`，并成对配置
+  `API_TOKENS` 与 `API_BEARER_TOKEN`。
+- Compose 默认用 `BIND_HOST=127.0.0.1` 将 App、API 与 SearXNG
+  端口绑定到回环地址。需要对外提供服务时才改为 `0.0.0.0`，并同时配置
+  Token、防火墙或可信反向代理。
+
+Production example / 生产示例（请替换为随机强 Token）：
+
+```bash
+API_TOKENS=replace_with_a_random_token
+API_BEARER_TOKEN=replace_with_a_random_token
+AUTH_DISABLED=0
+BIND_HOST=127.0.0.1
+```
 
 Optional (improve search quality) / 可选填写（提升检索质量）：
 
@@ -93,7 +116,13 @@ API_PORT=28090    # API Server 宿主机端口（默认 8090）
 curl -sS 'http://127.0.0.1:8080/gradio_api/info'
 curl -sS 'http://127.0.0.1:8090/health'
 curl -sS 'http://127.0.0.1:27080/healthz'
+curl -sS \
+  -H 'Authorization: Bearer replace_with_a_random_token' \
+  'http://127.0.0.1:8090/v1/metrics/last'
 ```
+
+`/health` 是公共健康检查；`/v1/metrics/last` 用于确认 Bearer Token
+确实从 Gradio/调用方传递到 API。若未配置认证，后者应返回 `503`。
 
 Access URLs / 访问地址：
 
