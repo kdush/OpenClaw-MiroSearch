@@ -16,9 +16,25 @@ from __future__ import annotations
 
 import logging
 import os
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
+from models import (
+    MAX_VERIFICATION_SEARCH_ROUNDS,
+    MIN_VERIFICATION_SEARCH_ROUNDS,
+    VALID_MODES,
+    VALID_OUTPUT_DETAIL_LEVELS,
+    VALID_SEARCH_PROFILES,
+    VALID_SEARCH_RESULT_NUMS,
+)
+
 logger = logging.getLogger("api-server.profile_resolver")
+
+SAFE_DEFAULT_RESEARCH_MODE = "balanced"
+SAFE_DEFAULT_SEARCH_PROFILE = "searxng-first"
+SAFE_DEFAULT_SEARCH_RESULT_NUM = 20
+SAFE_DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS = 3
+SAFE_DEFAULT_OUTPUT_DETAIL_LEVEL = "detailed"
 
 
 # ---- 基础工具 ----------------------------------------------------------
@@ -32,57 +48,158 @@ def _env_int(name: str, default_value: int) -> int:
         return default_value
 
 
+def _env_choice(name: str, default_value: str, choices: tuple[str, ...]) -> str:
+    """读取枚举型部署默认值；非法配置回退并记录可观测日志。"""
+    raw = os.getenv(name)
+    if raw is None:
+        return default_value
+    normalized = raw.strip().lower()
+    if normalized in choices:
+        return normalized
+    logger.warning(
+        "环境变量 %s=%r 无效，回退到安全默认值 %s",
+        name,
+        raw,
+        default_value,
+    )
+    return default_value
+
+
+def _env_non_empty(name: str, default_value: str) -> str:
+    """读取非空字符串配置；空白值记录告警并回退。"""
+    raw = os.getenv(name)
+    if raw is None:
+        return default_value
+    normalized = raw.strip()
+    if normalized:
+        return normalized
+    logger.warning(
+        "环境变量 %s=%r 为空，回退到 %s",
+        name,
+        raw,
+        default_value,
+    )
+    return default_value
+
+
+def _env_int_choice(
+    name: str,
+    default_value: int,
+    choices: tuple[int, ...],
+) -> int:
+    """读取离散整数部署默认值；非法配置回退并记录可观测日志。"""
+    raw = os.getenv(name)
+    if raw is None:
+        return default_value
+    try:
+        parsed = int(raw)
+    except ValueError:
+        parsed = None
+    if parsed in choices:
+        return parsed
+    logger.warning(
+        "环境变量 %s=%r 无效，回退到安全默认值 %s",
+        name,
+        raw,
+        default_value,
+    )
+    return default_value
+
+
+def _env_int_range(
+    name: str,
+    default_value: int,
+    minimum: int,
+    maximum: int,
+) -> int:
+    """读取区间整数部署默认值；非法配置回退并记录可观测日志。"""
+    raw = os.getenv(name)
+    if raw is None:
+        return default_value
+    try:
+        parsed = int(raw)
+    except ValueError:
+        parsed = None
+    if parsed is not None and minimum <= parsed <= maximum:
+        return parsed
+    logger.warning(
+        "环境变量 %s=%r 无效，回退到安全默认值 %s",
+        name,
+        raw,
+        default_value,
+    )
+    return default_value
+
+
 # ---- 默认值（每次调用读取，便于 worker 启动后热更新 env） ----------------
 def _default_research_mode() -> str:
-    return os.getenv("DEFAULT_RESEARCH_MODE", "balanced")
+    return _env_choice(
+        "DEFAULT_RESEARCH_MODE",
+        SAFE_DEFAULT_RESEARCH_MODE,
+        VALID_MODES,
+    )
 
 
 def _default_search_profile() -> str:
-    return os.getenv("DEFAULT_SEARCH_PROFILE", "searxng-first")
+    return _env_choice(
+        "DEFAULT_SEARCH_PROFILE",
+        SAFE_DEFAULT_SEARCH_PROFILE,
+        VALID_SEARCH_PROFILES,
+    )
 
 
-SEARCH_RESULT_NUM_CHOICES = [10, 20, 30]
+SEARCH_RESULT_NUM_CHOICES = list(VALID_SEARCH_RESULT_NUMS)
 
 
 def _default_search_result_num() -> int:
-    return _env_int("DEFAULT_SEARCH_RESULT_NUM", SEARCH_RESULT_NUM_CHOICES[1])
+    return _env_int_choice(
+        "DEFAULT_SEARCH_RESULT_NUM",
+        SAFE_DEFAULT_SEARCH_RESULT_NUM,
+        VALID_SEARCH_RESULT_NUMS,
+    )
 
 
 def _default_verification_min_search_rounds() -> int:
-    return max(1, _env_int("DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS", 3))
+    return _env_int_range(
+        "DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS",
+        SAFE_DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS,
+        MIN_VERIFICATION_SEARCH_ROUNDS,
+        MAX_VERIFICATION_SEARCH_ROUNDS,
+    )
 
 
-MAX_VERIFICATION_MIN_SEARCH_ROUNDS = 8
+MAX_VERIFICATION_MIN_SEARCH_ROUNDS = MAX_VERIFICATION_SEARCH_ROUNDS
 
-OUTPUT_DETAIL_LEVEL_CHOICES = ["compact", "balanced", "detailed"]
+OUTPUT_DETAIL_LEVEL_CHOICES = list(VALID_OUTPUT_DETAIL_LEVELS)
 
 
 def _default_output_detail_level() -> str:
-    val = os.getenv("DEFAULT_OUTPUT_DETAIL_LEVEL", "detailed")
-    if val not in OUTPUT_DETAIL_LEVEL_CHOICES:
-        return "detailed"
-    return val
+    return _env_choice(
+        "DEFAULT_OUTPUT_DETAIL_LEVEL",
+        SAFE_DEFAULT_OUTPUT_DETAIL_LEVEL,
+        VALID_OUTPUT_DETAIL_LEVELS,
+    )
 
 
 # ---- 模型名读取（与 demo 完全一致） --------------------------------------
 def _default_model_name() -> str:
-    return os.getenv("DEFAULT_MODEL_NAME", "gpt-4o-mini")
+    return _env_non_empty("DEFAULT_MODEL_NAME", "gpt-4o-mini")
 
 
 def _default_model_tool_name() -> str:
-    return os.getenv("MODEL_TOOL_NAME", _default_model_name())
+    return _env_non_empty("MODEL_TOOL_NAME", _default_model_name())
 
 
 def _default_model_fast_name() -> str:
-    return os.getenv("MODEL_FAST_NAME", _default_model_name())
+    return _env_non_empty("MODEL_FAST_NAME", _default_model_name())
 
 
 def _default_model_thinking_name() -> str:
-    return os.getenv("MODEL_THINKING_NAME", _default_model_name())
+    return _env_non_empty("MODEL_THINKING_NAME", _default_model_name())
 
 
 def _default_model_summary_name() -> str:
-    return os.getenv("MODEL_SUMMARY_NAME", _default_model_fast_name())
+    return _env_non_empty("MODEL_SUMMARY_NAME", _default_model_fast_name())
 
 
 # ---- 检索源策略 → 进程环境变量映射 --------------------------------------
@@ -130,9 +247,28 @@ SEARCH_PROFILE_ENV_MAP: Dict[str, Dict[str, str]] = {
 }
 
 # 已知 mode 集合（与 _build_mode_overrides 内的分支一一对应）
-MODE_CHOICES = frozenset(
-    {"production-web", "verified", "research", "balanced", "quota", "thinking"}
-)
+MODE_CHOICES = frozenset(VALID_MODES)
+
+
+@dataclass(frozen=True)
+class EffectiveResearchParams:
+    """一次解析后的不可变研究参数，供 API 全链路复用。"""
+
+    mode: str
+    search_profile: str
+    search_result_num: int
+    verification_min_search_rounds: int
+    output_detail_level: str
+
+    def as_dict(self) -> Dict[str, object]:
+        """返回适合构造 TaskPayload / RequestLike 的参数字典。"""
+        return {
+            "mode": self.mode,
+            "search_profile": self.search_profile,
+            "search_result_num": self.search_result_num,
+            "verification_min_search_rounds": (self.verification_min_search_rounds),
+            "output_detail_level": self.output_detail_level,
+        }
 
 
 # ---- normalize 函数 -----------------------------------------------------
@@ -200,6 +336,31 @@ def normalize_output_detail_level(level: Optional[str]) -> str:
     return resolved_default
 
 
+def resolve_effective_research_params(
+    mode: Optional[str] = None,
+    search_profile: Optional[str] = None,
+    search_result_num: Optional[int] = None,
+    verification_min_search_rounds: Optional[int] = None,
+    output_detail_level: Optional[str] = None,
+) -> EffectiveResearchParams:
+    """将请求值与部署默认值合并为唯一一套有效参数。
+
+    API 模型负责拒绝显式非法值；此处仍保留低层调用的安全归一化能力，并专门
+    处理部署环境变量缺失或非法的情况。
+    """
+    resolved_mode = normalize_research_mode(mode)
+    return EffectiveResearchParams(
+        mode=resolved_mode,
+        search_profile=normalize_search_profile(search_profile),
+        search_result_num=normalize_search_result_num(search_result_num),
+        verification_min_search_rounds=resolve_effective_min_search_rounds(
+            resolved_mode,
+            verification_min_search_rounds,
+        ),
+        output_detail_level=normalize_output_detail_level(output_detail_level),
+    )
+
+
 # ---- 输出篇幅档位 → hydra overrides ------------------------------------
 def get_mode_overrides_for_output_detail(level: Optional[str]) -> List[str]:
     resolved = normalize_output_detail_level(level)
@@ -226,12 +387,8 @@ def get_mode_overrides_for_output_detail(level: Optional[str]) -> List[str]:
         ]
     if resolved == "balanced":
         max_tokens = max(1024, _env_int("DETAIL_BALANCED_MAX_TOKENS", 4096))
-        tool_chars = max(
-            2000, _env_int("DETAIL_BALANCED_TOOL_RESULT_MAX_CHARS", 5000)
-        )
-        summary_tokens = max(
-            1024, _env_int("DETAIL_BALANCED_SUMMARY_MAX_TOKENS", 4096)
-        )
+        tool_chars = max(2000, _env_int("DETAIL_BALANCED_TOOL_RESULT_MAX_CHARS", 5000))
+        summary_tokens = max(1024, _env_int("DETAIL_BALANCED_SUMMARY_MAX_TOKENS", 4096))
         verification_tokens = max(
             1024, _env_int("DETAIL_BALANCED_VERIFICATION_MAX_TOKENS", 3072)
         )
@@ -405,6 +562,40 @@ def build_mode_overrides(mode: str) -> List[str]:
     ]
 
 
+def _hydra_override_key(override: str) -> str:
+    """提取 Hydra override 的字段或配置组键。"""
+    normalized = override.lstrip("+")
+    key, separator, _ = normalized.partition("=")
+    return key if separator else normalized
+
+
+def _is_config_group_override(override: str) -> bool:
+    """判断是否为 ``agent=...`` 一类配置组选择。"""
+    key = _hydra_override_key(override)
+    return not override.startswith("+") and "." not in key
+
+
+def combine_detail_and_mode_overrides(
+    detail_overrides: List[str],
+    mode_overrides: List[str],
+) -> List[str]:
+    """按稳定优先级组合篇幅默认值与模式硬约束。
+
+    Hydra 的配置组必须先选定，才能安全地写入组内字段。因此组合顺序为：
+    配置组选择、篇幅默认值与标记、模式字段。重叠字段由最后的模式值覆盖，
+    同时 ``agent.output_detail_level`` 等仅属于篇幅的标记会保留下来。
+    """
+    config_group_overrides = [
+        override for override in mode_overrides if _is_config_group_override(override)
+    ]
+    mode_value_overrides = [
+        override
+        for override in mode_overrides
+        if not _is_config_group_override(override)
+    ]
+    return config_group_overrides + detail_overrides + mode_value_overrides
+
+
 # ---- 顶层聚合 ----------------------------------------------------------
 def build_search_env(profile: str, result_num: int) -> Dict[str, str]:
     base = dict(
@@ -415,29 +606,37 @@ def build_search_env(profile: str, result_num: int) -> Dict[str, str]:
 
 
 def build_full_overrides(
-    mode: str,
-    search_profile: str,
-    search_result_num: int,
-    verification_min_search_rounds: int,
-    output_detail_level: str,
+    mode: Optional[str],
+    search_profile: Optional[str],
+    search_result_num: Optional[int],
+    verification_min_search_rounds: Optional[int],
+    output_detail_level: Optional[str],
 ) -> Tuple[Dict[str, str], List[str]]:
     """根据请求参数构建 (search_env_dict, hydra_overrides_list)。
 
     返回值已 normalize 完毕，可直接用于进程 env 注入与 hydra compose。
     """
-    resolved_mode = normalize_research_mode(mode)
-    resolved_profile = normalize_search_profile(search_profile)
-    resolved_result_num = normalize_search_result_num(search_result_num)
-    resolved_min_rounds = resolve_effective_min_search_rounds(
-        resolved_mode, verification_min_search_rounds
+    effective = resolve_effective_research_params(
+        mode=mode,
+        search_profile=search_profile,
+        search_result_num=search_result_num,
+        verification_min_search_rounds=verification_min_search_rounds,
+        output_detail_level=output_detail_level,
     )
-    resolved_detail = normalize_output_detail_level(output_detail_level)
 
-    search_env = build_search_env(resolved_profile, resolved_result_num)
-    overrides = list(build_mode_overrides(resolved_mode))
-    overrides.extend(get_mode_overrides_for_output_detail(resolved_detail))
-    if resolved_mode == "verified":
+    search_env = build_search_env(
+        effective.search_profile,
+        effective.search_result_num,
+    )
+    overrides = combine_detail_and_mode_overrides(
+        detail_overrides=get_mode_overrides_for_output_detail(
+            effective.output_detail_level
+        ),
+        mode_overrides=build_mode_overrides(effective.mode),
+    )
+    if effective.mode == "verified":
         overrides.append(
-            f"agent.verification.min_search_rounds={resolved_min_rounds}"
+            "agent.verification.min_search_rounds="
+            f"{effective.verification_min_search_rounds}"
         )
     return search_env, overrides

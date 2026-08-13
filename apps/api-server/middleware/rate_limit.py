@@ -1,5 +1,6 @@
 """请求限流中间件：基于内存滑动窗口，不依赖外部存储。"""
 
+import hashlib
 import os
 import time
 import threading
@@ -8,9 +9,23 @@ from typing import Optional
 
 from fastapi import HTTPException, Request, status
 
+from middleware.auth import is_configured_token
+
 # 限流配置（环境变量可覆盖）
 RATE_LIMIT_RPM = int(os.getenv("RATE_LIMIT_RPM", "30"))  # 每分钟最大请求数
-RATE_LIMIT_ENABLED = os.getenv("RATE_LIMIT_ENABLED", "1").strip() in ("1", "true", "yes")
+RATE_LIMIT_ENABLED = os.getenv("RATE_LIMIT_ENABLED", "1").strip() in (
+    "1",
+    "true",
+    "yes",
+)
+# 仅当部署在可信反向代理之后时才信任 X-Forwarded-For，否则客户端可伪造该头绕过限流
+TRUST_PROXY = os.getenv("TRUST_PROXY", "").strip().lower() in ("1", "true", "yes")
+
+
+def _token_key(token: str) -> str:
+    """用 token 的全长哈希作为限流标识，避免前缀相同的不同 token 互相干扰。"""
+    digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    return f"token:{digest}"
 
 
 class SlidingWindowCounter:
@@ -55,8 +70,7 @@ class SlidingWindowCounter:
         removed = 0
         with self._lock:
             expired_keys = [
-                k for k, v in self._buckets.items()
-                if not any(t > cutoff for t in v)
+                k for k, v in self._buckets.items() if not any(t > cutoff for t in v)
             ]
             for k in expired_keys:
                 del self._buckets[k]
@@ -69,13 +83,24 @@ _limiter = SlidingWindowCounter(max_requests=RATE_LIMIT_RPM, window_seconds=60)
 
 
 def _extract_client_key(request: Request) -> str:
-    """从请求中提取客户端标识（优先 Bearer Token，其次 IP）。"""
+    """从请求中提取客户端标识（优先 Bearer Token，其次 IP）。
+
+    安全说明：默认使用 request.client.host（真实 TCP 对端），不信任
+    X-Forwarded-For——否则攻击者每次改一个伪造 IP 即可绕过限流。仅当显式
+    设置 TRUST_PROXY=1（确实部署在可信反代之后）时才解析 XFF，并取最后一段
+    （由可信反代追加的最近一跳）。
+    """
     auth = request.headers.get("authorization", "")
-    if auth.lower().startswith("bearer ") and len(auth) > 10:
-        return f"token:{auth[7:23]}"
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return f"ip:{forwarded.split(',')[0].strip()}"
+    if auth.lower().startswith("bearer "):
+        token = auth[7:].strip()
+        if token and is_configured_token(token):
+            return _token_key(token)
+    if TRUST_PROXY:
+        forwarded = request.headers.get("x-forwarded-for")
+        if forwarded:
+            parts = [p.strip() for p in forwarded.split(",") if p.strip()]
+            if parts:
+                return f"ip:{parts[-1]}"
     client = request.client
     return f"ip:{client.host}" if client else "ip:unknown"
 

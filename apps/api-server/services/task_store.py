@@ -7,6 +7,8 @@ Redis 键设计:
 - miro:task:{task_id} — Hash，保存任务元数据与状态快照
 - miro:task:{task_id}:events — Stream，保存流式事件
 - miro:task:{task_id}:result — String，保存最终 markdown
+- miro:task:{task_id}:quality — String，保存最终总结质量信息
+- miro:result-cache:{cache_key} — String，保存 API/Worker 共享结果缓存
 - miro:caller:{caller_id}:tasks — Set，保存 caller 关联任务
 - miro:metrics:last — String，保存最近一次 run_metrics
 """
@@ -117,6 +119,7 @@ class TaskStore:
     KEY_TASK = f"{KEY_PREFIX}:task"
     KEY_EVENTS = f"{KEY_PREFIX}:task:events"
     KEY_RESULT = f"{KEY_PREFIX}:task:result"
+    KEY_RESULT_CACHE = f"{KEY_PREFIX}:result-cache"
     KEY_CALLER = f"{KEY_PREFIX}:caller"
     KEY_METRICS = f"{KEY_PREFIX}:metrics:last"
 
@@ -212,7 +215,7 @@ class TaskStore:
         ):
             updates["finished_at"] = str(time.time())
 
-        if error:
+        if error is not None:
             updates["error"] = error
 
         result = await self._redis.hset(key, mapping=updates)
@@ -241,7 +244,9 @@ class TaskStore:
             "data": json.dumps(data, ensure_ascii=False),
             "ts": str(time.time()),
         }
-        event_id = await self._redis.xadd(key, event_data, maxlen=self._event_stream_maxlen)
+        event_id = await self._redis.xadd(
+            key, event_data, maxlen=self._event_stream_maxlen
+        )
         # 设置事件流 TTL
         await self._redis.expire(key, self._metadata_ttl)
         await self._refresh_task_metadata_ttl(task_id)
@@ -251,7 +256,7 @@ class TaskStore:
         self,
         task_id: str,
         last_event_id: Optional[str] = None,
-        block_ms: int = 5000,
+        block_ms: Optional[int] = 5000,
         count: int = 100,
     ) -> List[Dict[str, Any]]:
         """读取事件流。
@@ -288,12 +293,14 @@ class TaskStore:
         events = []
         for stream_name, stream_events in results:
             for event_id, event_data in stream_events:
-                events.append({
-                    "id": event_id,
-                    "event": event_data.get("event", "message"),
-                    "data": json.loads(event_data.get("data", "{}")),
-                    "ts": float(event_data.get("ts", 0)),
-                })
+                events.append(
+                    {
+                        "id": event_id,
+                        "event": event_data.get("event", "message"),
+                        "data": json.loads(event_data.get("data", "{}")),
+                        "ts": float(event_data.get("ts", 0)),
+                    }
+                )
         return events
 
     async def get_event_stream_length(self, task_id: str) -> int:
@@ -328,6 +335,68 @@ class TaskStore:
         data = await self._redis.get(key)
         return json.loads(data) if data else None
 
+    async def store_cached_result(
+        self,
+        cache_key: str,
+        result_markdown: str,
+        quality: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """写入 API 与 Worker 进程共享的研究结果缓存。"""
+        key = f"{self.KEY_RESULT_CACHE}:{cache_key}"
+        payload = json.dumps(
+            {
+                "result": result_markdown,
+                "quality": quality,
+            },
+            ensure_ascii=False,
+        )
+        ttl_seconds = settings.result_cache_ttl_seconds
+        if ttl_seconds > 0:
+            await self._redis.set(key, payload, ex=ttl_seconds)
+        else:
+            await self._redis.set(key, payload)
+        return True
+
+    async def get_cached_result(
+        self,
+        cache_key: str,
+    ) -> Optional[Dict[str, Any]]:
+        """读取共享结果缓存；损坏或不完整的条目按未命中处理。"""
+        key = f"{self.KEY_RESULT_CACHE}:{cache_key}"
+        raw_payload = await self._redis.get(key)
+        if not raw_payload:
+            return None
+
+        try:
+            payload = json.loads(raw_payload)
+        except (TypeError, json.JSONDecodeError):
+            logger.warning(
+                "Ignoring malformed shared result cache entry: %s", cache_key
+            )
+            await self.delete_cached_result(cache_key)
+            return None
+
+        if not isinstance(payload, dict):
+            await self.delete_cached_result(cache_key)
+            return None
+        result = payload.get("result")
+        if not isinstance(result, str) or not result.strip():
+            await self.delete_cached_result(cache_key)
+            return None
+        quality = payload.get("quality")
+        if quality is not None and not isinstance(quality, dict):
+            await self.delete_cached_result(cache_key)
+            return None
+        return {
+            "result": result,
+            "quality": quality,
+        }
+
+    async def delete_cached_result(self, cache_key: str) -> bool:
+        """删除单个共享结果缓存条目。"""
+        key = f"{self.KEY_RESULT_CACHE}:{cache_key}"
+        return bool(await self._redis.delete(key))
+
     # ---- 取消机制 ----
 
     async def request_cancel(self, task_id: str) -> bool:
@@ -343,27 +412,19 @@ class TaskStore:
         value = await self._redis.hget(key, "cancel_requested")
         return value == "1"
 
-    async def cancel_tasks_by_caller(self, caller_id: Optional[str] = None) -> List[str]:
-        """按 caller_id 批量取消任务。"""
-        cancelled = []
+    async def cancel_tasks_by_caller(self, caller_id: str) -> List[str]:
+        """按 caller_id 批量取消任务；空标识绝不能退化成全局取消。"""
+        normalized_caller_id = str(caller_id or "").strip()
+        if not normalized_caller_id:
+            raise ValueError("caller_id must not be blank")
 
-        if caller_id:
-            # 取消指定 caller 的任务
-            caller_key = f"{self.KEY_CALLER}:{caller_id}:tasks"
-            task_ids = await self._redis.smembers(caller_key)
-        else:
-            # 取消所有运行中的任务
-            pattern = f"{self.KEY_TASK}:*"
-            task_ids = []
-            async for key in self._redis.scan_iter(match=pattern):
-                task_id = key.split(":")[-1]
-                meta = await self.get_task(task_id)
-                if meta and meta.status == TaskStatus.RUNNING:
-                    task_ids.append(task_id)
+        cancelled = []
+        caller_key = f"{self.KEY_CALLER}:{normalized_caller_id}:tasks"
+        task_ids = await self._redis.smembers(caller_key)
 
         for task_id in task_ids:
             meta = await self.get_task(task_id)
-            if meta and meta.status == TaskStatus.RUNNING:
+            if meta and meta.status in (TaskStatus.QUEUED, TaskStatus.RUNNING):
                 await self.request_cancel(task_id)
                 cancelled.append(task_id)
 
@@ -394,11 +455,14 @@ class TaskStore:
             f"{self.KEY_TASK}:{task_id}",
             f"{self.KEY_TASK}:{task_id}:events",
             f"{self.KEY_TASK}:{task_id}:result",
+            f"{self.KEY_TASK}:{task_id}:quality",
         ]
         await self._redis.delete(*keys)
         return True
 
+
 _task_store: Optional[TaskStore] = None
+
 
 async def get_task_store() -> TaskStore:
     """获取 TaskStore 单例。"""
@@ -409,6 +473,7 @@ async def get_task_store() -> TaskStore:
 
     _task_store = await TaskStore.create()
     return _task_store
+
 
 async def close_task_store() -> None:
     """关闭 TaskStore 单例。"""

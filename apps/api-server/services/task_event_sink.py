@@ -13,7 +13,7 @@ execute_task_pipeline() 当前只要求 stream_queue 提供 async def put(item)�
 import logging
 from typing import Any, Dict
 
-from services.task_store import TaskStore, TaskStatus
+from services.task_store import TaskStore
 
 logger = logging.getLogger("api-server.task_event_sink")
 
@@ -64,7 +64,9 @@ class TaskEventSink:
         except Exception as e:
             logger.error("Failed to write event %s: %s", event_type, e, exc_info=True)
 
-    async def _handle_event_side_effects(self, event_type: str, data: Dict[str, Any]) -> None:
+    async def _handle_event_side_effects(
+        self, event_type: str, data: Dict[str, Any]
+    ) -> None:
         """处理事件的副作用：更新阶段、存储结果等。"""
 
         # stage_heartbeat: 更新当前阶段
@@ -78,27 +80,27 @@ class TaskEventSink:
 
         # start_of_agent: 更新阶段为 agent 启动
         elif event_type == "start_of_agent":
-            agent_name = str(data.get("agent_name") or data.get("agent") or "unknown").strip()
+            agent_name = str(
+                data.get("agent_name") or data.get("agent") or "unknown"
+            ).strip()
             await self._store.update_task_stage(self._task_id, f"agent:{agent_name}")
 
         # tool_call: 更新阶段为工具调用
         elif event_type == "tool_call":
-            tool_name = str(data.get("tool_name") or data.get("tool") or "unknown").strip()
+            tool_name = str(
+                data.get("tool_name") or data.get("tool") or "unknown"
+            ).strip()
             await self._store.update_task_stage(self._task_id, f"tool:{tool_name}")
 
         # run_metrics: 持久化最近运行指标
         elif event_type == "run_metrics":
             await self._store.set_last_run_metrics(data)
 
-        # final_output: 存储最终结果
+        # final_output: 只存储正文；终态由 Worker 根据结构化 pipeline 结果决定。
         elif event_type == "final_output" and self._store_result_on_final:
             markdown = data.get("markdown", "")
             if markdown:
                 await self._store.store_result(self._task_id, markdown)
-                await self._store.update_task_status(
-                    self._task_id,
-                    TaskStatus.COMPLETED,
-                )
 
     def cancel(self) -> None:
         """标记取消，后续事件不再写入。"""

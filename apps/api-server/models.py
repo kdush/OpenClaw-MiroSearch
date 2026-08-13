@@ -2,33 +2,77 @@
 
 from typing import Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from settings import settings
 
 
-VALID_MODES = ("balanced", "verified", "research", "production-web", "quota", "thinking")
+VALID_MODES = (
+    "balanced",
+    "verified",
+    "research",
+    "production-web",
+    "quota",
+    "thinking",
+)
 VALID_SEARCH_PROFILES = (
-    "searxng-first", "serp-first", "multi-route",
-    "parallel", "parallel-trusted", "searxng-only",
+    "searxng-first",
+    "serp-first",
+    "multi-route",
+    "parallel",
+    "parallel-trusted",
+    "searxng-only",
 )
 VALID_OUTPUT_DETAIL_LEVELS = ("compact", "balanced", "detailed")
+VALID_SEARCH_RESULT_NUMS = (10, 20, 30)
+MIN_VERIFICATION_SEARCH_ROUNDS = 1
+MAX_VERIFICATION_SEARCH_ROUNDS = 8
 
 
 class ResearchRequest(BaseModel):
-    """POST /v1/research 请求体。"""
+    """POST /v1/research 请求体。
+
+    可选策略字段省略或显式传入 ``null`` 都表示使用部署环境中的 ``DEFAULT_*``
+    默认值；只要传入非空值，就必须通过下方的显式范围校验。
+    """
 
     query: str = Field(..., min_length=1, description="研究查询内容")
-    mode: str = Field(default="balanced", description="研究模式")
-    search_profile: str = Field(default="parallel-trusted", description="检索路由策略")
-    search_result_num: int = Field(default=20, ge=1, le=100, description="检索结果数量")
-    verification_min_search_rounds: int = Field(
-        default=3, ge=0, le=20, description="最小检索轮次（仅 verified 模式生效）"
+    mode: Optional[str] = Field(default=None, description="研究模式")
+    search_profile: Optional[str] = Field(default=None, description="检索路由策略")
+    search_result_num: Optional[int] = Field(
+        default=None,
+        strict=True,
+        description="检索结果数量",
     )
-    output_detail_level: str = Field(default="detailed", description="输出篇幅档位")
-    caller_id: Optional[str] = Field(default=None, description="调用方 ID，用于定向取消")
+    verification_min_search_rounds: Optional[int] = Field(
+        default=None,
+        strict=True,
+        ge=MIN_VERIFICATION_SEARCH_ROUNDS,
+        le=MAX_VERIFICATION_SEARCH_ROUNDS,
+        description="最小检索轮次（仅 verified 模式生效）",
+    )
+    output_detail_level: Optional[str] = Field(
+        default=None,
+        description="输出篇幅档位",
+    )
+    caller_id: Optional[str] = Field(
+        default=None, description="调用方 ID，用于定向取消"
+    )
+
+    @field_validator("query")
+    @classmethod
+    def validate_query(cls, v: str) -> str:
+        """统一清理首尾空白，并拒绝没有实际内容的查询。"""
+        normalized = v.strip()
+        if not normalized:
+            raise ValueError("query must contain non-whitespace characters")
+        return normalized
 
     @field_validator("mode")
     @classmethod
-    def validate_mode(cls, v: str) -> str:
+    def validate_mode(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
         normalized = v.strip().lower()
         if normalized not in VALID_MODES:
             raise ValueError(f"mode must be one of {VALID_MODES}, got '{v}'")
@@ -36,19 +80,48 @@ class ResearchRequest(BaseModel):
 
     @field_validator("search_profile")
     @classmethod
-    def validate_search_profile(cls, v: str) -> str:
+    def validate_search_profile(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
         normalized = v.strip().lower()
         if normalized not in VALID_SEARCH_PROFILES:
-            raise ValueError(f"search_profile must be one of {VALID_SEARCH_PROFILES}, got '{v}'")
+            raise ValueError(
+                f"search_profile must be one of {VALID_SEARCH_PROFILES}, got '{v}'"
+            )
         return normalized
+
+    @field_validator("search_result_num")
+    @classmethod
+    def validate_search_result_num(cls, v: Optional[int]) -> Optional[int]:
+        if v is None:
+            return None
+        if v not in VALID_SEARCH_RESULT_NUMS:
+            raise ValueError(
+                "search_result_num must be one of "
+                f"{VALID_SEARCH_RESULT_NUMS}, got '{v}'"
+            )
+        return v
 
     @field_validator("output_detail_level")
     @classmethod
-    def validate_output_detail_level(cls, v: str) -> str:
+    def validate_output_detail_level(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
         normalized = v.strip().lower()
         if normalized not in VALID_OUTPUT_DETAIL_LEVELS:
-            raise ValueError(f"output_detail_level must be one of {VALID_OUTPUT_DETAIL_LEVELS}, got '{v}'")
+            raise ValueError(
+                f"output_detail_level must be one of {VALID_OUTPUT_DETAIL_LEVELS}, got '{v}'"
+            )
         return normalized
+
+    @field_validator("caller_id")
+    @classmethod
+    def validate_caller_id(cls, v: Optional[str]) -> Optional[str]:
+        """与取消端使用相同规则；空白调用方按未提供处理。"""
+        if v is None:
+            return None
+        normalized = v.strip()
+        return normalized or None
 
 
 class ResearchResponse(BaseModel):
@@ -78,7 +151,7 @@ class HealthResponse(BaseModel):
     """GET /health 响应。"""
 
     status: str = "ok"
-    version: str = "0.1.0"
+    version: str = Field(default_factory=lambda: settings.api_version)
 
 
 class ErrorResponse(BaseModel):
@@ -123,9 +196,12 @@ class ResearchTaskStatusResponse(BaseModel):
 class ResultQuality(BaseModel):
     """最终答案的格式和质量信息。"""
 
-    format_valid: bool = True
+    model_config = ConfigDict(strict=True)
+
+    format_valid: bool = False
     fallback_used: bool = False
-    issues: list[str] = Field(default_factory=list)
+    issues: list[str] = Field(default_factory=lambda: ["quality_unavailable"])
+    answer_available: bool = False
 
 
 class ResearchTaskProgress(BaseModel):

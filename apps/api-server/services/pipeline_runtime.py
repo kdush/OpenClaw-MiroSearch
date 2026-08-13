@@ -26,6 +26,42 @@ from settings import settings
 logger = logging.getLogger("api-server.pipeline_runtime")
 
 
+async def _close_created_tool_managers(
+    main_tool_manager: Any,
+    sub_tool_managers: Dict[str, Any],
+) -> None:
+    """清理尚未交给 Pipeline 接管的 ToolManager，并按对象身份去重。"""
+    managers = [main_tool_manager, *sub_tool_managers.values()]
+    unique_managers = []
+    manager_ids = set()
+    for manager in managers:
+        if manager is None or id(manager) in manager_ids:
+            continue
+        manager_ids.add(id(manager))
+        unique_managers.append(manager)
+
+    async def close_one(manager: Any) -> None:
+        close = getattr(manager, "aclose", None)
+        if not callable(close):
+            return
+        try:
+            await close()
+        except (Exception, asyncio.CancelledError):
+            pass
+
+    async def close_all() -> None:
+        await asyncio.gather(*(close_one(manager) for manager in unique_managers))
+
+    cleanup_task = asyncio.create_task(close_all())
+    while True:
+        try:
+            await asyncio.shield(cleanup_task)
+            return
+        except asyncio.CancelledError:
+            if cleanup_task.done():
+                return
+
+
 @contextmanager
 def _temporary_env_vars(overrides: Dict[str, str]):
     """临时设置进程环境变量，确保不同检索源策略互不影响。
@@ -82,7 +118,9 @@ class PipelineRuntime:
         """获取配置目录。"""
         conf_dir = settings.agent_conf_dir
         if not conf_dir:
-            conf_dir = str(Path(__file__).resolve().parents[2] / "miroflow-agent" / "conf")
+            conf_dir = str(
+                Path(__file__).resolve().parents[2] / "miroflow-agent" / "conf"
+            )
         return conf_dir
 
     def _init_hydra(self) -> None:
@@ -104,7 +142,9 @@ class PipelineRuntime:
                 logger.warning("Hydra 初始化状态: %s", e)
                 self._hydra_initialized = True  # 可能已初始化
 
-    def build_config_overrides(self, req: RequestLike) -> Tuple[Dict[str, str], List[str]]:
+    def build_config_overrides(
+        self, req: RequestLike
+    ) -> Tuple[Dict[str, str], List[str]]:
         """根据请求参数构建 (search_env, hydra_overrides)。
 
         与 gradio-demo 的 ``_ensure_preloaded`` 行为对齐：
@@ -189,16 +229,21 @@ class PipelineRuntime:
                 # 每任务新建组件
                 main_tm, sub_tms, output_fmt = create_pipeline_components(cfg)
 
-                # 获取工具定义（部分实现会在此时启动 MCP stdio 子进程，故仍需在 env 上下文内）
-                tool_defs = await main_tm.get_all_tool_definitions()
-                sub_tool_defs: Dict[str, List[Dict]] = {}
-                for name, tm in sub_tms.items():
-                    sub_tool_defs[name] = await tm.get_all_tool_definitions()
+                try:
+                    # 工具定义发现可能启动 MCP 子进程，异常时必须在本层清理。
+                    tool_defs = await main_tm.get_all_tool_definitions()
+                    sub_tool_defs: Dict[str, List[Dict]] = {}
+                    for name, tm in sub_tms.items():
+                        sub_tool_defs[name] = await tm.get_all_tool_definitions()
 
-                # 如有子代理，暴露为工具
-                if cfg.agent.sub_agents:
-                    from src.core.sub_agent import expose_sub_agents_as_tools
-                    tool_defs += expose_sub_agents_as_tools(cfg.agent.sub_agents)
+                    # 如有子代理，暴露为工具
+                    if cfg.agent.sub_agents:
+                        from src.core.sub_agent import expose_sub_agents_as_tools
+
+                        tool_defs += expose_sub_agents_as_tools(cfg.agent.sub_agents)
+                except (Exception, asyncio.CancelledError):
+                    await _close_created_tool_managers(main_tm, sub_tms)
+                    raise
 
         return cfg, main_tm, sub_tms, output_fmt, tool_defs, sub_tool_defs
 

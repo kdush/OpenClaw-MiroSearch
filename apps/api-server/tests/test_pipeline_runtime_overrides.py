@@ -5,7 +5,40 @@
 检索源策略所需的进程环境变量；不再硬编码 ``agent=demo_search_only``。
 """
 
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
 from services.pipeline_runtime import PipelineRuntime, RequestLike
+from services.profile_resolver import (
+    build_mode_overrides,
+    resolve_effective_research_params,
+)
+
+MODE_HARD_BUDGET_PATHS = (
+    ("agent.main_agent.max_turns", ("agent", "main_agent", "max_turns")),
+    ("llm.max_tokens", ("llm", "max_tokens")),
+    ("agent.keep_tool_result", ("agent", "keep_tool_result")),
+    ("agent.context_compress_limit", ("agent", "context_compress_limit")),
+    ("llm.tool_result_max_chars", ("llm", "tool_result_max_chars")),
+)
+
+
+def _override_int(overrides: list[str], key: str) -> int:
+    prefix = f"{key}="
+    for override in reversed(overrides):
+        normalized = override.lstrip("+")
+        if normalized.startswith(prefix):
+            return int(normalized[len(prefix) :])
+    raise KeyError(f"未找到 override：{key}")
+
+
+def _config_value(cfg, path: tuple[str, ...]):
+    value = cfg
+    for part in path:
+        value = value[part]
+    return value
 
 
 def _make_request(**kwargs) -> RequestLike:
@@ -22,6 +55,47 @@ def _make_request(**kwargs) -> RequestLike:
 
 
 class TestBuildConfigOverrides:
+    @pytest.mark.parametrize("mode", ["quota", "research"])
+    @pytest.mark.parametrize("detail_level", ["compact", "detailed"])
+    def test_composed_config_keeps_detail_marker_and_mode_hard_budgets(
+        self,
+        mode,
+        detail_level,
+    ):
+        runtime = PipelineRuntime()
+        _, overrides = runtime.build_config_overrides(
+            _make_request(mode=mode, output_detail_level=detail_level)
+        )
+
+        cfg = runtime.load_hydra_config(overrides)
+        expected_mode_overrides = build_mode_overrides(mode)
+
+        assert cfg.agent.output_detail_level == detail_level
+        for override_key, config_path in MODE_HARD_BUDGET_PATHS:
+            assert _config_value(cfg, config_path) == _override_int(
+                expected_mode_overrides,
+                override_key,
+            )
+
+    def test_worker_overrides_match_effective_deployment_defaults(self, monkeypatch):
+        monkeypatch.setenv("DEFAULT_RESEARCH_MODE", "verified")
+        monkeypatch.setenv("DEFAULT_SEARCH_PROFILE", "multi-route")
+        monkeypatch.setenv("DEFAULT_SEARCH_RESULT_NUM", "30")
+        monkeypatch.setenv("DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS", "7")
+        monkeypatch.setenv("DEFAULT_OUTPUT_DETAIL_LEVEL", "compact")
+        effective = resolve_effective_research_params()
+        runtime = PipelineRuntime()
+
+        env, overrides = runtime.build_config_overrides(
+            RequestLike(query="hello", **effective.as_dict())
+        )
+
+        assert env["SEARCH_PROVIDER_MODE"] == "merge"
+        assert env["SEARCH_RESULT_NUM"] == "30"
+        assert "agent=demo_verified_search" in overrides
+        assert "agent.verification.min_search_rounds=7" in overrides
+        assert "++agent.output_detail_level=compact" in overrides
+
     def test_returns_tuple_of_env_and_overrides(self):
         runtime = PipelineRuntime()
         req = _make_request()
@@ -85,6 +159,23 @@ class TestBuildConfigOverrides:
         assert "llm.api_key=sk-xxx" in overrides
         assert "llm.async_client=true" in overrides
 
+    def test_blank_stage_model_env_falls_back_before_hydra_compose(
+        self,
+        monkeypatch,
+    ):
+        """空白 MODEL_* 不得被提升为显式空 Hydra 配置。"""
+        monkeypatch.setenv("DEFAULT_MODEL_NAME", "base-model")
+        monkeypatch.setenv("MODEL_FAST_NAME", "fast-model")
+        monkeypatch.setenv("MODEL_SUMMARY_NAME", "   ")
+        runtime = PipelineRuntime()
+
+        _, overrides = runtime.build_config_overrides(_make_request(mode="balanced"))
+        cfg = runtime.load_hydra_config(overrides)
+
+        assert cfg.llm.model_name == "base-model"
+        assert cfg.llm.model_fast_name == "fast-model"
+        assert cfg.llm.model_summary_name == "fast-model"
+
     def test_worker_can_disable_async_llm_override(self, monkeypatch):
         monkeypatch.setattr(
             "settings.settings.worker.force_async_llm_client", False, raising=False
@@ -105,3 +196,43 @@ class TestBuildConfigOverrides:
             (i for i, o in enumerate(overrides) if o.startswith("agent=")), -1
         )
         assert 0 <= base_idx < mode_idx
+
+    @pytest.mark.asyncio
+    async def test_component_discovery_failure_closes_all_created_managers(
+        self,
+        monkeypatch,
+    ):
+        """工具定义发现失败时，Pipeline 尚未接管的 manager 必须立即清理。"""
+        runtime = PipelineRuntime()
+        main_tm = MagicMock()
+        main_tm.get_all_tool_definitions = AsyncMock(return_value=[])
+        main_tm.aclose = AsyncMock()
+        sub_tm = MagicMock()
+        sub_tm.get_all_tool_definitions = AsyncMock(
+            side_effect=RuntimeError("sub discovery failed")
+        )
+        sub_tm.aclose = AsyncMock()
+        cfg = SimpleNamespace(agent=SimpleNamespace(sub_agents={}))
+
+        monkeypatch.setattr(
+            runtime,
+            "build_config_overrides",
+            lambda _req: ({}, []),
+        )
+        monkeypatch.setattr(
+            runtime,
+            "load_hydra_config",
+            lambda _overrides: cfg,
+        )
+
+        with (
+            patch(
+                "src.core.pipeline.create_pipeline_components",
+                return_value=(main_tm, {"researcher": sub_tm}, MagicMock()),
+            ),
+            pytest.raises(RuntimeError, match="sub discovery failed"),
+        ):
+            await runtime.create_runtime_components(_make_request())
+
+        main_tm.aclose.assert_awaited_once()
+        sub_tm.aclose.assert_awaited_once()

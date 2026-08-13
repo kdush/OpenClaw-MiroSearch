@@ -80,7 +80,9 @@ class TaskQueue:
             password=settings.valkey.password,
             database=settings.valkey.queue_db,
         )
-        pool = await create_pool(redis_settings, default_queue_name=settings.task_queue.queue_name)
+        pool = await create_pool(
+            redis_settings, default_queue_name=settings.task_queue.queue_name
+        )
         return cls(pool)
 
     async def close(self) -> None:
@@ -96,8 +98,6 @@ class TaskQueue:
         Returns:
             job_id（与 task_id 一致）
         """
-        from workers.research_worker import run_research_job
-
         job = await self._pool.enqueue_job(
             "run_research_job",
             payload.to_dict(),

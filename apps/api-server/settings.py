@@ -3,7 +3,6 @@
 所有 Redis/Valkey 配置通过此模块导出，避免散落在 router / worker / service 中。
 """
 
-import os
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -60,6 +59,14 @@ class WorkerSettings(BaseSettings):
     job_timeout_seconds: int = Field(default=1800, alias="ARQ_JOB_TIMEOUT_SECONDS")
     # Worker 最大并发任务数
     max_jobs: int = Field(default=1, alias="ARQ_WORKER_MAX_JOBS")
+    # 单任务最大执行次数（含首次执行）
+    max_tries: int = Field(default=5, ge=1, alias="ARQ_WORKER_MAX_TRIES")
+    # 可重试初始化失败后的延迟（秒）
+    retry_defer_seconds: float = Field(
+        default=5.0,
+        ge=0,
+        alias="ARQ_RETRY_DEFER_SECONDS",
+    )
     # 取消轮询间隔（秒）
     cancel_poll_interval_seconds: float = Field(
         default=0.5, alias="TASK_CANCEL_POLL_INTERVAL_SECONDS"
@@ -77,12 +84,16 @@ class Settings(BaseSettings):
     worker: WorkerSettings = Field(default_factory=WorkerSettings)
 
     # API 相关配置
-    api_host: str = Field(default="0.0.0.0", alias="API_HOST")
+    api_version: str = Field(default="0.2.0", alias="API_VERSION")
+    api_host: str = Field(default="127.0.0.1", alias="API_HOST")
     api_port: int = Field(default=8090, alias="API_PORT")
 
     # 结果缓存配置
-    result_cache_max_size: int = Field(default=128, alias="RESULT_CACHE_MAX_SIZE")
-    result_cache_ttl_seconds: int = Field(default=3600, alias="RESULT_CACHE_TTL_SECONDS")
+    result_cache_ttl_seconds: int = Field(
+        default=3600,
+        ge=0,
+        alias="RESULT_CACHE_TTL_SECONDS",
+    )
 
     # Agent 配置目录
     agent_conf_dir: str = Field(default="", alias="AGENT_CONF_DIR")

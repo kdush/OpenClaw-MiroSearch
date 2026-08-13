@@ -9,6 +9,85 @@ import pytest
 from services import profile_resolver as pr
 
 
+MODE_HARD_BUDGET_KEYS = (
+    "agent.main_agent.max_turns",
+    "llm.max_tokens",
+    "agent.keep_tool_result",
+    "agent.context_compress_limit",
+    "llm.tool_result_max_chars",
+)
+
+
+def _effective_override_value(overrides: list[str], key: str) -> str:
+    """按 Hydra 的后覆盖语义读取某个键的最终值。"""
+    prefix = f"{key}="
+    for override in reversed(overrides):
+        normalized = override.lstrip("+")
+        if normalized.startswith(prefix):
+            return normalized[len(prefix) :]
+    raise KeyError(f"未找到 override：{key}")
+
+
+# ---- resolve_effective_research_params ------------------------------------
+class TestResolveEffectiveResearchParams:
+    def test_omitted_values_use_deployment_defaults(self, monkeypatch):
+        monkeypatch.setenv("DEFAULT_RESEARCH_MODE", "verified")
+        monkeypatch.setenv("DEFAULT_SEARCH_PROFILE", "multi-route")
+        monkeypatch.setenv("DEFAULT_SEARCH_RESULT_NUM", "30")
+        monkeypatch.setenv("DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS", "7")
+        monkeypatch.setenv("DEFAULT_OUTPUT_DETAIL_LEVEL", "compact")
+
+        params = pr.resolve_effective_research_params()
+
+        assert params.mode == "verified"
+        assert params.search_profile == "multi-route"
+        assert params.search_result_num == 30
+        assert params.verification_min_search_rounds == 7
+        assert params.output_detail_level == "compact"
+        assert params.as_dict() == {
+            "mode": "verified",
+            "search_profile": "multi-route",
+            "search_result_num": 30,
+            "verification_min_search_rounds": 7,
+            "output_detail_level": "compact",
+        }
+
+    def test_non_verified_mode_uses_effective_default_rounds(self, monkeypatch):
+        monkeypatch.setenv("DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS", "4")
+
+        params = pr.resolve_effective_research_params(
+            mode="balanced",
+            verification_min_search_rounds=8,
+        )
+
+        assert params.verification_min_search_rounds == 4
+
+    def test_invalid_deployment_defaults_use_safe_fallbacks(
+        self,
+        monkeypatch,
+        caplog,
+    ):
+        monkeypatch.setenv("DEFAULT_RESEARCH_MODE", "invalid-mode")
+        monkeypatch.setenv("DEFAULT_SEARCH_PROFILE", "invalid-profile")
+        monkeypatch.setenv("DEFAULT_SEARCH_RESULT_NUM", "25")
+        monkeypatch.setenv("DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS", "20")
+        monkeypatch.setenv("DEFAULT_OUTPUT_DETAIL_LEVEL", "invalid-detail")
+
+        with caplog.at_level("WARNING", logger="api-server.profile_resolver"):
+            params = pr.resolve_effective_research_params()
+
+        assert params.mode == "balanced"
+        assert params.search_profile == "searxng-first"
+        assert params.search_result_num == 20
+        assert params.verification_min_search_rounds == 3
+        assert params.output_detail_level == "detailed"
+        assert "DEFAULT_RESEARCH_MODE" in caplog.text
+        assert "DEFAULT_SEARCH_PROFILE" in caplog.text
+        assert "DEFAULT_SEARCH_RESULT_NUM" in caplog.text
+        assert "DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS" in caplog.text
+        assert "DEFAULT_OUTPUT_DETAIL_LEVEL" in caplog.text
+
+
 # ---- normalize_research_mode ---------------------------------------------
 class TestNormalizeResearchMode:
     def test_default_when_none(self, monkeypatch):
@@ -43,7 +122,8 @@ class TestNormalizeSearchProfile:
         assert pr.normalize_search_profile("foo-bar") == "searxng-first"
 
     @pytest.mark.parametrize(
-        "profile", list(pr.SEARCH_PROFILE_ENV_MAP.keys()),
+        "profile",
+        list(pr.SEARCH_PROFILE_ENV_MAP.keys()),
     )
     def test_known_profiles_pass_through(self, profile):
         assert pr.normalize_search_profile(profile) == profile
@@ -177,6 +257,29 @@ class TestBuildModeOverrides:
 
 # ---- build_full_overrides -------------------------------------------------
 class TestBuildFullOverrides:
+    @pytest.mark.parametrize("mode", ["quota", "research"])
+    @pytest.mark.parametrize("detail_level", ["compact", "detailed"])
+    def test_mode_hard_budgets_take_precedence_over_detail_defaults(
+        self,
+        mode,
+        detail_level,
+    ):
+        _, overrides = pr.build_full_overrides(
+            mode=mode,
+            search_profile="searxng-first",
+            search_result_num=20,
+            verification_min_search_rounds=3,
+            output_detail_level=detail_level,
+        )
+        mode_overrides = pr.build_mode_overrides(mode)
+
+        assert f"++agent.output_detail_level={detail_level}" in overrides
+        for key in MODE_HARD_BUDGET_KEYS:
+            assert _effective_override_value(
+                overrides,
+                key,
+            ) == _effective_override_value(mode_overrides, key)
+
     def test_verified_includes_min_search_rounds(self):
         env, overrides = pr.build_full_overrides(
             mode="verified",

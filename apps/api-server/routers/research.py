@@ -15,7 +15,8 @@ from typing import Optional
 
 import json as _json
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import ValidationError
 from sse_starlette.sse import EventSourceResponse
 
 from middleware.auth import verify_bearer_token
@@ -30,7 +31,7 @@ from models import (
 )
 from services.task_queue import TaskPayload, get_task_queue
 from services.task_store import TaskStatus, get_task_store
-from settings import settings
+from services.profile_resolver import resolve_effective_research_params
 from src.cache.result_cache import ResultCache
 
 logger = logging.getLogger("api-server")
@@ -40,13 +41,22 @@ router = APIRouter(prefix="/v1/research", tags=["research"])
 SSE_HEARTBEAT_INTERVAL_SECONDS = 15
 SSE_EVENT_READ_BLOCK_MS = 5000
 SSE_EVENT_READ_COUNT = 100
-SSE_TERMINAL_EVENT_STATUS = {"final_output": TaskStatus.COMPLETED}
+SSE_TERMINAL_DRAIN_BLOCK_MS = None
+TASK_QUEUE_UNAVAILABLE_DETAIL = "Task queue unavailable"
 
-# 结果缓存（保持内存实现）
-_result_cache = ResultCache(
-    max_size=settings.result_cache_max_size,
-    ttl_seconds=settings.result_cache_ttl_seconds,
-)
+
+# API 与 Worker 共享的结果缓存质量校验
+def _validate_cached_quality(quality: object) -> Optional[dict]:
+    """校验共享缓存的质量元数据；缺失或不可用时按未命中处理。"""
+    if quality is None:
+        return None
+    try:
+        normalized = ResultQuality.model_validate(quality)
+    except ValidationError:
+        return None
+    if not normalized.answer_available:
+        return None
+    return normalized.model_dump()
 
 
 @router.post(
@@ -61,16 +71,42 @@ async def create_research(
     _token: Optional[str] = Depends(verify_bearer_token),
 ):
     task_store = await get_task_store()
-    task_queue = await get_task_queue()
-
-    # 结果缓存检查
-    cache_key = ResultCache.make_key(
-        req.query, req.mode, req.search_profile, req.output_detail_level
+    effective = resolve_effective_research_params(
+        mode=req.mode,
+        search_profile=req.search_profile,
+        search_result_num=req.search_result_num,
+        verification_min_search_rounds=req.verification_min_search_rounds,
+        output_detail_level=req.output_detail_level,
     )
-    cached = _result_cache.get(cache_key)
+
+    # 结果缓存检查：纳入会改变检索深度（从而改变结论）的参数，避免误命中
+    cache_key = ResultCache.make_key(
+        req.query,
+        effective.mode,
+        effective.search_profile,
+        effective.output_detail_level,
+        search_result_num=effective.search_result_num,
+        verification_min_search_rounds=(
+            effective.verification_min_search_rounds
+            if effective.mode == "verified"
+            else None
+        ),
+    )
+    cached = None
+    cached_quality = None
+    shared_cache_entry = await task_store.get_cached_result(cache_key)
+    if isinstance(shared_cache_entry, dict):
+        shared_result = shared_cache_entry.get("result")
+        if isinstance(shared_result, str) and shared_result.strip():
+            cached_quality = _validate_cached_quality(shared_cache_entry.get("quality"))
+            if cached_quality is None:
+                await task_store.delete_cached_result(cache_key)
+            else:
+                cached = shared_result
+
     if cached is not None:
         # 缓存命中：创建 cached 任务并写入事件
-        task_id = f"cached-{uuid.uuid4().hex[:8]}"
+        task_id = f"cached-{uuid.uuid4()}"
         logger.info("Cache hit | key=%s | query=%s", cache_key, req.query[:60])
 
         await task_store.create_task(
@@ -78,17 +114,16 @@ async def create_research(
             status=TaskStatus.CACHED,
             caller_id=req.caller_id or "",
             query=req.query,
-            mode=req.mode,
-            search_profile=req.search_profile,
-            search_result_num=req.search_result_num,
-            verification_min_search_rounds=req.verification_min_search_rounds,
-            output_detail_level=req.output_detail_level,
+            **effective.as_dict(),
         )
         await task_store.append_event(task_id, "final_output", {"markdown": cached})
         await task_store.store_result(task_id, cached)
+        await task_store.store_result_quality(task_id, cached_quality)
         await task_store.update_task_status(task_id, TaskStatus.CACHED)
 
         return ResearchResponse(task_id=task_id, status="cached")
+
+    task_queue = await get_task_queue()
 
     # 创建任务
     task_id = str(uuid.uuid4())
@@ -97,26 +132,50 @@ async def create_research(
         status=TaskStatus.QUEUED,
         caller_id=req.caller_id or "",
         query=req.query,
-        mode=req.mode,
-        search_profile=req.search_profile,
-        search_result_num=req.search_result_num,
-        verification_min_search_rounds=req.verification_min_search_rounds,
-        output_detail_level=req.output_detail_level,
+        **effective.as_dict(),
     )
 
     # 入队
     payload = TaskPayload(
         task_id=task_id,
         query=req.query,
-        mode=req.mode,
-        search_profile=req.search_profile,
-        search_result_num=req.search_result_num,
-        verification_min_search_rounds=req.verification_min_search_rounds,
-        output_detail_level=req.output_detail_level,
+        **effective.as_dict(),
         caller_id=req.caller_id or "",
         cache_key=cache_key,
     )
-    await task_queue.enqueue_research_job(payload)
+    try:
+        await task_queue.enqueue_research_job(payload)
+    except Exception as exc:
+        error_message = f"Failed to enqueue research task: {exc}"
+        logger.error(
+            "Failed to enqueue task %s: %s",
+            task_id,
+            exc,
+            exc_info=True,
+        )
+        try:
+            try:
+                await task_store.append_event(
+                    task_id,
+                    "error",
+                    {"error": error_message},
+                )
+            finally:
+                await task_store.update_task_status(
+                    task_id,
+                    TaskStatus.FAILED,
+                    error=error_message,
+                )
+        except Exception:
+            logger.error(
+                "Failed to persist enqueue failure for task %s",
+                task_id,
+                exc_info=True,
+            )
+        raise HTTPException(
+            status_code=503,
+            detail=TASK_QUEUE_UNAVAILABLE_DETAIL,
+        ) from exc
 
     return ResearchResponse(task_id=task_id, status="accepted")
 
@@ -141,6 +200,15 @@ async def get_task_status(
     result = await task_store.get_result(task_id)
     event_count = await task_store.get_event_stream_length(task_id)
     quality = await task_store.get_result_quality(task_id)
+    result_available = bool(str(result or "").strip())
+    if quality is None:
+        normalized_quality = ResultQuality(answer_available=result_available)
+    else:
+        try:
+            normalized_quality = ResultQuality.model_validate(quality)
+        except ValidationError:
+            logger.warning("Task %s has invalid result quality metadata", task_id)
+            normalized_quality = ResultQuality(answer_available=result_available)
 
     return ResearchTaskStatusResponse(
         task_id=task_id,
@@ -163,7 +231,7 @@ async def get_task_status(
         ),
         result=result,
         event_count=event_count,
-        result_quality=ResultQuality(**(quality or {})),
+        result_quality=normalized_quality,
     )
 
 
@@ -194,14 +262,8 @@ async def stream_research(
                 block_ms=SSE_EVENT_READ_BLOCK_MS,
                 count=SSE_EVENT_READ_COUNT,
             )
-            terminal_event_status = None
-
             for event in events:
                 last_event_id = event["id"]
-                terminal_event_status = (
-                    terminal_event_status
-                    or SSE_TERMINAL_EVENT_STATUS.get(event["event"])
-                )
                 yield {
                     "event": event["event"],
                     "data": _json.dumps(event["data"], ensure_ascii=False),
@@ -216,17 +278,34 @@ async def stream_research(
                 TaskStatus.CANCELLED,
                 TaskStatus.CACHED,
             ):
-                # 事件流读取完毕后输出 done
-                if len(events) < SSE_EVENT_READ_COUNT:
-                    yield {
-                        "event": "done",
-                        "data": _json.dumps({"status": current.status.value}),
-                    }
-                    break
-            elif terminal_event_status is not None:
+                # 状态可能在本轮首次读取之后才提交。终态写入约定是“事件先、
+                # 状态后”，因此看到终态后再做一次非阻塞 drain，避免永久漏掉
+                # 已写入但尚未读取的 error/cancelled/final_output。
+                while True:
+                    terminal_events = await task_store.read_events(
+                        task_id,
+                        last_event_id=last_event_id,
+                        block_ms=SSE_TERMINAL_DRAIN_BLOCK_MS,
+                        count=SSE_EVENT_READ_COUNT,
+                    )
+                    for event in terminal_events:
+                        last_event_id = event["id"]
+                        yield {
+                            "event": event["event"],
+                            "data": _json.dumps(
+                                event["data"],
+                                ensure_ascii=False,
+                            ),
+                        }
+                    if len(terminal_events) < SSE_EVENT_READ_COUNT:
+                        break
+
+                done_data = {"status": current.status.value}
+                if current.error:
+                    done_data["error"] = current.error
                 yield {
                     "event": "done",
-                    "data": _json.dumps({"status": terminal_event_status.value}),
+                    "data": _json.dumps(done_data, ensure_ascii=False),
                 }
                 break
 
@@ -254,7 +333,10 @@ async def cancel_research(
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
     if meta.status not in (TaskStatus.QUEUED, TaskStatus.RUNNING):
-        raise HTTPException(status_code=400, detail=f"Task {task_id} is not cancellable (status: {meta.status.value})")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Task {task_id} is not cancellable (status: {meta.status.value})",
+        )
 
     await task_store.request_cancel(task_id)
     return CancelResponse(cancelled=1, task_ids=[task_id])
@@ -264,12 +346,16 @@ async def cancel_research(
     "/cancel",
     response_model=CancelResponse,
     summary="按 caller_id 取消任务",
-    description="不传 caller_id 则取消所有运行中任务。",
+    description="caller_id 为必填项，只取消该调用方排队中或运行中的任务。",
 )
 async def cancel_by_caller(
-    caller_id: Optional[str] = None,
+    caller_id: str = Query(..., min_length=1),
     _token: Optional[str] = Depends(verify_bearer_token),
 ):
+    normalized_caller_id = caller_id.strip()
+    if not normalized_caller_id:
+        raise HTTPException(status_code=422, detail="caller_id must not be blank")
+
     task_store = await get_task_store()
-    cancelled_ids = await task_store.cancel_tasks_by_caller(caller_id)
+    cancelled_ids = await task_store.cancel_tasks_by_caller(normalized_caller_id)
     return CancelResponse(cancelled=len(cancelled_ids), task_ids=cancelled_ids)

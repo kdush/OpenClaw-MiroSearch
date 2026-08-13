@@ -4,7 +4,6 @@
     uv run python worker.py
 """
 
-import asyncio
 import logging
 import os
 import sys
@@ -19,9 +18,9 @@ if str(_AGENT_ROOT) not in sys.path:
 
 load_dotenv()
 
-from arq import run_worker
-from settings import settings
-from workers.research_worker import WorkerSettings
+from arq import run_worker  # noqa: E402
+from settings import settings  # noqa: E402
+from workers.research_worker import WorkerSettings  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
@@ -40,10 +39,19 @@ def _log_llm_config():
         ).lower(),
     }
     keys = [
-        "BASE_URL", "API_KEY", "DEFAULT_LLM_PROVIDER", "DEFAULT_MODEL_NAME",
-        "MODEL_TOOL_NAME", "MODEL_FAST_NAME", "MODEL_THINKING_NAME",
-        "MODEL_SUMMARY_NAME", "MODEL_FALLBACK_NAME", "AGENT_CONFIG",
-        "SEARXNG_BASE_URL", "VALKEY_HOST", "VALKEY_PORT",
+        "BASE_URL",
+        "API_KEY",
+        "DEFAULT_LLM_PROVIDER",
+        "DEFAULT_MODEL_NAME",
+        "MODEL_TOOL_NAME",
+        "MODEL_FAST_NAME",
+        "MODEL_THINKING_NAME",
+        "MODEL_SUMMARY_NAME",
+        "MODEL_FALLBACK_NAME",
+        "AGENT_CONFIG",
+        "SEARXNG_BASE_URL",
+        "VALKEY_HOST",
+        "VALKEY_PORT",
         "WORKER_FORCE_ASYNC_LLM_CLIENT",
     ]
     for k in keys:
@@ -59,6 +67,11 @@ def main():
     logger.info("Starting research worker...")
     logger.info("Queue: %s", WorkerSettings.queue_name)
     logger.info("Max jobs: %s", WorkerSettings.max_jobs)
+    logger.info("Max tries: %s", WorkerSettings.max_tries)
+    logger.info(
+        "Retry defer: %s seconds",
+        settings.worker.retry_defer_seconds,
+    )
     logger.info("Job timeout: %s seconds", WorkerSettings.job_timeout)
     logger.info("--- LLM / Env Config ---")
     _log_llm_config()

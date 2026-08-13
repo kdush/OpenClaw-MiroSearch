@@ -45,9 +45,9 @@ def _parse_sse_events(text: str) -> list[dict]:
                 current = {}
             continue
         if line.startswith("event:"):
-            current["event"] = line[len("event:"):].strip()
+            current["event"] = line[len("event:") :].strip()
         elif line.startswith("data:"):
-            raw = line[len("data:"):].strip()
+            raw = line[len("data:") :].strip()
             try:
                 current["data"] = json.loads(raw)
             except json.JSONDecodeError:
@@ -137,7 +137,11 @@ async def test_stream_cancelled_task_emits_done_cancelled(mock_task_store):
     """任务被取消：流应发 done + cancelled 状态。"""
     task_id = "stream-test-002"
     meta_running = _make_meta(task_id, TaskStatus.RUNNING)
-    meta_cancelled = _make_meta(task_id, TaskStatus.CANCELLED)
+    meta_cancelled = _make_meta(
+        task_id,
+        TaskStatus.CANCELLED,
+        error="user_cancelled",
+    )
 
     call_count = {"get_task": 0}
 
@@ -163,6 +167,7 @@ async def test_stream_cancelled_task_emits_done_cancelled(mock_task_store):
         done_events = [e for e in parsed if e.get("event") == "done"]
         assert len(done_events) == 1
         assert done_events[0]["data"]["status"] == "cancelled"
+        assert done_events[0]["data"]["error"] == "user_cancelled"
 
 
 @pytest.mark.asyncio
@@ -196,6 +201,7 @@ async def test_stream_failed_task_emits_done_failed(mock_task_store):
         done_events = [e for e in parsed if e.get("event") == "done"]
         assert len(done_events) == 1
         assert done_events[0]["data"]["status"] == "failed"
+        assert done_events[0]["data"]["error"] == "LLM timeout"
 
 
 @pytest.mark.asyncio
@@ -282,7 +288,7 @@ async def test_stream_incremental_events(mock_task_store):
 
 
 @pytest.mark.asyncio
-async def test_stream_terminal_batch_emits_done_without_extra_block(mock_task_store):
+async def test_stream_terminal_batch_drains_once_before_done(mock_task_store):
     task_id = "stream-test-terminal-batch"
     meta_completed = _make_meta(task_id, TaskStatus.COMPLETED)
     events_batch = [_make_event("1-0", "final_output", {"markdown": "# Done"})]
@@ -310,11 +316,12 @@ async def test_stream_terminal_batch_emits_done_without_extra_block(mock_task_st
     event_types = [e.get("event") for e in parsed]
 
     assert event_types == ["final_output", "done"]
-    assert len(read_calls) == 1
+    assert len(read_calls) == 2
+    assert read_calls[-1]["block_ms"] is None
 
 
 @pytest.mark.asyncio
-async def test_stream_final_output_emits_done_even_before_status_side_effect(
+async def test_stream_final_output_waits_for_structured_terminal_status(
     mock_task_store,
 ):
     task_id = "stream-test-final-output-race"
@@ -354,4 +361,61 @@ async def test_stream_final_output_emits_done_even_before_status_side_effect(
 
     assert event_types == ["final_output", "done"]
     assert done_event["data"]["status"] == "completed"
-    assert len(read_calls) == 1
+    assert len(read_calls) == 3
+    assert read_calls[-1]["block_ms"] is None
+
+
+@pytest.mark.asyncio
+async def test_stream_drains_terminal_event_written_between_read_and_status(
+    mock_task_store,
+):
+    """事件先写、终态后写的并发窗口中，SSE 必须补读事件再发送 done。"""
+    task_id = "stream-test-terminal-race"
+    meta_running = _make_meta(task_id, TaskStatus.RUNNING)
+    meta_failed = _make_meta(
+        task_id,
+        TaskStatus.FAILED,
+        error="provider unavailable",
+    )
+    terminal_event = _make_event(
+        "1-0",
+        "error",
+        {"error": "provider unavailable"},
+    )
+    get_task_count = 0
+    read_count = 0
+
+    async def mock_get_task(_task_id):
+        nonlocal get_task_count
+        get_task_count += 1
+        return meta_running if get_task_count == 1 else meta_failed
+
+    async def mock_read_events(
+        _task_id,
+        last_event_id=None,
+        block_ms=5000,
+        count=100,
+    ):
+        nonlocal read_count
+        del last_event_id, block_ms, count
+        read_count += 1
+        return [] if read_count == 1 else [terminal_event]
+
+    with patch("routers.research.get_task_store", return_value=mock_task_store):
+        mock_task_store.get_task = AsyncMock(side_effect=mock_get_task)
+        mock_task_store.read_events = AsyncMock(side_effect=mock_read_events)
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            response = await client.get(f"/v1/research/{task_id}/stream")
+
+    parsed = _parse_sse_events(response.text)
+
+    assert [event["event"] for event in parsed] == ["error", "done"]
+    assert parsed[0]["data"]["error"] == "provider unavailable"
+    assert parsed[1]["data"] == {
+        "status": "failed",
+        "error": "provider unavailable",
+    }

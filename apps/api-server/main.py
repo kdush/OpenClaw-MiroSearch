@@ -11,7 +11,6 @@
 """
 
 import logging
-import os
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -26,11 +25,16 @@ if str(_AGENT_ROOT) not in sys.path:
 
 load_dotenv()
 
-from middleware.rate_limit import check_rate_limit, cleanup_rate_limit_buckets
-from models import HealthResponse
-from routers import metrics, research
-from services.task_queue import close_task_queue, get_task_queue
-from services.task_store import close_task_store, get_task_store
+# 项目路径与 .env 必须在这些本地模块导入前初始化。
+from middleware.rate_limit import (  # noqa: E402
+    check_rate_limit,
+    cleanup_rate_limit_buckets,
+)
+from models import HealthResponse  # noqa: E402
+from routers import metrics, research  # noqa: E402
+from services.task_queue import close_task_queue, get_task_queue  # noqa: E402
+from services.task_store import close_task_store, get_task_store  # noqa: E402
+from settings import settings  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
@@ -76,7 +80,7 @@ async def _lifespan(app: FastAPI):
 app = FastAPI(
     title="MiroSearch API",
     description="OpenClaw-MiroSearch 标准 HTTP API，独立于 Gradio Demo",
-    version="0.2.0",
+    version=settings.api_version,
     docs_url="/docs",
     redoc_url="/redoc",
     dependencies=[Depends(check_rate_limit)],
@@ -95,6 +99,10 @@ async def health_check():
 if __name__ == "__main__":
     import uvicorn
 
-    host = os.getenv("API_HOST", "0.0.0.0")
-    port = int(os.getenv("API_PORT", "8090"))
-    uvicorn.run("main:app", host=host, port=port, reload=False, log_level="info")
+    uvicorn.run(
+        "main:app",
+        host=settings.api_host,
+        port=settings.api_port,
+        reload=False,
+        log_level="info",
+    )
