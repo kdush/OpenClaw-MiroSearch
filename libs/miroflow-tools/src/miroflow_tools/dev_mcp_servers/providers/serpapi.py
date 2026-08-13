@@ -7,16 +7,11 @@ import os
 from typing import Any, Dict, Optional
 
 import httpx
-from tenacity import (
-    retry,
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_exponential,
-)
 
 from ...mcp_servers.utils.key_pool import KeyPool
 from .base import SearchParams, SearchResult
 from .http_client import get_shared_client, is_banned_url
+from .key_rotation import request_with_rotation
 
 logger = logging.getLogger("miroflow")
 
@@ -65,14 +60,10 @@ class SerpAPIProvider:
         serpapi_hl = _SERPAPI_HL_MAP.get(normalized_hl, params.hl)
 
         start = max(params.page - 1, 0) * params.num
-        active_key = (
-            self._key_pool.current_key() if self._key_pool else self._api_key
-        )
 
         request_params: Dict[str, Any] = {
             "engine": "google",
             "q": params.query.strip(),
-            "api_key": active_key,
             "hl": serpapi_hl,
             "gl": params.gl,
             "num": params.num,
@@ -83,7 +74,19 @@ class SerpAPIProvider:
         if params.tbs:
             request_params["tbs"] = params.tbs
 
-        response = await self._make_request(request_params)
+        async def _send(active_key: str) -> httpx.Response:
+            client = await get_shared_client()
+            return await client.get(
+                "https://serpapi.com/search.json",
+                params={**request_params, "api_key": active_key},
+            )
+
+        response = await request_with_rotation(
+            send=_send,
+            key_pool=self._key_pool,
+            fallback_key=self._api_key,
+            provider_name="serpapi",
+        )
         data = response.json()
 
         results: list[SearchResult] = []
@@ -110,20 +113,3 @@ class SerpAPIProvider:
             "provider": "serpapi",
         }
         return results, search_meta
-
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=8),
-        retry=retry_if_exception_type(
-            (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError)
-        ),
-    )
-    async def _make_request(self, params: Dict[str, Any]) -> httpx.Response:
-        """向 SerpAPI 发送请求，带重试。"""
-        client = await get_shared_client()
-        response = await client.get(
-            "https://serpapi.com/search.json",
-            params=params,
-        )
-        response.raise_for_status()
-        return response

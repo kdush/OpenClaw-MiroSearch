@@ -43,6 +43,7 @@ class ToolManagerProtocol(Protocol):
     async def execute_tool_call(
         self, *, server_name: str, tool_name: str, arguments: dict[str, Any]
     ) -> Any: ...
+    async def aclose(self) -> None: ...
 
 
 class ToolManager(ToolManagerProtocol):
@@ -68,6 +69,13 @@ class ToolManager(ToolManagerProtocol):
             "ToolManager | Initialization",
             f"ToolManager initialized, loaded servers: {list(self.server_dict.keys())}",
         )
+
+    async def aclose(self) -> None:
+        """幂等关闭当前 manager 持有的浏览器会话。"""
+        browser_session = self.browser_session
+        self.browser_session = None
+        if browser_session is not None:
+            await browser_session.close()
 
     def _log(self, level, step_name, message, metadata=None):
         """Helper method to log using task_log if available, otherwise skip logging."""

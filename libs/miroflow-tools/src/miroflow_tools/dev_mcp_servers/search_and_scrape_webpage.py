@@ -207,6 +207,7 @@ SEARCH_SEARXNG_ONLY_DOWNGRADE_ORDER = os.getenv(
     DEFAULT_SEARCH_SEARXNG_ONLY_DOWNGRADE_ORDER,
 ).strip()
 
+
 def _build_searxng_only_downgrade_providers(
     providers: list[str],
 ) -> tuple[list[str], bool, list[str]]:
@@ -475,7 +476,9 @@ async def google_search(
                 providers_with_results: set[str] = set()
                 provider_tasks = {
                     provider: asyncio.create_task(
-                        execute_provider_search(provider, search_query, result_num, result_page)
+                        execute_provider_search(
+                            provider, search_query, result_num, result_page
+                        )
                     )
                     for provider in providers
                 }
@@ -492,7 +495,11 @@ async def google_search(
                             f"{provider}: timeout>{SEARCH_PROVIDER_PARALLEL_MAX_WAIT_MS}ms"
                         )
                         route_trace.append(
-                            {"phase": "parallel", "provider": provider, "status": "timeout"}
+                            {
+                                "phase": "parallel",
+                                "provider": provider,
+                                "status": "timeout",
+                            }
                         )
                         continue
                     try:
@@ -511,7 +518,11 @@ async def google_search(
                         else:
                             provider_errors.append(f"{provider}: empty organic results")
                             route_trace.append(
-                                {"phase": "parallel", "provider": provider, "status": "empty"}
+                                {
+                                    "phase": "parallel",
+                                    "provider": provider,
+                                    "status": "empty",
+                                }
                             )
                     except Exception as exc:
                         provider_errors.append(_format_provider_error(provider, exc))
@@ -532,7 +543,9 @@ async def google_search(
                 merged_results = _merge_provider_results(
                     providers, provider_results_map, result_num
                 )
-                confidence = _evaluate_confidence(merged_results, providers_with_results)
+                confidence = _evaluate_confidence(
+                    merged_results, providers_with_results
+                )
                 parallel_min_success_passed = (
                     len(providers_with_results) >= SEARCH_PROVIDER_PARALLEL_MIN_SUCCESS
                 )
@@ -564,9 +577,7 @@ async def google_search(
                 if confidence_passed and parallel_min_success_passed:
                     return merged_results, search_params, provider_errors
 
-                trusted_order = _registry.resolve_order(
-                    SEARCH_PROVIDER_TRUSTED_ORDER
-                )
+                trusted_order = _registry.resolve_order(SEARCH_PROVIDER_TRUSTED_ORDER)
                 fallback_steps = 0
                 for provider in trusted_order:
                     if fallback_steps >= SEARCH_PROVIDER_FALLBACK_MAX_STEPS:
@@ -621,11 +632,12 @@ async def google_search(
                     confidence = _evaluate_confidence(
                         merged_results, providers_with_results
                     )
-                    confidence_passed = (not SEARCH_CONFIDENCE_ENABLED) or confidence.get(
-                        "passed", False
-                    )
+                    confidence_passed = (
+                        not SEARCH_CONFIDENCE_ENABLED
+                    ) or confidence.get("passed", False)
                     if confidence_passed and (
-                        len(providers_with_results) >= SEARCH_PROVIDER_PARALLEL_MIN_SUCCESS
+                        len(providers_with_results)
+                        >= SEARCH_PROVIDER_PARALLEL_MIN_SUCCESS
                     ):
                         break
 
@@ -818,9 +830,12 @@ async def make_sogou_request(query: str, cnt: int) -> Dict[str, Any]:
     clientProfile = ClientProfile()
     clientProfile.httpProfile = httpProfile
 
-    params = f'{{"Query":"{query}","Mode":0, "Cnt":{cnt}}}'
+    # 直接传结构化 dict（由 SDK 负责序列化），而非 f-string 手工拼 JSON——
+    # 后者在 query 含引号/反斜杠/换行时会破坏 JSON 结构或注入额外字段
+    # （中文精确搜索常带引号）
+    params = {"Query": query, "Mode": 0, "Cnt": cnt}
     common_client = CommonClient("wsa", "2025-05-08", cred, "", profile=clientProfile)
-    result = common_client.call_json("SearchPro", json.loads(params))["Response"]
+    result = common_client.call_json("SearchPro", params)["Response"]
     return result
 
 
@@ -1100,7 +1115,7 @@ def _extract_header_charset(content_type: str) -> Optional[str]:
     for part in content_type.split(";"):
         part = part.strip()
         if part.lower().startswith("charset="):
-            value = part[len("charset="):].strip().strip('"\'').strip()
+            value = part[len("charset=") :].strip().strip("\"'").strip()
             return value or None
     return None
 
@@ -1136,9 +1151,7 @@ def _extract_meta_charset(head_bytes: bytes) -> Optional[str]:
     return None
 
 
-def _decode_response_bytes(
-    content: bytes, header_content_type: str
-) -> Tuple[str, str]:
+def _decode_response_bytes(content: bytes, header_content_type: str) -> Tuple[str, str]:
     """按 header → meta → charset_normalizer → utf-8(replace) 顺序解码字节体。
 
     返回 (text, encoding_used)。encoding_used 落在 metrics / 调试字段里，便于
@@ -1402,12 +1415,8 @@ def _build_xml_payload(decoded_text: str) -> Dict[str, Any]:
                 {
                     "title": _node_text(_find_child(entry, "title")),
                     "link": _find_atom_link(entry),
-                    "published": _node_text(
-                        _find_child(entry, "published", "updated")
-                    ),
-                    "summary": _node_text(
-                        _find_child(entry, "summary", "content")
-                    ),
+                    "published": _node_text(_find_child(entry, "published", "updated")),
+                    "summary": _node_text(_find_child(entry, "summary", "content")),
                 }
             )
         return {
@@ -1419,7 +1428,9 @@ def _build_xml_payload(decoded_text: str) -> Dict[str, Any]:
     return {
         "content_kind": "xml",
         "xml_root": root_name,
-        "content": _normalize_extracted_text("\n".join(part for part in root.itertext())),
+        "content": _normalize_extracted_text(
+            "\n".join(part for part in root.itertext())
+        ),
     }
 
 
@@ -1536,6 +1547,7 @@ def _extract_with_trafilatura(html: str) -> str:
 # 手动重定向（T2）
 # ---------------------------------------------------------------------------
 
+
 class _RedirectBlocked(Exception):
     """重定向链被 SSRF / 非 http(s) / 跳数上限阻断时抛出。"""
 
@@ -1631,7 +1643,14 @@ def _extract_main_text(html: str) -> tuple[str, str]:
     _replace_tables_with_markdown(soup)
 
     candidates = []
-    for selector in ("article", "main", "[role=main]", "#content", ".article", ".content"):
+    for selector in (
+        "article",
+        "main",
+        "[role=main]",
+        "#content",
+        ".article",
+        ".content",
+    ):
         for node in soup.select(selector):
             text = node.get_text(separator="\n", strip=True)
             if text and len(text) > 200:
@@ -1741,9 +1760,12 @@ async def scrape_url(url: str, max_chars: int = DEFAULT_SCRAPE_MAX_CHARS) -> str
         content_kind = _detect_content_kind(content_type)
 
         if content_type and not any(
-            content_type.startswith(prefix) for prefix in ALLOWED_SCRAPE_CONTENT_PREFIXES
+            content_type.startswith(prefix)
+            for prefix in ALLOWED_SCRAPE_CONTENT_PREFIXES
         ):
-            metrics["t_request_ms"] = int((time.perf_counter() - request_started) * 1000)
+            metrics["t_request_ms"] = int(
+                (time.perf_counter() - request_started) * 1000
+            )
             payload: Dict[str, Any] = {
                 "success": False,
                 "error": f"unsupported content_type {content_type!r}; only HTML/text/PDF/JSON/XML are extracted",
@@ -1760,7 +1782,9 @@ async def scrape_url(url: str, max_chars: int = DEFAULT_SCRAPE_MAX_CHARS) -> str
             return json.dumps(payload, ensure_ascii=False)
 
         if response.status_code >= 400:
-            metrics["t_request_ms"] = int((time.perf_counter() - request_started) * 1000)
+            metrics["t_request_ms"] = int(
+                (time.perf_counter() - request_started) * 1000
+            )
             payload = {
                 "success": False,
                 "error": f"http_status={response.status_code}",
@@ -1859,7 +1883,9 @@ async def scrape_url(url: str, max_chars: int = DEFAULT_SCRAPE_MAX_CHARS) -> str
         if content_kind == "pdf":
             extract_started = time.perf_counter()
             structured_payload = _build_pdf_payload(response_content)
-            metrics["t_extract_ms"] = int((time.perf_counter() - extract_started) * 1000)
+            metrics["t_extract_ms"] = int(
+                (time.perf_counter() - extract_started) * 1000
+            )
             text_content = structured_payload.pop("content", "")
             encoding_used = "binary/pdf"
         else:
@@ -1882,7 +1908,9 @@ async def scrape_url(url: str, max_chars: int = DEFAULT_SCRAPE_MAX_CHARS) -> str
                 content_kind = structured_payload.get("content_kind", content_kind)
                 title = structured_payload.get("feed_title", "")
                 text_content = structured_payload.pop("content", "")
-            metrics["t_extract_ms"] = int((time.perf_counter() - extract_started) * 1000)
+            metrics["t_extract_ms"] = int(
+                (time.perf_counter() - extract_started) * 1000
+            )
     except Exception as exc:
         payload = {
             "success": False,

@@ -15,16 +15,11 @@ import os
 from typing import Any, Dict, Optional
 
 import httpx
-from tenacity import (
-    retry,
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_exponential,
-)
 
 from ...mcp_servers.utils.key_pool import KeyPool
 from .base import SearchParams, SearchResult
 from .http_client import get_shared_client, is_banned_url
+from .key_rotation import request_with_rotation
 
 logger = logging.getLogger("miroflow")
 
@@ -50,9 +45,13 @@ class TavilyProvider:
             "TAVILY_API_URL", DEFAULT_TAVILY_ENDPOINT
         )
         self._search_depth = (
-            search_depth
-            or os.getenv("TAVILY_SEARCH_DEPTH", DEFAULT_TAVILY_SEARCH_DEPTH)
-        ).strip().lower()
+            (
+                search_depth
+                or os.getenv("TAVILY_SEARCH_DEPTH", DEFAULT_TAVILY_SEARCH_DEPTH)
+            )
+            .strip()
+            .lower()
+        )
         if self._search_depth not in {"basic", "advanced"}:
             self._search_depth = DEFAULT_TAVILY_SEARCH_DEPTH
 
@@ -77,15 +76,10 @@ class TavilyProvider:
         self, params: SearchParams
     ) -> tuple[list[SearchResult], dict[str, Any]]:
         """调用 Tavily API 执行搜索。"""
-        active_key = (
-            self._key_pool.current_key() if self._key_pool else self._api_key
-        )
-
         # 控制 max_results 上界，避免触发 Tavily 报错
         requested_num = max(1, min(int(params.num or 10), TAVILY_MAX_RESULTS_LIMIT))
 
         request_body: Dict[str, Any] = {
-            "api_key": active_key,
             "query": params.query.strip(),
             "max_results": requested_num,
             "search_depth": self._search_depth,
@@ -97,7 +91,18 @@ class TavilyProvider:
         if params.location:
             request_body["country"] = params.location
 
-        response = await self._make_request(request_body)
+        async def _send(active_key: str) -> httpx.Response:
+            client = await get_shared_client()
+            return await client.post(
+                self._endpoint, json={**request_body, "api_key": active_key}
+            )
+
+        response = await request_with_rotation(
+            send=_send,
+            key_pool=self._key_pool,
+            fallback_key=self._api_key,
+            provider_name="tavily",
+        )
         data = response.json()
 
         results: list[SearchResult] = []
@@ -135,17 +140,3 @@ class TavilyProvider:
         if answer:
             search_meta["answer"] = answer
         return results, search_meta
-
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=8),
-        retry=retry_if_exception_type(
-            (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError)
-        ),
-    )
-    async def _make_request(self, body: Dict[str, Any]) -> httpx.Response:
-        """向 Tavily 发送请求，带指数退避重试。"""
-        client = await get_shared_client()
-        response = await client.post(self._endpoint, json=body)
-        response.raise_for_status()
-        return response

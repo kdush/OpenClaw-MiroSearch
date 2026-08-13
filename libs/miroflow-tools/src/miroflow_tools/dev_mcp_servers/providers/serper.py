@@ -7,16 +7,11 @@ import os
 from typing import Any, Dict, Optional
 
 import httpx
-from tenacity import (
-    retry,
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_exponential,
-)
 
 from ...mcp_servers.utils.key_pool import KeyPool
 from .base import SearchParams, SearchResult
 from .http_client import get_shared_client, is_banned_url
+from .key_rotation import request_with_rotation
 
 logger = logging.getLogger("miroflow")
 
@@ -70,15 +65,23 @@ class SerperProvider:
         if params.autocorrect is not None:
             payload["autocorrect"] = params.autocorrect
 
-        active_key = (
-            self._key_pool.current_key() if self._key_pool else self._api_key
-        )
-        headers = {
-            "X-API-KEY": active_key,
-            "Content-Type": "application/json",
-        }
+        async def _send(active_key: str) -> httpx.Response:
+            client = await get_shared_client()
+            return await client.post(
+                f"{self._base_url}/search",
+                json=payload,
+                headers={
+                    "X-API-KEY": active_key,
+                    "Content-Type": "application/json",
+                },
+            )
 
-        response = await self._make_request(payload, headers)
+        response = await request_with_rotation(
+            send=_send,
+            key_pool=self._key_pool,
+            fallback_key=self._api_key,
+            provider_name="serper",
+        )
         data = response.json()
 
         results: list[SearchResult] = []
@@ -98,23 +101,3 @@ class SerperProvider:
         search_params = data.get("searchParameters", {})
         search_params["provider"] = "serper"
         return results, search_params
-
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=8),
-        retry=retry_if_exception_type(
-            (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError)
-        ),
-    )
-    async def _make_request(
-        self, payload: Dict[str, Any], headers: Dict[str, str]
-    ) -> httpx.Response:
-        """向 Serper API 发送请求，带重试。"""
-        client = await get_shared_client()
-        response = await client.post(
-            f"{self._base_url}/search",
-            json=payload,
-            headers=headers,
-        )
-        response.raise_for_status()
-        return response
