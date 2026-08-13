@@ -5,9 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## \[Unreleased\]
 
-## [0.2.10] - 2026-05-24
+## \[0.2.11\] - 2026-08-13
+
+### Changed
+
+- **统一 Pipeline 结果协议**：CLI、benchmark、Gradio 与 Worker 统一按映射字段读取任务结果，显式区分 `completed`、`failed` 与 `cancelled`，并贯通 `result_quality`
+- **统一 API 有效参数**：请求默认值只解析一次，缓存键、任务元数据、队列 payload 与 Worker override 使用同一组有效参数；研究模式硬预算优先于输出篇幅策略
+- **统一 LLM 分阶段路由**：OpenAI 与 Anthropic 共用 main、tool、thinking、fast、summary 阶段模型及 token 上限语义
+
+### Fixed
+
+- **总结证据与质量判定**：仅裁剪显式标记的工具结果，保留最终总结指令和最新证据；空总结不再伪装成功，缺少闭合 `\\boxed{}` 的可展示正文按格式降级返回
+- **Gradio 后端与调用方隔离**：`BACKEND_MODE=api` 的公开入口改走 API Server，缓存键纳入检索深度参数，取消操作按 `caller_id` 定向执行，避免跨调用方误取消
+- **任务资源隔离与清理**：本地任务不再复用有状态 ToolManager，成功、失败、取消及初始化异常路径统一执行幂等资源清理
+- **搜索 Key 轮转**：SerpAPI、Serper 与 Tavily 统一支持多 Key 轮转、429 冷却和有界重试，避免单 Key 限流拖垮整条检索链路
+- **安全默认值**：API 未配置 Token 时继续 fail-closed；测试、Compose 示例与部署文档显式选择开发绕过或生产 Token 模式
+
+### Compatibility
+
+- **Gradio 公共接口迁移**：HTTP `run_research_once` 的第 7 个数组项固定为 `caller_id`；旧 6 项调用需追加稳定调用方标识或空字符串
+- **取消接口收紧**：旧版 `stop_current` 空数组全局取消不再支持，调用方需传入与创建任务一致的 `caller_id`，或使用 FastAPI 的按 `task_id` 取消端点
+
+### Testing
+
+- **本地完整回归通过**：
+  - `apps/api-server`: `186 passed, 13 skipped`
+  - `apps/gradio-demo`: `108 passed`
+  - `apps/miroflow-agent`: `157 passed, 7 skipped`
+  - `libs/miroflow-tools`: `106 passed`
+- **静态检查通过**：本次变更涉及的 61 个 Python 文件通过 Ruff check 与 format check，`git diff --check` 通过
+
+## \[0.2.10\] - 2026-05-24
 
 ### Added
 
@@ -40,7 +70,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   - 目标文件 ruff check: passed
 - **远端部署验证通过**：`tower` 上 `app`、`api`、`worker`、`searxng`、`valkey` 均为 `healthy`；API `/health` 返回 `{"status":"ok","version":"0.1.0"}`，Gradio `/gradio_api/info` 包含 `/run_research_stream`，SearXNG `/healthz` 返回 `OK`
 
-## [0.2.9] - 2026-05-24
+## \[0.2.9\] - 2026-05-24
 
 ### Fixed
 
@@ -59,7 +89,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - 新增 `test_orchestrator_final_output.py`：`_emit_final_output` 正确发送 `markdown` 字段
 - 新增 `test_compose_config.py`：验证两份 compose 文件均包含 `BACKEND_MODE: api`
 
-## [0.2.8] - 2026-05-08
+## \[0.2.8\] - 2026-05-08
 
 ### Fixed
 
@@ -79,7 +109,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   - `call_openclaw_mirosearch.py` / 脚本测试文件 py_compile: passed
 - **远端旧容器验证通过**：已同步到 `tower:/root/openclaw-mirosearch` 并原地补丁 `openclaw-mirosearch-app-1`；Gradio `28080/gradio_api/info` 与 API `8090/health` 均返回 `200`，app 容器状态 `running healthy`
 
-## [0.2.7] - 2026-05-02
+## \[0.2.7\] - 2026-05-02
 
 ### Added
 
@@ -92,23 +122,23 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - **README 从 Gradio API 示例改为 FastAPI REST API 示例**：新增 `caller_id` 参数说明、任务取消方式、`/health` 健康检查、`/v1/research` 完整路径与 SSE 流式说明
 - **`SKILL.md` 改为核心约定格式**：强调 FastAPI 闭环为推荐方式，简化 v0.2.2 旧变更说明
 
-## [0.2.6] - 2026-05-02
+## \[0.2.6\] - 2026-05-02
 
 ### Fixed
 
 - **禁止 failure summary 和总结阶段传入 tool_definitions**：failure summary 阶段无需工具调用；总结阶段禁止工具调用，避免 OpenRouter 等网关因模型不支持 tool use 返回 404
 - **找不到 `\boxed{}` 时回退到完整答案文本**：兼容 qwen3.6 等不使用 `\boxed{}` 格式的模型，避免 `FORMAT_ERROR_MESSAGE` 触发不必要的重试或 "not converged" 警告
 
-## [0.2.5] - 2026-04-27
+## \[0.2.5\] - 2026-04-27
 
 > 本版本交付 [`docs/SCRAPING_ITERATION_PLAN.md`](./SCRAPING_ITERATION_PLAN.md) 的 T6 + T7 + T8：
 > `trafilatura` 主路径 + `bs4` fallback、HTML 表格转 markdown、按句子 / 段落边界智能截断。
 
 ### Added
 
-- **T6 [B1] `scrape_url` 引入 `trafilatura` 主路径**：HTML 正文抽取优先走 `trafilatura.extract(output_format="markdown", include_tables=True, include_comments=False, favor_recall=True)`，抽空或不可用时回退到现有 `bs4` 路径；新增 `SCRAPE_USE_TRAFILATURA` 开关可快速回滚
-- **T7 [B3] HTML 表格转 Markdown**：`bs4` fallback 路径将 `<table>` 转为 Markdown 表格，保留行列结构，避免统计表、法规附表在纯文本抽取中丢列
-- **T8 [B4] 句子 / 段落边界智能截断**：超长正文不再直接 `text[:cap_chars]` 硬切，优先回退到段落、换行、中文/英文句末标点边界；返回新增 `truncation` 元数据
+- **T6 \[B1\] `scrape_url` 引入 `trafilatura` 主路径**：HTML 正文抽取优先走 `trafilatura.extract(output_format="markdown", include_tables=True, include_comments=False, favor_recall=True)`，抽空或不可用时回退到现有 `bs4` 路径；新增 `SCRAPE_USE_TRAFILATURA` 开关可快速回滚
+- **T7 \[B3\] HTML 表格转 Markdown**：`bs4` fallback 路径将 `<table>` 转为 Markdown 表格，保留行列结构，避免统计表、法规附表在纯文本抽取中丢列
+- **T8 \[B4\] 句子 / 段落边界智能截断**：超长正文不再直接 `text[:cap_chars]` 硬切，优先回退到段落、换行、中文/英文句末标点边界；返回新增 `truncation` 元数据
 - **新增 3 条 `scrape_url` 单元测试**：覆盖 `trafilatura` 主路径参数、fallback 表格 Markdown 保真、软边界截断元数据
 
 ### Changed
@@ -125,12 +155,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   - `apps/miroflow-agent`: `39 passed, 7 skipped`
 - **本地 Docker 真实端到端验证通过**：使用 `COMPOSE_ENV_FILE=.env.compose.local-e2e` 重建 `app + api + worker` 后，真实任务 SSE `tool_call` 确认命中 `scrape_url`，并成功基于 `https://www.iana.org/about` 生成完整答案
 
-## [0.2.4] - 2026-04-27
+## \[0.2.4\] - 2026-04-27
 
 ### Added
 
-- **T3 [A1/A2] `scrape_url` 支持 PDF 抽取与响应体大小上限**：新增 `SCRAPE_MAX_BODY_BYTES`（默认 20MB）并改为流式读取响应体；`application/pdf` 现在可返回 `content_kind="pdf"`、`pages`、`bytes_read`、`text_quality`，使统计公报、监管 PDF 和公告附件可直接被抓取
-- **T5 [A3] `scrape_url` 支持 JSON / RSS / Atom / XML 结构化直通**：新增 `application/json`、`text/json`、`application/rss+xml`、`application/atom+xml`、`application/xml`、`text/xml` 白名单；返回 `json_type` / `json_keys`、`feed_title` / `entries`、`xml_root` 等结构化字段，便于 LLM 直接消费 API / Feed 数据
+- **T3 \[A1/A2\] `scrape_url` 支持 PDF 抽取与响应体大小上限**：新增 `SCRAPE_MAX_BODY_BYTES`（默认 20MB）并改为流式读取响应体；`application/pdf` 现在可返回 `content_kind="pdf"`、`pages`、`bytes_read`、`text_quality`，使统计公报、监管 PDF 和公告附件可直接被抓取
+- **T5 \[A3\] `scrape_url` 支持 JSON / RSS / Atom / XML 结构化直通**：新增 `application/json`、`text/json`、`application/rss+xml`、`application/atom+xml`、`application/xml`、`text/xml` 白名单；返回 `json_type` / `json_keys`、`feed_title` / `entries`、`xml_root` 等结构化字段，便于 LLM 直接消费 API / Feed 数据
 - **XML 声明编码识别**：在 header / meta / `charset_normalizer` 之外，新增 XML declaration 编码探测，减少 XML / Feed 抓取乱码
 - **显式依赖 `pdfminer-six`**：`libs/miroflow-tools` 及引用它的应用锁文件同步显式登记 `pdfminer-six`，避免未来依赖树变化造成 PDF 抽取运行时缺包
 - **新增 4 条 `scrape_url` 单元测试**：覆盖 PDF 正文抽取、超大响应体拒绝、JSON 结构化返回、RSS 结构化返回；同时将旧的 PDF content-type 拒绝用例更新为“坏 PDF 解析失败”语义
@@ -149,17 +179,17 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   - `apps/miroflow-agent`: `16 passed`
 - **本地 Docker 真实端到端验证通过**：在 `app + api + worker + searxng + valkey` 全部 `healthy` 条件下，使用 IANA 官方站点职责总结样例完成真实任务执行；最终状态 `completed`，`search_rounds=1`，最近一次任务总耗时约 `49.1s`，且 `timeout_count=0`、`rate_limit_429_count=0`
 
-## [0.2.3] - 2026-04-27
+## \[0.2.3\] - 2026-04-27
 
 ### Added
 
-- **T1 [C1] scrape_url 共享 `httpx.AsyncClient` + 分阶段耗时 metrics**：模块级 `_SCRAPE_CLIENT` 懒初始化，`atexit` 关闭；返回 JSON 新增 `metrics: {t_request_ms, t_parse_ms, t_extract_ms, redirect_hops}`，让 LLM 一轮研究中连续抓取多个 URL 时复用 TCP/TLS，大幅降低尾延迟
-- **T2 [D2/D3] 重定向手动循环 + 每跳 SSRF 校验 + 上限 5 跳**：默认 `follow_redirects=False`，自实现 30x 跟随；每一跳重新校验 scheme + `_is_private_or_loopback_host`，跳到内网 / 跳数超 `SCRAPE_MAX_REDIRECT_HOPS`（默认 5）立刻返回 `error="redirect_blocked: ..."`，并保留 `redirect_chain` 字段
-- **T4 [B2] 中文编码兜底（header → meta → charset_normalizer）**：bytes 路径解码，Content-Type charset → `<meta charset>` / `<meta http-equiv>` → `charset_normalizer.from_bytes(...).best()` → utf-8(replace) 四级回退；返回字段新增 `encoding`，专治 GBK / GB18030 政府站点中文乱码
+- **T1 \[C1\] scrape_url 共享 `httpx.AsyncClient` + 分阶段耗时 metrics**：模块级 `_SCRAPE_CLIENT` 懒初始化，`atexit` 关闭；返回 JSON 新增 `metrics: {t_request_ms, t_parse_ms, t_extract_ms, redirect_hops}`，让 LLM 一轮研究中连续抓取多个 URL 时复用 TCP/TLS，大幅降低尾延迟
+- **T2 \[D2/D3\] 重定向手动循环 + 每跳 SSRF 校验 + 上限 5 跳**：默认 `follow_redirects=False`，自实现 30x 跟随；每一跳重新校验 scheme + `_is_private_or_loopback_host`，跳到内网 / 跳数超 `SCRAPE_MAX_REDIRECT_HOPS`（默认 5）立刻返回 `error="redirect_blocked: ..."`，并保留 `redirect_chain` 字段
+- **T4 \[B2\] 中文编码兜底（header → meta → charset_normalizer）**：bytes 路径解码，Content-Type charset → `<meta charset>` / `<meta http-equiv>` → `charset_normalizer.from_bytes(...).best()` → utf-8(replace) 四级回退；返回字段新增 `encoding`，专治 GBK / GB18030 政府站点中文乱码
 - **代理/TUN fake-ip DNS 兼容开关**：新增 `SCRAPE_PROXY_FAKE_IP_CIDRS`，用于显式允许域名解析到受信任的 fake-ip 网段（如 `198.18.0.0/15`）；该开关只对域名解析结果生效，不允许 IP 字面量绕过 SSRF 拦截
 - 新增 11 条单元测试覆盖：metrics 字段 / redirect 链跟随 / redirect 私网拒绝 / 超 5 跳拒绝 / GBK header 解码 / meta charset 兜底 / charset_normalizer 兜底 / 共享 client 复用 / fake-ip DNS 默认拒绝 / fake-ip 显式允许 / IP 字面量仍拒绝
 
-## [0.2.2] - 2026-04-26
+## \[0.2.2\] - 2026-04-26
 
 ### Added
 
@@ -187,7 +217,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
     - `create_runtime_components` 在 `_temporary_env_vars` 上下文中创建组件，让检索 MCP 子进程从进程 env 继承到正确的 `SEARCH_PROVIDER_*` 配置
     - 新增 `asyncio.Lock` 串行化组件创建流程，避免 worker 多 task 并发覆盖进程级 env
 - **新增 55 条单元测试**：
-  - 47 条 `test_profile_resolver.py`：normalize_* / build_search_env / build_mode_overrides / build_full_overrides 全分支覆盖
+  - 47 条 `test_profile_resolver.py`：normalize\_\* / build_search_env / build_mode_overrides / build_full_overrides 全分支覆盖
   - 8 条 `test_pipeline_runtime_overrides.py`：验证 `RequestLike` 五字段被正确传递，base llm overrides 与 mode_overrides 顺序正确
 - **Worker cancel 链路鲁棒性修复**（apps/api-server/workers/research_worker.py）
   - `check_cancel` 协程加启动 INFO 日志（确认 watcher 被正确启动）；redis 单次读取异常仅打 warning 后继续轮询，不再静默退出导致 cancel 信号永远收不到
@@ -228,7 +258,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 - Gradio 5 中 `visible=False` 的组件不会进入 DOM，因此 `task_id_box` 必须 `visible=True` + CSS 移到屏幕外，才能被 JS 桥找到。已加入相关注释与 CSS 规则。
 
-## [0.2.1] - 2026-04-23
+## \[0.2.1\] - 2026-04-23
 
 ### Added
 
@@ -244,7 +274,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 - **Compose Worker 启动命令**：`compose.yaml` 中 `api-worker` 服务启动命令改为 `.venv/bin/python worker.py`，避免容器 `PATH` 未指向 uv 托管解释器时拉起错误的 Python，确保 arq Worker 稳定启动
 
-## [0.2.0] - 2026-04-20
+## \[0.2.0\] - 2026-04-20
 
 ### Added
 
@@ -280,7 +310,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - 删除过期文档：GOVERNANCE / RELEASE / QA / SUPPORT / LOCAL-TOOL-DEPLOYMENT / AI_AGENT_INTEGRATION
 - 删除已完成计划文档
 
-## [0.1.14] - 2026-04-05
+## \[0.1.14\] - 2026-04-05
 
 ### Changed
 
@@ -300,7 +330,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   - 限流中间件 429 响应隐藏内部配置（`RATE_LIMIT_RPM`），导出 `cleanup_rate_limit_buckets` 供定期清理
 - Dockerfile（gradio-demo / api-server）CMD 添加 `--frozen`，修复容器无外网时 `uv run` 尝试下载依赖导致启动失败
 
-## [0.1.13] - 2026-04-05
+## \[0.1.13\] - 2026-04-05
 
 ### Added
 
@@ -311,7 +341,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - 6 条限流中间件回归测试（配额内通过、超额 429、bypass 路径、禁用模式、独立 key 计数）
 - `.env.example` 补充限流和缓存配置说明
 
-## [0.1.12] - 2026-04-05
+## \[0.1.12\] - 2026-04-05
 
 ### Added
 
@@ -321,7 +351,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - 缓存配置通过环境变量 `RESULT_CACHE_MAX_SIZE`（默认 128）和 `RESULT_CACHE_TTL_SECONDS`（默认 3600）控制
 - 11 条 ResultCache 回归测试（LRU 淘汰、TTL 过期、key 确定性、invalidate、clear）
 
-## [0.1.11] - 2026-04-05
+## \[0.1.11\] - 2026-04-05
 
 ### Added
 
@@ -336,7 +366,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - 9 条 api-server 回归测试（健康检查、认证、参数校验、404 路径）
 - GitHub Actions `run-tests.yml` 新增 api-server job
 
-## [0.1.10] - 2026-04-05
+## \[0.1.10\] - 2026-04-05
 
 ### Added
 
@@ -354,7 +384,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 - `.env.example`（gradio-demo）及 `.env.compose.example` 新增 `MODEL_FALLBACK_NAME` 配置说明
 
-## [0.1.9] - 2026-03-21
+## \[0.1.9\] - 2026-03-21
 
 ### Added
 
@@ -372,7 +402,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - 调用脚本 `call_openclaw_mirosearch.py` 新增 `--caller-id` 参数
 - Skill 包 `openclaw-mirosearch.zip` 重新打包
 
-## [0.1.8] - 2026-03-20
+## \[0.1.8\] - 2026-03-20
 
 ### Fixed
 
@@ -387,7 +417,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - 总结提示词基础版本（`prompt_patch.py`）移除简洁优先倾向，改为"全量保留优于简洁"原则
 - 扩写提示词强化：要求逐轮检查信息覆盖，最终报告须比任何单轮检索输出更长更完整
 
-## [0.1.7] - 2025-03-20
+## \[0.1.7\] - 2025-03-20
 
 ### Added
 
@@ -406,7 +436,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - 修复受限网络场景下 SearXNG 默认引擎集合导致的大面积超时问题（通过可达引擎集避免全量超时）
 - 修复自定义 SearXNG 配置缺失 `server.secret_key` 导致的容器重启循环问题
 
-## [0.1.6] - 2025-03-20
+## \[0.1.6\] - 2025-03-20
 
 ### Added
 
@@ -433,7 +463,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 - 删除冗余的根目录 `README_en.md`（内容已合并至 `README.md`）
 
-## [0.1.5] - 2025-03-20
+## \[0.1.5\] - 2025-03-20
 
 ### Added
 
@@ -447,7 +477,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - 统一整理文档入口，默认面向英文读者，中文文档作为单独切换页
 - 技能调用说明从安装文档中剥离，降低安装与使用混淆
 
-## [0.1.4] - 2025-03-20
+## \[0.1.4\] - 2025-03-20
 
 ### Added
 
@@ -476,7 +506,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 - Demo 技能包下载入口增加 URL/路径安全约束，限制协议与越权路径访问风险
 
-## [0.1.2] - 2025-03-19
+## \[0.1.2\] - 2025-03-19
 
 ### Changed
 
@@ -490,7 +520,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - 减少 `verified` 多轮检索时中间稿重复暴露导致的多段报告体验问题
 - 修正文档中的 `stop_current` 路径为 `/gradio_api/call/stop_current`
 
-## [0.1.1] - 2025-03-19
+## \[0.1.1\] - 2025-03-19
 
 ### Added
 
@@ -503,7 +533,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - 主流程与总结/校验模型路由优化，增强高级模型在关键判断环节的介入
 - 新增模型路由观测日志（`requested`/`responded`）用于核验真实命中模型
 
-## [0.1.0] - 2025-03-18
+## \[0.1.0\] - 2025-03-18
 
 ### Added
 
