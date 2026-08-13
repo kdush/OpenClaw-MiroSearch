@@ -239,11 +239,11 @@ class Orchestrator:
                 )
             ),
         )
-        raw_domains = verification_cfg.get("high_conf_domains", DEFAULT_HIGH_CONF_DOMAINS)
+        raw_domains = verification_cfg.get(
+            "high_conf_domains", DEFAULT_HIGH_CONF_DOMAINS
+        )
         self.verification_high_conf_domains = {
-            str(domain).strip().lower()
-            for domain in raw_domains
-            if str(domain).strip()
+            str(domain).strip().lower() for domain in raw_domains if str(domain).strip()
         }
         self.verification_search_rounds = 0
         self.verification_guidance_attempts = 0
@@ -310,8 +310,45 @@ class Orchestrator:
             # 心跳是辅助信息，不能影响主流程
             pass
 
-    async def _emit_final_output(self, markdown: str) -> None:
+    async def _emit_final_output(
+        self,
+        markdown: str,
+        result_quality: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """仅在存在可用答案时发送 final_output 终态事件。"""
+        answer_available = (
+            bool(result_quality.get("answer_available", False))
+            if result_quality is not None
+            else bool(str(markdown or "").strip())
+        )
+        if not answer_available or not str(markdown or "").strip():
+            return False
         await self.stream.update("final_output", {"markdown": markdown})
+        return True
+
+    def _log_final_outcome(
+        self,
+        task_id: str,
+        result_quality: Dict[str, Any],
+    ) -> None:
+        """根据答案可用性记录真实终态，避免失败路径伪报完成。"""
+        if result_quality.get("answer_available", False):
+            self.task_log.log_step(
+                "info",
+                "Main Agent | Task Completed",
+                f"Main agent task {task_id} completed successfully",
+            )
+            return
+
+        issues = result_quality.get("issues", [])
+        self.task_log.log_step(
+            "error",
+            "Main Agent | Final Answer Unavailable",
+            (
+                f"Main agent task {task_id} ended without a usable final answer; "
+                f"issues={issues}"
+            ),
+        )
 
     @staticmethod
     def _normalize_domain(url: str) -> str:
@@ -397,17 +434,24 @@ class Orchestrator:
         )
 
     def _mark_verification_guidance_issued(self) -> None:
-        self.verification_guidance_anchor_search_rounds = self.verification_search_rounds
+        self.verification_guidance_anchor_search_rounds = (
+            self.verification_search_rounds
+        )
         self.verification_guidance_anchor_high_conf_sources = len(
             self.verification_high_conf_source_domains
         )
 
-    def _should_issue_verification_guidance(self, turn_count: int, max_turns: int) -> bool:
+    def _should_issue_verification_guidance(
+        self, turn_count: int, max_turns: int
+    ) -> bool:
         if not self.verification_enabled:
             return False
         if self._verification_requirements_met():
             return False
-        if self.verification_guidance_attempts >= self.verification_max_guidance_attempts:
+        if (
+            self.verification_guidance_attempts
+            >= self.verification_max_guidance_attempts
+        ):
             return False
         if turn_count >= max_turns:
             return False
@@ -454,7 +498,7 @@ class Orchestrator:
         recommended_domains = ", ".join(sorted(self.verification_high_conf_domains)[:8])
         return (
             "继续执行联网核验，不要现在下结论。\n"
-            f"当前任务：\"{task_description}\"\n"
+            f'当前任务："{task_description}"\n'
             f"尚缺检索轮次：{missing_rounds}，尚缺高置信来源：{missing_sources}。\n"
             "请执行下一轮检索并做口径统一，至少覆盖：\n"
             "1) 时间范围（明确起止范围与截至绝对日期）；\n"
@@ -736,11 +780,9 @@ class Orchestrator:
 
             self.task_log.save()
 
-            # Reset 'last_call_tokens'
-            self.llm_client.last_call_tokens = {
-                "prompt_tokens": 0,
-                "completion_tokens": 0,
-            }
+            # Reset 'last_call_tokens' using provider-correct key names
+            # (Anthropic uses input/output, OpenAI uses prompt/completion).
+            self.llm_client.reset_last_call_tokens()
 
             # LLM call using answer generator
             (
@@ -778,7 +820,9 @@ class Orchestrator:
                 if assistant_response_text:
                     text_response = extract_llm_response_text(assistant_response_text)
                     if text_response:
-                        await self.stream.tool_call("show_text", {"text": text_response})
+                        await self.stream.tool_call(
+                            "show_text", {"text": text_response}
+                        )
             else:
                 consecutive_llm_failures += 1
                 self.task_log.log_step(
@@ -1038,8 +1082,6 @@ class Orchestrator:
             agent_type=sub_agent_name,
         )
 
-        if message_history[-1]["role"] == "user":
-            message_history.pop()
         message_history.append({"role": "user", "content": summary_prompt})
 
         await self.stream.tool_call(
@@ -1055,10 +1097,10 @@ class Orchestrator:
         ) = await self.answer_generator.handle_llm_call(
             system_prompt,
             message_history,
-            tool_definitions,
+            [],
             turn_count + 1,
             f"{sub_agent_name} | Final summary",
-            agent_type=sub_agent_name,
+            agent_type="final_summary",
         )
 
         if final_answer_text:
@@ -1111,7 +1153,8 @@ class Orchestrator:
             task_id: Unique identifier for the task
 
         Returns:
-            Tuple of (final_summary, final_boxed_answer, failure_experience_summary)
+            Tuple of (final_summary, final_boxed_answer,
+            failure_experience_summary, result_quality)
         """
         workflow_id = await self.stream.start_workflow(task_description)
 
@@ -1227,7 +1270,9 @@ class Orchestrator:
                 if assistant_response_text:
                     text_response = extract_llm_response_text(assistant_response_text)
                     if text_response:
-                        await self.stream.tool_call("show_text", {"text": text_response})
+                        await self.stream.tool_call(
+                            "show_text", {"text": text_response}
+                        )
 
                 # Extract boxed content
                 if assistant_response_text:
@@ -1646,6 +1691,7 @@ class Orchestrator:
             failure_experience_summary,
             usage_log,
             message_history,
+            result_quality,
         ) = await self.answer_generator.generate_and_finalize_answer(
             system_prompt=system_prompt,
             message_history=message_history,
@@ -1657,8 +1703,12 @@ class Orchestrator:
             save_callback=self._save_message_history,
         )
 
-        await self._emit_final_output(final_summary)
-        await self.stream.tool_call("show_text", {"text": final_boxed_answer})
+        final_output_emitted = await self._emit_final_output(
+            final_summary,
+            result_quality,
+        )
+        if final_output_emitted:
+            await self.stream.tool_call("show_text", {"text": final_boxed_answer})
         await self.stream.end_llm("Final Summary")
         await self.stream.end_agent("Final Summary", self.current_agent_id)
         await self.stream.end_workflow(workflow_id)
@@ -1673,10 +1723,11 @@ class Orchestrator:
             f"Final boxed answer:\n\n{final_boxed_answer}",
         )
 
-        self.task_log.log_step(
-            "info",
-            "Main Agent | Task Completed",
-            f"Main agent task {task_id} completed successfully",
-        )
+        self._log_final_outcome(task_id, result_quality)
         gc.collect()
-        return final_summary, final_boxed_answer, failure_experience_summary
+        return (
+            final_summary,
+            final_boxed_answer,
+            failure_experience_summary,
+            result_quality,
+        )

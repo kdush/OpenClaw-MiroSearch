@@ -15,6 +15,48 @@ TOOL_RESULT_MAX_LENGTH = 100_000
 class OutputFormatter:
     """Formatter for processing and formatting agent outputs."""
 
+    _INVALID_ANSWER_PLACEHOLDERS = frozenset(
+        {
+            "?",
+            "??",
+            "???",
+            "？",
+            "……",
+            "…",
+            "...",
+            "unknown",
+            FORMAT_ERROR_MESSAGE.lower(),
+        }
+    )
+
+    @classmethod
+    def clean_final_answer_text(cls, text: str) -> str:
+        """移除闭合或未闭合的内部推理块，只保留可向用户展示的正文。"""
+        return re.sub(
+            r"<think>.*?(?:</think>|$)",
+            "",
+            str(text or ""),
+            flags=re.DOTALL,
+        ).strip()
+
+    @classmethod
+    def _is_invalid_answer_placeholder(cls, text: str) -> bool:
+        """判断文本是否只是模型或本项目使用的无答案占位符。"""
+        return str(text or "").strip().lower() in cls._INVALID_ANSWER_PLACEHOLDERS
+
+    @classmethod
+    def _clean_fallback_text(cls, text: str) -> str:
+        """清理格式噪声，同时保留未闭合 boxed 中可能存在的正文。"""
+        if cls._is_invalid_answer_placeholder(text):
+            return ""
+        cleaned = cls.clean_final_answer_text(text)
+        cleaned = re.sub(r"\\boxed\{[^}]*\}", "", cleaned).strip()
+        # 未闭合 ``\boxed{`` 不能单独构成答案；仅移除标记，保留其后的正文。
+        cleaned = re.sub(r"\\boxed\b\s*\{?", "", cleaned).strip()
+        if cls._is_invalid_answer_placeholder(cleaned):
+            return ""
+        return cleaned
+
     def _extract_boxed_content(self, text: str) -> str:
         r"""
         Extract the content of the last \boxed{...} occurrence in the given text.
@@ -24,7 +66,9 @@ class OutputFormatter:
           - Escaped braces (\{ and \})
           - Whitespace between \boxed and the opening brace
           - Empty content inside braces
-          - Incomplete boxed expressions (extracts to end of string as fallback)
+
+        只有完整闭合的 ``\boxed{...}`` 才会被提取。未闭合表达式属于普通正文，
+        由上层质量逻辑按回退文本处理，不能冒充有效结构化答案。
 
         Args:
             text: Input text that may contain \boxed{...} expressions
@@ -37,7 +81,7 @@ class OutputFormatter:
 
         _BOXED_RE = re.compile(r"\\boxed\b", re.DOTALL)
 
-        last_result = None  # Track the last boxed content (complete or incomplete)
+        last_result = None  # 仅记录最后一个完整闭合的 boxed 内容
         i = 0
         n = len(text)
 
@@ -80,17 +124,16 @@ class OutputFormatter:
                         break
                 k += 1
 
-            # If we didn't find a closing brace, this is an incomplete boxed
-            # Store it as the last result (will be overwritten if we find more boxed later)
+            # 未闭合的 boxed 不具备结构有效性，忽略并结束扫描。
             if not found_closing and depth > 0:
-                last_result = text[j + 1 : n]
                 i = k  # Continue from where we stopped
             elif not found_closing:
                 i = j + 1  # Move past this invalid boxed
 
-        # Return the last boxed content found (complete or incomplete)
-        black_list = ["?", "??", "???", "？", "……", "…", "...", "unknown", None]
-        return last_result.strip() if last_result not in black_list else ""
+        # boxed 与正文回退使用同一套占位符判定，避免大小写口径漂移。
+        if last_result is None or self._is_invalid_answer_placeholder(last_result):
+            return ""
+        return last_result.strip()
 
     def format_tool_result_for_user(self, tool_call_execution_result: dict) -> dict:
         """
@@ -136,28 +179,26 @@ class OutputFormatter:
         Returns:
             Tuple of (summary_text, boxed_result, usage_log)
         """
+        display_text = self.clean_final_answer_text(final_answer_text)
         summary_lines = []
         summary_lines.append("\n" + "=" * 30 + " Final Answer " + "=" * 30)
-        summary_lines.append(final_answer_text)
+        summary_lines.append(display_text)
 
         # Extract boxed result - find the last match using safer regex patterns
-        boxed_result = self._extract_boxed_content(final_answer_text)
+        boxed_result = self._extract_boxed_content(display_text)
 
         # Add extracted result section
         summary_lines.append("\n" + "-" * 20 + " Extracted Result " + "-" * 20)
 
         if boxed_result:
             summary_lines.append(boxed_result)
-        elif final_answer_text:
+        elif display_text:
             # No \boxed{} found but model did produce content.
             # Fall back to a cleaned version of the full answer text instead of
             # FORMAT_ERROR_MESSAGE, so models that don't use \boxed{} format
             # (e.g. qwen3.6) can still produce valid results without triggering
             # unnecessary retries or "not converged" warnings.
-            cleaned = re.sub(
-                r"<think>.*?</think>", "", final_answer_text, flags=re.DOTALL
-            ).strip()
-            cleaned = re.sub(r"\\boxed\{[^}]*\}", "", cleaned).strip()
+            cleaned = self._clean_fallback_text(display_text)
             if cleaned:
                 boxed_result = cleaned
                 summary_lines.append(cleaned)
@@ -182,9 +223,7 @@ class OutputFormatter:
 
         return "\n".join(summary_lines), boxed_result, log_string
 
-    def format_final_summary_payload(
-        self, final_answer_text: str, client=None
-    ) -> dict:
+    def format_final_summary_payload(self, final_answer_text: str, client=None) -> dict:
         """格式化最终摘要并返回结构化质量信息。
 
         与 format_final_summary_and_log() 的区别：返回值包含 quality 字典，
@@ -198,28 +237,25 @@ class OutputFormatter:
             dict with keys: summary, boxed_answer, usage_log, quality
             quality: {"format_valid": bool, "fallback_used": bool, "issues": list}
         """
+        display_text = self.clean_final_answer_text(final_answer_text)
+
         # 复用现有格式化逻辑生成 summary 文本和 usage_log
-        _, _, usage_log = self.format_final_summary_and_log(
-            final_answer_text, client
-        )
+        _, _, usage_log = self.format_final_summary_and_log(display_text, client)
 
         # 构建 summary（含 boxed 提取结果的完整文本）
         summary_lines = []
         summary_lines.append("\n" + "=" * 30 + " Final Answer " + "=" * 30)
-        summary_lines.append(final_answer_text)
+        summary_lines.append(display_text)
         summary_lines.append("\n" + "-" * 20 + " Extracted Result " + "-" * 20)
 
-        boxed_result = self._extract_boxed_content(final_answer_text)
+        boxed_result = self._extract_boxed_content(display_text)
         quality = {"format_valid": False, "fallback_used": False, "issues": []}
 
         if boxed_result:
             summary_lines.append(boxed_result)
             quality["format_valid"] = True
-        elif final_answer_text:
-            cleaned = re.sub(
-                r"<think>.*?</think>", "", final_answer_text, flags=re.DOTALL
-            ).strip()
-            cleaned = re.sub(r"\\boxed\{[^}]*\}", "", cleaned).strip()
+        elif display_text:
+            cleaned = self._clean_fallback_text(display_text)
             if cleaned:
                 boxed_result = cleaned
                 summary_lines.append(cleaned)
@@ -235,6 +271,9 @@ class OutputFormatter:
         else:
             summary_lines.append("No \\boxed{} content found.")
             boxed_result = FORMAT_ERROR_MESSAGE
+
+        if not quality["format_valid"] and not quality["fallback_used"]:
+            quality["issues"].append("no_answer_available")
 
         # Token usage statistics
         if client and hasattr(client, "format_token_usage_summary"):

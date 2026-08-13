@@ -20,15 +20,31 @@ import logging
 import os
 import re
 import time
-from typing import Any, Dict, List, Tuple, Union
+from typing import Any, Dict, List, Mapping, Optional, Tuple, Union
 
 import tiktoken
-from openai import AsyncOpenAI, DefaultAsyncHttpxClient, DefaultHttpxClient, OpenAI, RateLimitError
+from openai import (
+    AsyncOpenAI,
+    DefaultAsyncHttpxClient,
+    DefaultHttpxClient,
+    OpenAI,
+    RateLimitError,
+)
 
 from miroflow_tools.mcp_servers.utils.key_pool import KeyPool
 
-from ...utils.prompt_utils import generate_mcp_system_prompt, generate_no_mcp_system_prompt
-from ..base_client import BaseClient
+from ...utils.prompt_utils import (
+    generate_mcp_system_prompt,
+    generate_no_mcp_system_prompt,
+)
+from ..base_client import (
+    FAST_AGENT_TYPES,
+    INTERNAL_MESSAGE_TYPE_KEY,
+    SUMMARY_AGENT_TYPES,
+    TOOL_RESULT_MESSAGE_TYPE,
+    VERIFICATION_AGENT_TYPES,
+    BaseClient,
+)
 
 logger = logging.getLogger("miroflow_agent")
 
@@ -37,31 +53,12 @@ DEFAULT_OPENAI_RETRY_WAIT_SECONDS = 6.0
 DEFAULT_OPENAI_HTTP_TIMEOUT_SECONDS = 90.0
 DEFAULT_OPENAI_SDK_MAX_RETRIES = 0
 DEFAULT_TOOL_RESULT_MAX_CHARS = 4000
-DEFAULT_SUMMARY_MAX_TOKENS = 3072
-DEFAULT_VERIFICATION_MAX_TOKENS = 2048
-SUMMARY_AGENT_TYPES = {"final_summary", "failure_summary"}
-VERIFICATION_AGENT_TYPES = {"verification"}
-FAST_AGENT_TYPES = {"failure_summary"}
 
 
 @dataclasses.dataclass
 class OpenAIClient(BaseClient):
     def __post_init__(self):
         super().__post_init__()
-        self.model_tool_name = self.cfg.llm.get(
-            "model_tool_name", os.getenv("MODEL_TOOL_NAME", self.model_name)
-        )
-        self.model_fast_name = self.cfg.llm.get(
-            "model_fast_name", os.getenv("MODEL_FAST_NAME", self.model_name)
-        )
-        self.model_thinking_name = self.cfg.llm.get(
-            "model_thinking_name",
-            os.getenv("MODEL_THINKING_NAME", self.model_fast_name),
-        )
-        self.model_summary_name = self.cfg.llm.get(
-            "model_summary_name",
-            os.getenv("MODEL_SUMMARY_NAME", self.model_fast_name),
-        )
         # 模型 failback：主模型连续失败后自动切换的备用模型
         self.model_fallback_name = self.cfg.llm.get(
             "model_fallback_name",
@@ -90,25 +87,11 @@ class OpenAIClient(BaseClient):
                 "LLM_TOOL_RESULT_MAX_CHARS", DEFAULT_TOOL_RESULT_MAX_CHARS
             )
         )
-        cfg_summary_max_tokens = self.cfg.llm.get("summary_max_tokens")
-        self.summary_max_tokens = (
-            int(cfg_summary_max_tokens)
-            if cfg_summary_max_tokens is not None
-            else self._read_env_int(
-                "LLM_SUMMARY_MAX_TOKENS", DEFAULT_SUMMARY_MAX_TOKENS
-            )
-        )
-        cfg_verification_max_tokens = self.cfg.llm.get("verification_max_tokens")
-        self.verification_max_tokens = (
-            int(cfg_verification_max_tokens)
-            if cfg_verification_max_tokens is not None
-            else self._read_env_int(
-                "LLM_VERIFICATION_MAX_TOKENS", DEFAULT_VERIFICATION_MAX_TOKENS
-            )
-        )
         # Key 池轮转：优先从 OPENAI_API_KEYS 读取多 Key，回退到单 Key
         try:
-            self._key_pool = KeyPool.from_env("OPENAI_API_KEYS", fallback_key=self.api_key)
+            self._key_pool = KeyPool.from_env(
+                "OPENAI_API_KEYS", fallback_key=self.api_key
+            )
         except ValueError:
             # 兜底：用 cfg 中的单 key 构建池
             self._key_pool = KeyPool([self.api_key or "EMPTY"])
@@ -159,17 +142,6 @@ class OpenAIClient(BaseClient):
         )
         return True
 
-    def _resolve_model_name(self, tools_definitions, agent_type: str) -> str:
-        if agent_type in VERIFICATION_AGENT_TYPES:
-            return self.model_thinking_name
-        if agent_type in FAST_AGENT_TYPES:
-            return self.model_fast_name
-        if agent_type in SUMMARY_AGENT_TYPES:
-            return self.model_summary_name
-        if tools_definitions:
-            return self.model_tool_name
-        return self.model_thinking_name
-
     def _sanitize_tool_result_text(self, text: str) -> str:
         normalized_text = re.sub(r"<[^>]+>", " ", text)
         normalized_text = re.sub(r"\s+", " ", normalized_text).strip()
@@ -187,7 +159,9 @@ class OpenAIClient(BaseClient):
             parts = []
             for item in value:
                 if isinstance(item, dict):
-                    text = item.get("text") or item.get("content") or item.get("summary")
+                    text = (
+                        item.get("text") or item.get("content") or item.get("summary")
+                    )
                     if text:
                         parts.append(str(text))
                 elif item:
@@ -197,7 +171,9 @@ class OpenAIClient(BaseClient):
 
     @classmethod
     def _extract_message_text(cls, message: Any) -> str:
-        content = cls._stringify_message_field(getattr(message, "content", None)).strip()
+        content = cls._stringify_message_field(
+            getattr(message, "content", None)
+        ).strip()
         if content:
             return content
         for field_name in ("reasoning", "reasoning_content"):
@@ -214,7 +190,9 @@ class OpenAIClient(BaseClient):
         try:
             response = getattr(error, "response", None)
             if response is not None:
-                raw = response.headers.get("Retry-After") or response.headers.get("retry-after")
+                raw = response.headers.get("Retry-After") or response.headers.get(
+                    "retry-after"
+                )
                 if raw:
                     return max(1.0, float(raw))
         except (ValueError, TypeError, AttributeError):
@@ -233,7 +211,9 @@ class OpenAIClient(BaseClient):
             "headers": {"x-upstream-session-id": self.task_id},
             "timeout": timeout_seconds,
         }
-        active_key = self._key_pool.current_key() if hasattr(self, "_key_pool") else self.api_key
+        active_key = (
+            self._key_pool.current_key() if hasattr(self, "_key_pool") else self.api_key
+        )
         if self.async_client:
             return AsyncOpenAI(
                 api_key=active_key,
@@ -332,11 +312,7 @@ class OpenAIClient(BaseClient):
             else self.max_retries
         )
         base_wait_time = self.retry_wait_seconds
-        current_max_tokens = self.max_tokens
-        if agent_type in SUMMARY_AGENT_TYPES:
-            current_max_tokens = min(current_max_tokens, self.summary_max_tokens)
-        if agent_type in VERIFICATION_AGENT_TYPES:
-            current_max_tokens = min(current_max_tokens, self.verification_max_tokens)
+        current_max_tokens = self._resolve_stage_max_tokens(agent_type)
         request_model_name = self._resolve_model_name(tools_definitions, agent_type)
         openai_tools = []
         if tools_definitions:
@@ -377,7 +353,10 @@ class OpenAIClient(BaseClient):
             if self.repetition_penalty != 1.0:
                 params["extra_body"]["repetition_penalty"] = self.repetition_penalty
 
-            if "deepseek-v3-1" in request_model_name or "deepseek-v4" in request_model_name:
+            if (
+                "deepseek-v3-1" in request_model_name
+                or "deepseek-v4" in request_model_name
+            ):
                 params["extra_body"]["thinking"] = {"type": "enabled"}
 
             # summary/fast 场景不需要深度推理，显式禁用 thinking 以加速响应
@@ -405,7 +384,9 @@ class OpenAIClient(BaseClient):
                 # Update token count
                 self._update_token_usage(getattr(response, "usage", None))
                 response_model_name = getattr(response, "model", "N/A")
-                self.task_log.run_metrics.record_model_route(request_model_name, response_model_name)
+                self.task_log.run_metrics.record_model_route(
+                    request_model_name, response_model_name
+                )
                 self.task_log.log_step(
                     "info",
                     "LLM | Model Route",
@@ -442,14 +423,18 @@ class OpenAIClient(BaseClient):
                             "Summary response reached length limit, returning immediately without retry.",
                         )
                         return response, messages_history
-                    # If this is not the last retry, increase max_tokens and retry
+                    # 模式与阶段配置共同构成硬上限，长度重试不能突破该预算。
                     if attempt < max_retries - 1:
-                        # Increase max_tokens by 10%
-                        current_max_tokens = int(current_max_tokens * 1.1)
+                        hard_token_limit = self._resolve_stage_max_tokens(agent_type)
+                        current_max_tokens = min(
+                            int(current_max_tokens * 1.1),
+                            hard_token_limit,
+                        )
                         self.task_log.log_step(
                             "warning",
                             "LLM | Length Limit Reached",
-                            f"Response was truncated due to length limit (attempt {attempt + 1}/{max_retries}). Increasing max_tokens to {current_max_tokens} and retrying...",
+                            f"Response was truncated due to length limit (attempt {attempt + 1}/{max_retries}). "
+                            f"Retrying with max_tokens={current_max_tokens} within the configured hard limit.",
                         )
                         await asyncio.sleep(base_wait_time)
                         attempt += 1
@@ -469,7 +454,9 @@ class OpenAIClient(BaseClient):
                 if hasattr(response.choices[0], "message") and hasattr(
                     response.choices[0].message, "content"
                 ):
-                    resp_content = self._extract_message_text(response.choices[0].message)
+                    resp_content = self._extract_message_text(
+                        response.choices[0].message
+                    )
                 else:
                     resp_content = getattr(response.choices[0], "text", "")
 
@@ -536,7 +523,8 @@ class OpenAIClient(BaseClient):
                     # 本轮还有未试过的 Key：立即切换，不消耗重试次数
                     next_key = self._key_pool.next_available_key()
                     if next_key:
-                        self.client.api_key = next_key
+                        # 重建 client 而非改 api_key 属性，确保新 Key 真正生效
+                        await self._rotate_client()
                         self.task_log.run_metrics.key_switch_count += 1
                         self.task_log.log_step(
                             "warning",
@@ -561,7 +549,7 @@ class OpenAIClient(BaseClient):
                     await asyncio.sleep(capped_wait)
                     recovered_key = self._key_pool.next_available_key()
                     if recovered_key:
-                        self.client.api_key = recovered_key
+                        await self._rotate_client()
                     continue
                 if attempt >= max_retries:
                     self.task_log.log_step(
@@ -600,7 +588,11 @@ class OpenAIClient(BaseClient):
         raise Exception("Unexpected error: retry loop completed without returning")
 
     def process_llm_response(
-        self, llm_response: Any, message_history: List[Dict], agent_type: str = "main"
+        self,
+        llm_response: Any,
+        message_history: List[Dict],
+        agent_type: str = "main",
+        tool_server_mapping: Optional[Mapping[str, str]] = None,
     ) -> tuple[str, bool, List[Dict]]:
         """Process LLM response"""
         if not llm_response or not llm_response.choices:
@@ -617,7 +609,10 @@ class OpenAIClient(BaseClient):
             assistant_response_text = self._extract_message_text(
                 llm_response.choices[0].message
             )
-            assistant_response_text = fix_server_name_in_text(assistant_response_text)
+            assistant_response_text = fix_server_name_in_text(
+                assistant_response_text,
+                tool_server_mapping=tool_server_mapping,
+            )
 
             message_history.append(
                 {"role": "assistant", "content": assistant_response_text}
@@ -626,7 +621,10 @@ class OpenAIClient(BaseClient):
             assistant_response_text = self._extract_message_text(
                 llm_response.choices[0].message
             )
-            assistant_response_text = fix_server_name_in_text(assistant_response_text)
+            assistant_response_text = fix_server_name_in_text(
+                assistant_response_text,
+                tool_server_mapping=tool_server_mapping,
+            )
             message_history.append(
                 {"role": "assistant", "content": assistant_response_text}
             )
@@ -635,7 +633,10 @@ class OpenAIClient(BaseClient):
             assistant_response_text = self._extract_message_text(
                 llm_response.choices[0].message
             )
-            assistant_response_text = fix_server_name_in_text(assistant_response_text)
+            assistant_response_text = fix_server_name_in_text(
+                assistant_response_text,
+                tool_server_mapping=tool_server_mapping,
+            )
             if assistant_response_text == "":
                 assistant_response_text = "LLM response is empty."
             elif "Context length exceeded" in assistant_response_text:
@@ -667,15 +668,24 @@ class OpenAIClient(BaseClient):
         return assistant_response_text, False, message_history
 
     def extract_tool_calls_info(
-        self, llm_response: Any, assistant_response_text: str
+        self,
+        llm_response: Any,
+        assistant_response_text: str,
+        tool_server_mapping: Optional[Mapping[str, str]] = None,
     ) -> List[Dict]:
         """Extract tool call information from LLM response"""
         from ...utils.parsing_utils import parse_llm_response_for_tool_calls
 
         tool_calls = getattr(llm_response.choices[0].message, "tool_calls", None)
         if tool_calls:
-            return parse_llm_response_for_tool_calls(tool_calls)
-        return parse_llm_response_for_tool_calls(assistant_response_text)
+            return parse_llm_response_for_tool_calls(
+                tool_calls,
+                tool_server_mapping=tool_server_mapping,
+            )
+        return parse_llm_response_for_tool_calls(
+            assistant_response_text,
+            tool_server_mapping=tool_server_mapping,
+        )
 
     def update_message_history(
         self, message_history: List[Dict], all_tool_results_content_with_id: List[Tuple]
@@ -694,14 +704,13 @@ class OpenAIClient(BaseClient):
             {
                 "role": "user",
                 "content": merged_text,
+                INTERNAL_MESSAGE_TYPE_KEY: TOOL_RESULT_MESSAGE_TYPE,
             }
         )
 
         return message_history
 
     def generate_agent_system_prompt(self, date: Any, mcp_servers: List[Dict]) -> str:
-        from ...utils.parsing_utils import set_tool_server_mapping
-
         if mcp_servers:
             prompt = generate_mcp_system_prompt(date, mcp_servers)
             prompt += (
@@ -714,7 +723,6 @@ class OpenAIClient(BaseClient):
                 "\n\nNo tools are available in this run. "
                 "Do not attempt any tool invocation and answer directly."
             )
-        set_tool_server_mapping(prompt)
         return prompt
 
     def _estimate_tokens(self, text: str) -> int:
@@ -743,7 +751,7 @@ class OpenAIClient(BaseClient):
     ) -> tuple[bool, list]:
         """
         Check if current message_history + summary_prompt will exceed context
-        If it will exceed, remove the last assistant-user pair and return False
+        If it will exceed, remove the latest marked tool-result pair when available
         Return True to continue, False if messages have been rolled back
         """
         # Get token usage from the last LLM call
@@ -777,18 +785,17 @@ class OpenAIClient(BaseClient):
                 "Context limit reached, proceeding to step back and summarize the conversation",
             )
 
-            # Remove the last user message (tool call results)
-            if message_history[-1]["role"] == "user":
-                message_history.pop()
-
-            # Remove the second-to-last assistant message (tool call request)
-            if message_history[-1]["role"] == "assistant":
-                message_history.pop()
+            trimmed = self._trim_tool_result_pair_for_summary_context(message_history)
 
             self.task_log.log_step(
                 "info",
                 "LLM | Context Limit Reached",
-                f"Removed the last assistant-user pair, current message_history length: {len(message_history)}",
+                (
+                    "Removed the latest marked tool-result pair"
+                    if trimmed
+                    else "No marked tool-result pair available; history preserved"
+                )
+                + f", current message_history length: {len(message_history)}",
             )
 
             return False, message_history

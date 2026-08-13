@@ -32,10 +32,33 @@ class ResultCache:
         mode: str = "",
         search_profile: str = "",
         output_detail_level: str = "",
+        *,
+        search_result_num: Optional[int] = None,
+        verification_min_search_rounds: Optional[int] = None,
     ) -> str:
-        """根据查询参数生成缓存 key。"""
-        raw = f"{query.strip().lower()}|{mode}|{search_profile}|{output_detail_level}"
-        return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+        """根据查询参数生成缓存 key。
+
+        - 用完整 sha256 hexdigest，不截断：缓存命中返回的是完整研究结论，64bit
+          截断一旦碰撞会返回"不相关问题的答案"，是正确性事故而非性能退化。
+        - query 只去除首尾空白，不改变大小写；代码标识符、基因符号和缩写等
+          查询可能依赖大小写语义，不能复用另一问题的完整研究结论。
+        - mode/profile/detail 属于策略枚举，统一 strip().lower() 归一化。
+        - 纳入 search_result_num / verification_min_search_rounds：这两个参数
+          会改变检索深度，从而改变最终结论，必须参与 key，否则仅条数不同的请求
+          会误命中彼此的缓存。None 表示该参数不影响（保持向后兼容的旧 key）。
+        """
+        parts = [
+            query.strip(),
+            mode.strip().lower(),
+            search_profile.strip().lower(),
+            output_detail_level.strip().lower(),
+        ]
+        if search_result_num is not None:
+            parts.append(f"srn={search_result_num}")
+        if verification_min_search_rounds is not None:
+            parts.append(f"vmsr={verification_min_search_rounds}")
+        raw = "|".join(parts)
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
     def get(self, key: str) -> Optional[str]:
         """查询缓存，命中则返回结果字符串，未命中或已过期返回 None。"""

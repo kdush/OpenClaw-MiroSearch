@@ -22,7 +22,10 @@ from omegaconf import DictConfig
 from ..io.output_formatter import OutputFormatter
 from ..llm.base_client import BaseClient
 from ..logging.task_logger import TaskLog
-from ..utils.parsing_utils import extract_failure_experience_summary
+from ..utils.parsing_utils import (
+    extract_failure_experience_summary,
+    parse_tool_server_mapping,
+)
 from ..utils.prompt_utils import (
     FAILURE_SUMMARY_ASSISTANT_PREFIX,
     FAILURE_SUMMARY_PROMPT,
@@ -35,36 +38,69 @@ from .stream_handler import StreamHandler
 
 logger = logging.getLogger(__name__)
 
+
+def _read_env_int(name: str, default: int, *, minimum: int) -> int:
+    """读取整数环境变量；无效值回退默认值，并保留原有下限约束。"""
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return max(minimum, default)
+    try:
+        parsed_value = int(raw_value)
+    except (TypeError, ValueError):
+        logger.warning(
+            "环境变量 %s=%r 不是有效整数，使用默认值 %s。",
+            name,
+            raw_value,
+            default,
+        )
+        parsed_value = default
+    return max(minimum, parsed_value)
+
+
 # Safety limits for retry loops
 DEFAULT_MAX_FINAL_ANSWER_RETRIES = 3
 # 单次 LLM 调用的总墙时超时（防止 SDK 内部静默卡死，与 LLM_HTTP_TIMEOUT_SECONDS 形成多层防护）。
 # 默认 480 秒：覆盖 LLM_HTTP_TIMEOUT_SECONDS=90 + max_retries=4 的最坏组合，并留出重试间隔余量。
 DEFAULT_LLM_CALL_WALL_TIMEOUT_SECONDS = 480.0
-RESEARCH_COMPACT_TARGET_MAX_CHARS = max(
-    300, int(os.getenv("RESEARCH_COMPACT_TARGET_MAX_CHARS", "1200"))
+RESEARCH_COMPACT_TARGET_MAX_CHARS = _read_env_int(
+    "RESEARCH_COMPACT_TARGET_MAX_CHARS",
+    1200,
+    minimum=300,
 )
-RESEARCH_BALANCED_TARGET_MIN_CHARS = max(
-    600, int(os.getenv("RESEARCH_BALANCED_TARGET_MIN_CHARS", "1800"))
+RESEARCH_BALANCED_TARGET_MIN_CHARS = _read_env_int(
+    "RESEARCH_BALANCED_TARGET_MIN_CHARS",
+    1800,
+    minimum=600,
 )
-RESEARCH_BALANCED_TARGET_MAX_CHARS = max(
-    RESEARCH_BALANCED_TARGET_MIN_CHARS,
-    int(os.getenv("RESEARCH_BALANCED_TARGET_MAX_CHARS", "3200")),
+RESEARCH_BALANCED_TARGET_MAX_CHARS = _read_env_int(
+    "RESEARCH_BALANCED_TARGET_MAX_CHARS",
+    3200,
+    minimum=RESEARCH_BALANCED_TARGET_MIN_CHARS,
 )
-RESEARCH_DETAILED_TARGET_MIN_CHARS = max(
-    1000, int(os.getenv("RESEARCH_DETAILED_TARGET_MIN_CHARS", "12000"))
+RESEARCH_DETAILED_TARGET_MIN_CHARS = _read_env_int(
+    "RESEARCH_DETAILED_TARGET_MIN_CHARS",
+    12000,
+    minimum=1000,
 )
-RESEARCH_BALANCED_MIN_SECTIONS = max(
-    4, int(os.getenv("RESEARCH_BALANCED_MIN_SECTIONS", "7"))
+RESEARCH_BALANCED_MIN_SECTIONS = _read_env_int(
+    "RESEARCH_BALANCED_MIN_SECTIONS",
+    7,
+    minimum=4,
 )
-RESEARCH_DETAILED_MIN_SECTIONS = max(
-    6, int(os.getenv("RESEARCH_DETAILED_MIN_SECTIONS", "12"))
+RESEARCH_DETAILED_MIN_SECTIONS = _read_env_int(
+    "RESEARCH_DETAILED_MIN_SECTIONS",
+    12,
+    minimum=6,
 )
-RESEARCH_BALANCED_RETRY_MIN_CHARS = max(
-    300, int(os.getenv("RESEARCH_BALANCED_RETRY_MIN_CHARS", "1500"))
+RESEARCH_BALANCED_RETRY_MIN_CHARS = _read_env_int(
+    "RESEARCH_BALANCED_RETRY_MIN_CHARS",
+    1500,
+    minimum=300,
 )
-RESEARCH_DETAILED_RETRY_MIN_CHARS = max(
-    RESEARCH_BALANCED_RETRY_MIN_CHARS,
-    int(os.getenv("RESEARCH_DETAILED_RETRY_MIN_CHARS", "5000")),
+RESEARCH_DETAILED_RETRY_MIN_CHARS = _read_env_int(
+    "RESEARCH_DETAILED_RETRY_MIN_CHARS",
+    5000,
+    minimum=RESEARCH_BALANCED_RETRY_MIN_CHARS,
 )
 
 
@@ -122,13 +158,20 @@ class AnswerGenerator:
 
         # Context management settings
         self.context_compress_limit = cfg.agent.get("context_compress_limit", 0)
-        self.max_final_answer_retries = (
-            DEFAULT_MAX_FINAL_ANSWER_RETRIES if cfg.agent.keep_tool_result == -1 else 1
-        )
+        try:
+            configured_final_answer_retries = int(
+                cfg.agent.get(
+                    "max_final_answer_retries",
+                    DEFAULT_MAX_FINAL_ANSWER_RETRIES,
+                )
+            )
+        except (TypeError, ValueError):
+            configured_final_answer_retries = DEFAULT_MAX_FINAL_ANSWER_RETRIES
+        self.max_final_answer_retries = max(1, configured_final_answer_retries)
         self.retry_with_summary = cfg.agent.get("retry_with_summary", True)
-        self.output_detail_level = str(
-            cfg.agent.get("output_detail_level", "balanced")
-        ).strip().lower()
+        self.output_detail_level = (
+            str(cfg.agent.get("output_detail_level", "balanced")).strip().lower()
+        )
         if self.output_detail_level not in {"compact", "balanced", "detailed"}:
             self.output_detail_level = "balanced"
         self.demo_mode = os.getenv("DEMO_MODE", "").strip().lower() in {
@@ -285,7 +328,8 @@ class AnswerGenerator:
         """
         if self.summary_retry_min_chars <= 0:
             return False
-        normalized_text = "".join(str(final_answer_text or "").split())
+        display_text = self.output_formatter.clean_final_answer_text(final_answer_text)
+        normalized_text = "".join(display_text.split())
         return len(normalized_text) < self.summary_retry_min_chars
 
     def _build_expand_summary_prompt(self) -> str:
@@ -472,15 +516,21 @@ class AnswerGenerator:
                 return "", False, None, original_message_history
 
             # Use client's response processing method
+            tool_server_mapping = parse_tool_server_mapping(system_prompt)
             assistant_response_text, should_break, message_history = (
                 self.llm_client.process_llm_response(
-                    response, message_history, agent_type
+                    response,
+                    message_history,
+                    agent_type,
+                    tool_server_mapping=tool_server_mapping,
                 )
             )
 
             # Use client's tool call information extraction method
             tool_calls_info = self.llm_client.extract_tool_calls_info(
-                response, assistant_response_text
+                response,
+                assistant_response_text,
+                tool_server_mapping=tool_server_mapping,
             )
 
             self.task_log.log_step(
@@ -646,7 +696,14 @@ class AnswerGenerator:
         tool_definitions: List[Dict],
         turn_count: int,
         task_description: str,
-    ) -> Tuple[Optional[str], str, Optional[str], str, List[Dict[str, Any]]]:
+    ) -> Tuple[
+        Optional[str],
+        str,
+        Optional[str],
+        str,
+        List[Dict[str, Any]],
+        Dict[str, Any],
+    ]:
         """
         Generate final answer with retry mechanism.
 
@@ -658,7 +715,8 @@ class AnswerGenerator:
             task_description: Original task description
 
         Returns:
-            Tuple of (final_answer_text, final_summary, final_boxed_answer, usage_log, message_history)
+            Tuple of (final_answer_text, final_summary, final_boxed_answer,
+            usage_log, message_history, result_quality)
         """
         # Generate summary prompt
         if self.verification_enabled:
@@ -671,14 +729,27 @@ class AnswerGenerator:
 
         summary_prompt = self._build_main_summary_prompt(task_description)
 
-        if message_history[-1]["role"] == "user":
-            message_history.pop(-1)
+        # 主模型最后一轮无工具退出时，历史会以 assistant 结尾。此路径此前不会
+        # 经过工具结果后的上下文保护，需在追加总结指令前补做一次容量检查。
+        # 工具结果路径通常以 user/tool 结尾，刻意跳过以免重复裁剪检索证据。
+        if message_history and message_history[-1].get("role") == "assistant":
+            _, message_history = self.llm_client.ensure_summary_context(
+                message_history,
+                summary_prompt,
+            )
+
         message_history.append({"role": "user", "content": summary_prompt})
 
         final_answer_text = None
         final_boxed_answer = None
         final_summary = ""
         usage_log = ""
+        result_quality = {
+            "format_valid": False,
+            "fallback_used": False,
+            "issues": ["summary_generation_failed", "no_answer_available"],
+            "answer_available": False,
+        }
         final_summary_agent_types = (
             ["verification", "final_summary"]
             if self.verification_enabled and self.verification_use_high_model
@@ -719,6 +790,22 @@ class AnswerGenerator:
                 final_boxed_answer = payload["boxed_answer"]
                 usage_log = payload["usage_log"]
                 format_valid = payload["quality"]["format_valid"]
+                answer_available = bool(
+                    format_valid or payload["quality"]["fallback_used"]
+                )
+                quality_issues = list(payload["quality"]["issues"])
+                if not answer_available:
+                    for issue in (
+                        "summary_generation_failed",
+                        "no_answer_available",
+                    ):
+                        if issue not in quality_issues:
+                            quality_issues.append(issue)
+                result_quality = {
+                    **payload["quality"],
+                    "issues": quality_issues,
+                    "answer_available": answer_available,
+                }
 
                 if self._is_summary_too_short(final_answer_text):
                     self.task_log.log_step(
@@ -727,10 +814,16 @@ class AnswerGenerator:
                         f"Summary too short on attempt {retry_idx + 1}, length below threshold {self.summary_retry_min_chars}.",
                     )
                     if retry_idx < self.max_final_answer_retries - 1:
-                        if message_history and message_history[-1]["role"] == "assistant":
+                        if (
+                            message_history
+                            and message_history[-1]["role"] == "assistant"
+                        ):
                             message_history.pop()
                         message_history.append(
-                            {"role": "user", "content": self._build_expand_summary_prompt()}
+                            {
+                                "role": "user",
+                                "content": self._build_expand_summary_prompt(),
+                            }
                         )
                         continue
 
@@ -801,6 +894,7 @@ class AnswerGenerator:
             final_boxed_answer,
             usage_log,
             message_history,
+            result_quality,
         )
 
     def handle_no_context_management_fallback(
@@ -808,6 +902,8 @@ class AnswerGenerator:
         final_answer_text: Optional[str],
         final_summary: str,
         final_boxed_answer: Optional[str],
+        *,
+        answer_available: Optional[bool] = None,
     ) -> Tuple[str, str, str]:
         """
         Handle fallback when context_compress_limit == 0 (no context management).
@@ -823,10 +919,14 @@ class AnswerGenerator:
         Returns:
             Tuple of (final_answer_text, final_summary, final_boxed_answer)
         """
-        # Validate final_answer_text
-        if not final_answer_text:
-            final_answer_text = "No final answer generated."
-            final_summary = final_answer_text
+        if answer_available is None:
+            answer_available = bool(final_answer_text)
+
+        # 模型总结不可用时，仅在确有中间答案时构造可展示回退；否则保持空正文，
+        # 交由上层显式判定失败，不能用占位字符串伪装成成功输出。
+        if not answer_available:
+            final_answer_text = ""
+            final_summary = ""
             final_boxed_answer = FORMAT_ERROR_MESSAGE
             self.task_log.log_step(
                 "error",
@@ -840,11 +940,10 @@ class AnswerGenerator:
                 f"Final answer content:\n\n{final_answer_text}",
             )
 
-        # Fallback to intermediate answer if no valid boxed answer
-        if (
-            final_boxed_answer == FORMAT_ERROR_MESSAGE or final_boxed_answer is None
-        ) and self.intermediate_boxed_answers:
+        if not answer_available and self.intermediate_boxed_answers:
             final_boxed_answer = self.intermediate_boxed_answers[-1]
+            final_answer_text = final_boxed_answer
+            final_summary = final_boxed_answer
             self.task_log.log_step(
                 "info",
                 "Main Agent | Final Answer (No Context Management)",
@@ -862,6 +961,8 @@ class AnswerGenerator:
         final_answer_text: Optional[str],
         final_summary: str,
         final_boxed_answer: Optional[str],
+        *,
+        answer_available: Optional[bool] = None,
     ) -> Tuple[str, str, str]:
         """
         Handle failure when context_compress_limit > 0 (context management enabled).
@@ -879,10 +980,12 @@ class AnswerGenerator:
         Returns:
             Tuple of (final_answer_text, final_summary, final_boxed_answer)
         """
-        # Validate final_answer_text
-        if not final_answer_text:
-            final_answer_text = "No final answer generated."
-            final_summary = final_answer_text
+        if answer_available is None:
+            answer_available = bool(final_answer_text)
+
+        if not answer_available:
+            final_answer_text = ""
+            final_summary = ""
             final_boxed_answer = FORMAT_ERROR_MESSAGE
             self.task_log.log_step(
                 "error",
@@ -920,7 +1023,14 @@ class AnswerGenerator:
         reached_max_turns: bool = False,
         is_final_retry: bool = False,
         save_callback=None,
-    ) -> Tuple[str, str, Optional[str], str, List[Dict[str, Any]]]:
+    ) -> Tuple[
+        str,
+        str,
+        Optional[str],
+        str,
+        List[Dict[str, Any]],
+        Dict[str, Any],
+    ]:
         """
         Generate final answer and handle fallback based on context management settings.
 
@@ -946,7 +1056,9 @@ class AnswerGenerator:
             save_callback: Optional callback to save message history
 
         Returns:
-            Tuple of (final_summary, final_boxed_answer, failure_experience_summary, usage_log, message_history)
+            Tuple of (final_summary, final_boxed_answer,
+            failure_experience_summary, usage_log, message_history,
+            result_quality)
         """
         context_management_enabled = self.context_compress_limit > 0
         failure_experience_summary = None
@@ -960,6 +1072,7 @@ class AnswerGenerator:
             final_boxed_answer,
             usage_log,
             message_history,
+            result_quality,
         ) = await self.generate_final_answer_with_retries(
             system_prompt=system_prompt,
             message_history=message_history,
@@ -975,11 +1088,31 @@ class AnswerGenerator:
         # Try to use intermediate answers as fallback to maximize accuracy
         # For final retry, there's no more retry opportunity, so we use fallback
         if not context_management_enabled or is_final_retry:
+            generated_answer_available = bool(
+                result_quality.get("answer_available", False)
+            )
             final_answer_text, final_summary, final_boxed_answer = (
                 self.handle_no_context_management_fallback(
-                    final_answer_text, final_summary, final_boxed_answer
+                    final_answer_text,
+                    final_summary,
+                    final_boxed_answer,
+                    answer_available=generated_answer_available,
                 )
             )
+            if not generated_answer_available and self.intermediate_boxed_answers:
+                issues = [
+                    issue
+                    for issue in result_quality.get("issues", [])
+                    if issue != "no_answer_available"
+                ]
+                if "intermediate_answer_fallback" not in issues:
+                    issues.append("intermediate_answer_fallback")
+                result_quality = {
+                    "format_valid": False,
+                    "fallback_used": True,
+                    "issues": issues,
+                    "answer_available": True,
+                }
             if is_final_retry:
                 self.task_log.log_step(
                     "info",
@@ -992,17 +1125,24 @@ class AnswerGenerator:
                 None,
                 usage_log,
                 message_history,
+                result_quality,
             )
 
         # CASE: Context management ON + normal completion (not reached max turns, not final retry)
         # Don't use fallback - wrong guess would reduce accuracy
         final_answer_text, final_summary, final_boxed_answer = (
             self.handle_context_management_no_fallback(
-                final_answer_text, final_summary, final_boxed_answer
+                final_answer_text,
+                final_summary,
+                final_boxed_answer,
+                answer_available=bool(result_quality.get("answer_available", False)),
             )
         )
 
-        if final_boxed_answer == FORMAT_ERROR_MESSAGE and self.retry_with_summary:
+        if (
+            not result_quality.get("answer_available", False)
+            and self.retry_with_summary
+        ):
             failure_experience_summary = await self.generate_failure_summary(
                 system_prompt, message_history, tool_definitions, turn_count
             )
@@ -1013,4 +1153,5 @@ class AnswerGenerator:
             failure_experience_summary,
             usage_log,
             message_history,
+            result_quality,
         )

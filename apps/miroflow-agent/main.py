@@ -17,7 +17,7 @@ from src.logging.task_logger import bootstrap_logger
 logger = bootstrap_logger()
 
 
-async def amain(cfg: DictConfig) -> None:
+async def amain(cfg: DictConfig) -> dict:
     """Asynchronous main function."""
 
     logger.info(OmegaConf.to_yaml(cfg))
@@ -33,7 +33,7 @@ async def amain(cfg: DictConfig) -> None:
     task_file_name = ""
 
     # Execute task using the pipeline
-    final_summary, final_boxed_answer, log_file_path, _ = await execute_task_pipeline(
+    pipeline_result = await execute_task_pipeline(
         cfg=cfg,
         task_id=task_id,
         task_file_name=task_file_name,
@@ -44,10 +44,47 @@ async def amain(cfg: DictConfig) -> None:
         log_dir=cfg.debug_dir,
     )
 
+    status = pipeline_result.get("status")
+    final_summary = pipeline_result.get("final_summary", "")
+    final_boxed_answer = pipeline_result.get("final_boxed_answer", "")
+    log_file_path = pipeline_result.get("log_file_path", "")
+    error = pipeline_result.get("error")
+    result_quality = pipeline_result.get("result_quality")
+
+    if status == "completed":
+        logger.info(
+            "Task %s completed | boxed_answer=%s | log=%s | quality=%s",
+            task_id,
+            final_boxed_answer,
+            log_file_path,
+            result_quality,
+        )
+    elif status == "failed":
+        logger.error(
+            "Task %s failed: %s",
+            task_id,
+            error or final_summary or "Unknown pipeline error",
+        )
+    elif status == "cancelled":
+        logger.warning(
+            "Task %s cancelled: %s",
+            task_id,
+            error or final_summary or "Pipeline execution was cancelled",
+        )
+    else:
+        logger.error(
+            "Task %s returned invalid pipeline status: %s",
+            task_id,
+            status,
+        )
+
+    return pipeline_result
+
 
 @hydra.main(config_path="conf", config_name="config", version_base=None)
 def main(cfg: DictConfig) -> None:
-    asyncio.run(amain(cfg))
+    pipeline_result = asyncio.run(amain(cfg))
+    raise SystemExit(0 if pipeline_result.get("status") == "completed" else 1)
 
 
 if __name__ == "__main__":

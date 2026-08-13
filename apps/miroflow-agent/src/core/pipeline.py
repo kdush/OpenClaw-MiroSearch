@@ -33,6 +33,8 @@ from ..logging.task_logger import (
 )
 from .orchestrator import Orchestrator
 
+FINAL_ANSWER_UNAVAILABLE_ERROR = "Final summary produced no usable answer."
+
 
 def _build_pipeline_result(
     *,
@@ -42,6 +44,7 @@ def _build_pipeline_result(
     log_file_path: str,
     failure_experience_summary: Optional[str] = None,
     error: Optional[str] = None,
+    result_quality: Optional[Dict[str, Any]] = None,
 ) -> dict:
     """构建结构化 pipeline 结果，供 worker 根据 status 决定落库状态。"""
     return {
@@ -51,7 +54,66 @@ def _build_pipeline_result(
         "log_file_path": log_file_path,
         "failure_experience_summary": failure_experience_summary,
         "error": error,
+        "result_quality": result_quality,
     }
+
+
+def _safe_task_log_step(
+    task_log: TaskLog,
+    level: str,
+    step_name: str,
+    message: str,
+) -> None:
+    """日志组件自身异常不得掩盖 pipeline 原始失败或阻断资源清理。"""
+    try:
+        task_log.log_step(level, step_name, message)
+    except Exception:
+        pass
+
+
+async def _close_tool_managers(
+    main_agent_tool_manager: ToolManager,
+    sub_agent_tool_managers: Dict[str, ToolManager],
+) -> None:
+    """并发关闭去重后的 ToolManager，清理完成后再传播外部取消。"""
+    managers = [main_agent_tool_manager, *sub_agent_tool_managers.values()]
+    closed_manager_ids = set()
+    unique_managers = []
+    for tool_manager in managers:
+        manager_id = id(tool_manager)
+        if manager_id in closed_manager_ids:
+            continue
+        closed_manager_ids.add(manager_id)
+        unique_managers.append(tool_manager)
+
+    async def close_one(tool_manager: ToolManager) -> None:
+        close = getattr(tool_manager, "aclose", None)
+        if not callable(close):
+            return
+        try:
+            await close()
+        except (Exception, asyncio.CancelledError):
+            pass
+
+    async def close_all() -> None:
+        await asyncio.gather(
+            *(close_one(tool_manager) for tool_manager in unique_managers)
+        )
+
+    cleanup_task = asyncio.create_task(close_all())
+    cancellation_received = False
+    while True:
+        try:
+            await asyncio.shield(cleanup_task)
+            break
+        except asyncio.CancelledError:
+            cancellation_received = True
+            if cleanup_task.done():
+                break
+
+    cleanup_task.result()
+    if cancellation_received:
+        raise asyncio.CancelledError
 
 
 async def execute_task_pipeline(
@@ -87,36 +149,41 @@ async def execute_task_pipeline(
         sub_agent_tool_definitions: The definitions of the tools for the sub-agents (optional).
 
     Returns:
-        A tuple of (final_summary, final_boxed_answer, log_file_path, failure_experience_summary):
-        - final_summary: A string with the final execution summary, or an error message.
-        - final_boxed_answer: The extracted boxed answer from the LLM response.
-        - log_file_path: The path to the saved task log file.
-        - failure_experience_summary: Summary of failure experience for retry (None if successful).
+        包含以下字段的 Pipeline 结果映射：
+        - status: completed、failed 或 cancelled。
+        - final_summary: 最终总结；失败时可能包含面向用户的错误说明。
+        - final_boxed_answer: 从最终总结中提取的 boxed 答案。
+        - log_file_path: 任务日志文件路径。
+        - failure_experience_summary: 用于重试的失败经验总结。
+        - error: 失败或取消原因。
+        - result_quality: 最终总结的结构化质量信息。
     """
     total_start_time = time.perf_counter()
+    task_log: Optional[TaskLog] = None
+    llm_client = None
+    try:
+        # TaskLog 创建、起始日志与 manager 注入也必须位于资源清理保护范围内。
+        task_log = TaskLog(
+            log_dir=log_dir,
+            task_id=task_id,
+            start_time=get_utc_plus_8_time(),
+            input={
+                "task_description": task_description,
+                "task_file_name": task_file_name,
+            },
+            env_info=get_env_info(cfg),
+            ground_truth=ground_truth,
+        )
+        task_log.log_step(
+            "info",
+            "Main | Task Start",
+            f"--- Starting Task Execution: {task_id} ---",
+        )
 
-    # Create task log
-    task_log = TaskLog(
-        log_dir=log_dir,
-        task_id=task_id,
-        start_time=get_utc_plus_8_time(),
-        input={"task_description": task_description, "task_file_name": task_file_name},
-        env_info=get_env_info(cfg),
-        ground_truth=ground_truth,
-    )
-
-    # Log task start
-    task_log.log_step(
-        "info", "Main | Task Start", f"--- Starting Task Execution: {task_id} ---"
-    )
-
-    # Set task_log for all ToolManager instances
-    main_agent_tool_manager.set_task_log(task_log)
-    if sub_agent_tool_managers:
+        main_agent_tool_manager.set_task_log(task_log)
         for sub_agent_tool_manager in sub_agent_tool_managers.values():
             sub_agent_tool_manager.set_task_log(task_log)
 
-    try:
         # Initialize LLM client
         llm_init_start_time = time.perf_counter()
         random_uuid = str(uuid.uuid4())
@@ -154,6 +221,7 @@ async def execute_task_pipeline(
             final_summary,
             final_boxed_answer,
             failure_experience_summary,
+            result_quality,
         ) = await orchestrator.run_main_agent(
             task_description=task_description,
             task_file_name=task_file_name,
@@ -165,9 +233,24 @@ async def execute_task_pipeline(
             int((time.perf_counter() - main_agent_run_start_time) * 1000),
         )
 
-        llm_client.close()
+        # 连接释放统一交给 finally 的 aclose()，确保异常/取消路径也能清理
 
         task_log.final_boxed_answer = final_boxed_answer
+
+        if not result_quality.get("answer_available", False):
+            task_log.status = "failed"
+            task_log.error = FINAL_ANSWER_UNAVAILABLE_ERROR
+            log_file_path = task_log.save()
+            return _build_pipeline_result(
+                status="failed",
+                final_summary=final_summary,
+                final_boxed_answer=final_boxed_answer,
+                log_file_path=log_file_path,
+                failure_experience_summary=failure_experience_summary,
+                error=FINAL_ANSWER_UNAVAILABLE_ERROR,
+                result_quality=result_quality,
+            )
+
         task_log.status = "success"
 
         # Store failure experience summary in task log if available
@@ -183,15 +266,19 @@ async def execute_task_pipeline(
             final_boxed_answer=final_boxed_answer,
             log_file_path=log_file_path,
             failure_experience_summary=failure_experience_summary,
+            result_quality=result_quality,
         )
 
     except asyncio.CancelledError:
+        if task_log is None:
+            raise
         cancel_message = (
             f"Task {task_id} was cancelled during execution.\n"
             f"Description: {task_description}\n"
             f"File: {task_file_name}"
         )
-        task_log.log_step(
+        _safe_task_log_step(
+            task_log,
             "warning",
             "task_cancelled",
             cancel_message,
@@ -208,13 +295,24 @@ async def execute_task_pipeline(
         )
 
     except Exception as e:
+        if task_log is None:
+            raise RuntimeError(
+                f"Task {task_id} failed before TaskLog initialization: "
+                f"{type(e).__name__}: {e}"
+            ) from e
         error_details = traceback.format_exc()
-        task_log.log_step(
+        _safe_task_log_step(
+            task_log,
             "warning",
             "task_error_notification",
             f"An error occurred during task {task_id}",
         )
-        task_log.log_step("error", "task_error_details", error_details)
+        _safe_task_log_step(
+            task_log,
+            "error",
+            "task_error_details",
+            error_details,
+        )
 
         error_message = (
             f"Error executing task {task_id}:\n"
@@ -238,57 +336,85 @@ async def execute_task_pipeline(
         )
 
     finally:
-        # 保证状态机总是落到终态，避免出现 status=running 导致前端一直等待。
-        if task_log.status == "running":
-            task_log.status = "failed"
-            if not task_log.error:
-                task_log.error = (
-                    "Task exited pipeline without terminal status; "
-                    "marked as failed to avoid hanging state."
-                )
-            task_log.log_step(
-                "warning",
-                "task_status_guard",
-                "Detected non-terminal task status 'running' at pipeline end; force set to 'failed'.",
+        # 每任务 ToolManager 可能持有持久浏览器会话，必须覆盖所有退出路径清理。
+        tool_cleanup_cancelled = False
+        try:
+            await _close_tool_managers(
+                main_agent_tool_manager,
+                sub_agent_tool_managers,
             )
+        except asyncio.CancelledError:
+            tool_cleanup_cancelled = True
 
-        total_ms = int((time.perf_counter() - total_start_time) * 1000)
-        task_log.record_stage_timing("pipeline.total", total_ms)
-        task_log.end_time = get_utc_plus_8_time()
-
-        # 聚合结构化 run_metrics
-        task_log.run_metrics.total_duration_ms = total_ms
-        stage_timing_summary = task_log.trace_data.get("stage_timing_summary", {})
-        task_log.run_metrics.stage_durations = {
-            name: data.get("total_duration_ms", 0)
-            for name, data in stage_timing_summary.items()
-        }
-
-        timing_summary = task_log.format_stage_timing_summary()
-        if timing_summary:
-            task_log.log_step(
-                "info",
-                "Timing | Summary",
-                timing_summary,
-            )
-
-        # 通过 stream_queue 发送结构化 run_metrics 事件供前端/API 消费
-        if stream_queue is not None:
+        # 释放 LLM client 的异步连接池，避免长跑 worker 累积未关闭的连接与 fd。
+        if llm_client is not None:
             try:
-                await stream_queue.put({
-                    "event": "run_metrics",
-                    "data": task_log.run_metrics.to_dict(),
-                })
+                await llm_client.aclose()
             except Exception:
                 pass
 
-        # Record task summary to structured log
-        task_log.log_step(
-            "info",
-            "task_execution_finished",
-            f"Task {task_id} execution completed with status: {task_log.status}",
-        )
-        task_log.save()
+        if task_log is not None:
+            # 保证状态机总是落到终态，避免出现 status=running 导致前端一直等待。
+            if task_log.status == "running":
+                task_log.status = "failed"
+                if not task_log.error:
+                    task_log.error = (
+                        "Task exited pipeline without terminal status; "
+                        "marked as failed to avoid hanging state."
+                    )
+                _safe_task_log_step(
+                    task_log,
+                    "warning",
+                    "task_status_guard",
+                    "Detected non-terminal task status 'running' at pipeline end; force set to 'failed'.",
+                )
+
+            total_ms = int((time.perf_counter() - total_start_time) * 1000)
+            try:
+                task_log.record_stage_timing("pipeline.total", total_ms)
+            except Exception:
+                pass
+            task_log.end_time = get_utc_plus_8_time()
+
+            # 聚合结构化 run_metrics
+            task_log.run_metrics.total_duration_ms = total_ms
+            stage_timing_summary = task_log.trace_data.get("stage_timing_summary", {})
+            task_log.run_metrics.stage_durations = {
+                name: data.get("total_duration_ms", 0)
+                for name, data in stage_timing_summary.items()
+            }
+
+            timing_summary = task_log.format_stage_timing_summary()
+            if timing_summary:
+                _safe_task_log_step(
+                    task_log,
+                    "info",
+                    "Timing | Summary",
+                    timing_summary,
+                )
+
+            # 通过 stream_queue 发送结构化 run_metrics 事件供前端/API 消费
+            if stream_queue is not None:
+                try:
+                    await stream_queue.put(
+                        {
+                            "event": "run_metrics",
+                            "data": task_log.run_metrics.to_dict(),
+                        }
+                    )
+                except Exception:
+                    pass
+
+            # Record task summary to structured log
+            _safe_task_log_step(
+                task_log,
+                "info",
+                "task_execution_finished",
+                f"Task {task_id} execution completed with status: {task_log.status}",
+            )
+            task_log.save()
+        if tool_cleanup_cancelled:
+            raise asyncio.CancelledError
 
 
 def create_pipeline_components(cfg: DictConfig):

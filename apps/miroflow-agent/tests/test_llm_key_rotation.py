@@ -35,6 +35,7 @@ OpenAIClient = importlib.import_module("src.llm.providers.openai_client").OpenAI
 # 测试辅助
 # ---------------------------------------------------------------------------
 
+
 def _make_minimal_cfg(**overrides) -> Any:
     """构造最小化的 Hydra DictConfig，用于实例化 OpenAIClient。"""
     base = {
@@ -106,6 +107,13 @@ def _make_success_response(content: str = "Hello") -> MagicMock:
     return resp
 
 
+def _make_length_limited_response(content: str = "truncated") -> MagicMock:
+    """构造因令牌上限截断的 OpenAI chat completion response mock。"""
+    response = _make_success_response(content)
+    response.choices[0].finish_reason = "length"
+    return response
+
+
 # ===========================================================================
 # _extract_retry_after 测试
 # ===========================================================================
@@ -174,9 +182,50 @@ class TestOpenAISdkRetries:
         task_log = _make_task_log()
         cfg = _make_minimal_cfg()
 
-        client = OpenAIClient(task_id="test-sdk-retries-override", cfg=cfg, task_log=task_log)
+        client = OpenAIClient(
+            task_id="test-sdk-retries-override", cfg=cfg, task_log=task_log
+        )
 
         assert client.client.max_retries == 1
+
+
+class TestModeTokenBudget:
+    @pytest.mark.asyncio
+    async def test_length_retry_never_exceeds_mode_hard_limit(self) -> None:
+        """长度截断重试不得突破模式配置给出的 max_tokens 硬上限。"""
+        task_log = _make_task_log()
+        cfg = _make_minimal_cfg(
+            llm={
+                "max_tokens": 128,
+                "max_retries": 2,
+                "retry_wait_seconds": 0,
+            }
+        )
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(
+            side_effect=[
+                _make_length_limited_response(),
+                _make_success_response("retry completed"),
+            ]
+        )
+
+        with patch.object(OpenAIClient, "_create_client", return_value=mock_client):
+            client = OpenAIClient(
+                task_id="test-mode-hard-token-limit",
+                cfg=cfg,
+                task_log=task_log,
+            )
+            await client._create_message(
+                system_prompt="You are a test assistant.",
+                messages_history=[{"role": "user", "content": "test"}],
+                tools_definitions=[],
+            )
+
+        sent_limits = [
+            current_call.kwargs["max_tokens"]
+            for current_call in mock_client.chat.completions.create.await_args_list
+        ]
+        assert sent_limits == [128, 128]
 
 
 # ===========================================================================
@@ -211,9 +260,11 @@ class TestRateLimitKeyRotation:
                 tools_definitions=[],
             )
 
-        # 验证：成功返回且 key 已切换
+        # 验证：成功返回且 KeyPool 已切换到下一个 key
+        # （轮换现在通过重建 client 生效，而非改 client.api_key 属性，
+        #  因为后者在已构造的 AsyncOpenAI 上不保证改变 Authorization 头）
         assert response.choices[0].message.content == "OK after rotation"
-        assert mock_client.api_key == "key-b"
+        assert client._key_pool.current_key() == "key-b"
 
     @pytest.mark.asyncio
     async def test_all_keys_exhausted_raises(self, monkeypatch):

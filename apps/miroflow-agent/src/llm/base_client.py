@@ -10,6 +10,7 @@ supporting both OpenAI and Anthropic API formats.
 
 import asyncio
 import dataclasses
+import os
 from abc import ABC
 from typing import (
     Any,
@@ -27,6 +28,14 @@ from .util import with_timeout
 
 # Default timeout for LLM API calls (10 minutes)
 DEFAULT_LLM_TIMEOUT_SECONDS = 600
+DEFAULT_SUMMARY_MAX_TOKENS = 3072
+DEFAULT_VERIFICATION_MAX_TOKENS = 2048
+SUMMARY_AGENT_TYPES = frozenset({"final_summary", "failure_summary"})
+VERIFICATION_AGENT_TYPES = frozenset({"verification"})
+FAST_AGENT_TYPES = frozenset({"failure_summary"})
+INTERNAL_MESSAGE_TYPE_KEY = "_miroflow_message_type"
+TOOL_RESULT_MESSAGE_TYPE = "tool_result"
+OMITTED_TOOL_RESULT_TEXT = "Tool result is omitted to save tokens."
 
 
 class TokenUsage(TypedDict, total=True):
@@ -75,28 +84,50 @@ class BaseClient(ABC):
     token_usage: TokenUsage = dataclasses.field(init=False)
     last_call_tokens: Dict[str, int] = dataclasses.field(init=False)
 
-    def __post_init__(self):
+    def _zero_last_call_tokens(self) -> Dict[str, int]:
+        """Return a zeroed last_call_tokens dict using this provider's key names.
+
+        OpenAI-style providers use ``prompt_tokens``/``completion_tokens``;
+        Anthropic uses ``input_tokens``/``output_tokens``. Subclasses override
+        this so callers never have to know provider-specific key names.
+        """
+        return {"prompt_tokens": 0, "completion_tokens": 0}
+
+    def reset_last_call_tokens(self) -> None:
+        """Reset the most-recent-call token counters using provider key names.
+
+        Callers (e.g. the orchestrator between turns) must use this instead of
+        assigning a literal dict, otherwise the keys can mismatch the provider's
+        and break context-length accounting (Anthropic reads ``input_tokens``).
+        """
+        self.last_call_tokens = self._zero_last_call_tokens()
+
+    def __post_init__(self) -> None:
         # Initialize last_call_tokens before other operations
-        self.last_call_tokens: Dict[str, int] = {
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-        }
+        self.last_call_tokens: Dict[str, int] = self._zero_last_call_tokens()
 
         # Explicitly assign from cfg object
         self.provider: str = self.cfg.llm.provider
-        self.model_name: str = self.cfg.llm.model_name
+        self.model_name: str = self._require_non_empty_string(
+            self.cfg.llm.model_name,
+            "llm.model_name",
+        )
         self.temperature: float = self.cfg.llm.temperature
         self.top_p: float = self.cfg.llm.top_p
         self.min_p: float = self.cfg.llm.min_p
         self.top_k: int = self.cfg.llm.top_k
         self.max_context_length: int = self.cfg.llm.max_context_length
-        self.max_tokens: int = self.cfg.llm.max_tokens
+        self.max_tokens: int = self._require_positive_int(
+            self.cfg.llm.max_tokens,
+            "llm.max_tokens",
+        )
         self.async_client: bool = self.cfg.llm.async_client
         self.keep_tool_result: int = self.cfg.agent.keep_tool_result
         self.api_key: Optional[str] = self.cfg.llm.get("api_key")
         self.base_url: Optional[str] = self.cfg.llm.get("base_url")
         self.use_tool_calls: Optional[bool] = self.cfg.llm.get("use_tool_calls")
         self.repetition_penalty: float = self.cfg.llm.get("repetition_penalty", 1.0)
+        self._initialize_stage_routing()
 
         self.token_usage = self._reset_token_usage()
         self.client = self._create_client()
@@ -106,6 +137,129 @@ class BaseClient(ABC):
             "LLM | Initialization",
             f"LLMClient {self.provider} {self.model_name} initialization completed.",
         )
+
+    @staticmethod
+    def _require_non_empty_string(value: Any, field_name: str) -> str:
+        """校验显式字符串配置，并去除首尾空白。"""
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{field_name} 必须是非空字符串，实际值为 {value!r}")
+        return value.strip()
+
+    @staticmethod
+    def _require_positive_int(value: Any, field_name: str) -> int:
+        """校验显式整数配置，拒绝 bool、浮点数和非正数。"""
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise ValueError(f"{field_name} 必须是正整数，实际值为 {value!r}")
+        return value
+
+    @staticmethod
+    def _read_non_empty_env(name: str, fallback: str) -> str:
+        """读取非空字符串环境变量，空白值安全回退。"""
+        raw_value = os.getenv(name)
+        if raw_value is None or not raw_value.strip():
+            return fallback
+        return raw_value.strip()
+
+    @staticmethod
+    def _read_positive_env_int(name: str, default: int) -> int:
+        """读取正整数环境变量，非法值安全回退到命名默认值。"""
+        raw_value = os.getenv(name)
+        if raw_value is None:
+            return default
+        try:
+            parsed_value = int(raw_value)
+        except ValueError:
+            return default
+        return parsed_value if parsed_value > 0 else default
+
+    def _read_stage_model_name(
+        self,
+        config_name: str,
+        env_name: str,
+        fallback: str,
+    ) -> str:
+        """读取单个阶段模型配置；显式 cfg 非法时立即失败。"""
+        if config_name in self.cfg.llm:
+            return self._require_non_empty_string(
+                self.cfg.llm[config_name],
+                f"llm.{config_name}",
+            )
+        return self._read_non_empty_env(env_name, fallback)
+
+    def _read_stage_token_limit(
+        self,
+        config_name: str,
+        env_name: str,
+        default: int,
+    ) -> int:
+        """读取阶段 token 上限；显式 cfg 非法时立即失败。"""
+        if config_name in self.cfg.llm:
+            return self._require_positive_int(
+                self.cfg.llm[config_name],
+                f"llm.{config_name}",
+            )
+        return self._read_positive_env_int(env_name, default)
+
+    def _initialize_stage_routing(self) -> None:
+        """统一初始化所有 provider 共用的模型与阶段预算。"""
+        self.model_tool_name = self._read_stage_model_name(
+            "model_tool_name",
+            "MODEL_TOOL_NAME",
+            self.model_name,
+        )
+        self.model_fast_name = self._read_stage_model_name(
+            "model_fast_name",
+            "MODEL_FAST_NAME",
+            self.model_name,
+        )
+        self.model_thinking_name = self._read_stage_model_name(
+            "model_thinking_name",
+            "MODEL_THINKING_NAME",
+            self.model_fast_name,
+        )
+        self.model_summary_name = self._read_stage_model_name(
+            "model_summary_name",
+            "MODEL_SUMMARY_NAME",
+            self.model_fast_name,
+        )
+        self.summary_max_tokens = self._read_stage_token_limit(
+            "summary_max_tokens",
+            "LLM_SUMMARY_MAX_TOKENS",
+            DEFAULT_SUMMARY_MAX_TOKENS,
+        )
+        self.verification_max_tokens = self._read_stage_token_limit(
+            "verification_max_tokens",
+            "LLM_VERIFICATION_MAX_TOKENS",
+            DEFAULT_VERIFICATION_MAX_TOKENS,
+        )
+
+    def _resolve_model_name(
+        self,
+        tools_definitions: Any,
+        agent_type: str,
+    ) -> str:
+        """按执行阶段和工具可用性选择模型。"""
+        if agent_type in VERIFICATION_AGENT_TYPES:
+            return self.model_thinking_name
+        if agent_type in FAST_AGENT_TYPES:
+            return self.model_fast_name
+        if agent_type in SUMMARY_AGENT_TYPES:
+            return self.model_summary_name
+        if tools_definitions:
+            return self.model_tool_name
+        return self.model_thinking_name
+
+    def _resolve_stage_max_tokens(self, agent_type: str) -> int:
+        """在全局模式硬上限内应用总结或校验阶段上限。"""
+        current_max_tokens = self.max_tokens
+        if agent_type in SUMMARY_AGENT_TYPES:
+            current_max_tokens = min(current_max_tokens, self.summary_max_tokens)
+        if agent_type in VERIFICATION_AGENT_TYPES:
+            current_max_tokens = min(
+                current_max_tokens,
+                self.verification_max_tokens,
+            )
+        return current_max_tokens
 
     def _reset_token_usage(self) -> TokenUsage:
         """
@@ -124,7 +278,7 @@ class BaseClient(ABC):
     def _remove_tool_result_from_messages(
         self, messages, keep_tool_result
     ) -> List[Dict]:
-        """Remove tool results from messages
+        """按内部类型标记省略历史中的真实工具结果。
 
         Args:
             messages: List of message dictionaries
@@ -135,89 +289,84 @@ class BaseClient(ABC):
         """
         messages_copy = [m.copy() for m in messages]
 
-        if keep_tool_result == -1:
-            # No processing needed, keep all messages
-            return messages_copy
-
-        # Find indices of all user/tool messages (these are tool results)
-        user_indices = [
+        # 只有显式标记的消息才是真实工具结果，普通 user 指令不参与裁剪。
+        tool_result_indices = [
             i
             for i, msg in enumerate(messages_copy)
-            if msg.get("role") == "user" or msg.get("role") == "tool"
+            if msg.get(INTERNAL_MESSAGE_TYPE_KEY) == TOOL_RESULT_MESSAGE_TYPE
         ]
 
-        if len(user_indices) == 0:
-            # No user/tool messages found
-            self.task_log.log_step(
-                "info",
-                "LLM | Message Retention",
-                "No user/tool messages found in the history.",
-            )
-            return messages_copy
-
-        # The first user message is the initial task, not a tool result
-        # Tool results start from the second user message onwards
-        if len(user_indices) == 1:
-            # Only one user message (the initial task), no tool results to filter
-            self.task_log.log_step(
-                "info",
-                "LLM | Message Retention",
-                "Only 1 user message found (initial task). Keeping it as is.",
-            )
-            return messages_copy
-
-        # Tool result indices (excluding the first user message which is the initial task)
-        tool_result_indices = user_indices[1:]
-        first_user_idx = user_indices[
-            0
-        ]  # Always keep the first user message (initial task)
-
-        # Calculate how many tool results to keep from the end
-        if keep_tool_result == 0:
-            # Keep 0 tool results, only keep the initial task
-            num_tool_results_to_keep = 0
+        if keep_tool_result == -1:
+            num_tool_results_to_keep = len(tool_result_indices)
         else:
-            # Keep the last keep_tool_result tool results
-            num_tool_results_to_keep = min(keep_tool_result, len(tool_result_indices))
+            num_tool_results_to_keep = min(
+                max(keep_tool_result, 0),
+                len(tool_result_indices),
+            )
 
-        # Get indices of tool results to keep from the end
         tool_result_indices_to_keep = (
             tool_result_indices[-num_tool_results_to_keep:]
             if num_tool_results_to_keep > 0
             else []
         )
 
-        # Combine first message (initial task) and tool results to keep
-        indices_to_keep = [first_user_idx] + tool_result_indices_to_keep
-
         self.task_log.log_step(
             "info",
             "LLM | Message Retention",
-            f"Message retention summary: Total user/tool messages: {len(user_indices)}, "
-            f"Initial task at index: {first_user_idx}, "
+            f"Message retention summary: Total tool results: {len(tool_result_indices)}, "
             f"Keeping last {num_tool_results_to_keep} tool results at indices: {tool_result_indices_to_keep}, "
-            f"Total messages to keep: {len(indices_to_keep)}",
+            f"Total ordinary messages: {len(messages_copy) - len(tool_result_indices)}",
         )
 
-        # Replace content of tool results that should be omitted
         for i, msg in enumerate(messages_copy):
-            if (
-                msg.get("role") == "user" or msg.get("role") == "tool"
-            ) and i not in indices_to_keep:
-                # Preserve the message structure but replace content
+            if i in tool_result_indices and i not in tool_result_indices_to_keep:
                 if isinstance(msg.get("content"), list):
-                    # For Anthropic format
                     msg["content"] = [
                         {
                             "type": "text",
-                            "text": "Tool result is omitted to save tokens.",
+                            "text": OMITTED_TOOL_RESULT_TEXT,
                         }
                     ]
                 else:
-                    # For OpenAI format
-                    msg["content"] = "Tool result is omitted to save tokens."
+                    msg["content"] = OMITTED_TOOL_RESULT_TEXT
+
+            # 内部审计标记只能保留在原始历史中，不能发送给第三方 SDK。
+            msg.pop(INTERNAL_MESSAGE_TYPE_KEY, None)
 
         return messages_copy
+
+    def _trim_tool_result_pair_for_summary_context(
+        self,
+        message_history: List[Dict],
+    ) -> bool:
+        """超限时裁剪最近一组有明确内部标记的工具调用消息。
+
+        仅当 tool_result 消息紧邻在 assistant 调用消息之后时删除这两条，
+        从而保护原始任务、普通 user 指令以及末尾 assistant 直接回答。
+
+        Returns:
+            是否成功裁剪了一组工具调用消息。
+        """
+        for result_index in range(len(message_history) - 1, -1, -1):
+            result_message = message_history[result_index]
+            if (
+                result_message.get(INTERNAL_MESSAGE_TYPE_KEY)
+                != TOOL_RESULT_MESSAGE_TYPE
+            ):
+                continue
+
+            assistant_index = result_index - 1
+            if (
+                assistant_index < 0
+                or message_history[assistant_index].get("role") != "assistant"
+            ):
+                continue
+
+            del message_history[result_index]
+            del message_history[assistant_index]
+            return True
+
+        return False
 
     @with_timeout(DEFAULT_LLM_TIMEOUT_SECONDS)
     async def create_message(
@@ -301,20 +450,61 @@ class BaseClient(ABC):
                     tool_list.append(tool_def)
         return tool_list
 
-    def close(self):
-        """Close client connection.
+    async def _rotate_client(self) -> None:
+        """Rebuild the SDK client (e.g. after KeyPool advanced to a new key).
 
-        Note: For async clients (AsyncOpenAI, AsyncAnthropic), the connection
-        will be closed when the client object is garbage collected.
-        For proper async cleanup, use `await client.aclose()` in an async context.
+        Mutating ``client.api_key`` on an already-constructed AsyncOpenAI is not
+        guaranteed to change the Authorization header across SDK versions, so a
+        429 key rotation could "succeed" yet keep using the old key. Rebuilding
+        via _create_client() (which reads KeyPool.current_key()) is robust, and
+        we close the old client to avoid connection leaks.
+        """
+        old = self.client
+        self.client = self._create_client()
+        await self._aclose_obj(old)
+
+    async def aclose(self) -> None:
+        """Properly close the client and its underlying HTTP connections.
+
+        Prefer this over close() in async contexts: AsyncOpenAI/AsyncAnthropic
+        own an httpx.AsyncClient whose close() is a coroutine. Calling close()
+        synchronously (the old path) silently failed and leaked connections/fds
+        across long-running workers. This awaits the real async close.
+        """
+        await self._aclose_obj(self.client)
+
+    @staticmethod
+    async def _aclose_obj(obj: Any) -> None:
+        """Best-effort async close of an SDK client or underlying httpx client."""
+        if obj is None:
+            return
+        close = getattr(obj, "close", None)
+        try:
+            if close is not None and asyncio.iscoroutinefunction(close):
+                await close()
+                return
+            # Sync close, or fall back to the underlying httpx client.
+            inner = getattr(obj, "_client", None)
+            inner_close = getattr(inner, "aclose", None)
+            if inner_close is not None and asyncio.iscoroutinefunction(inner_close):
+                await inner_close()
+            elif close is not None:
+                close()
+            elif inner is not None and hasattr(inner, "close"):
+                inner.close()
+        except Exception:
+            pass  # Ignore errors during cleanup
+
+    def close(self):
+        """Synchronous close (legacy). Prefer `await aclose()` in async code.
+
+        Kept for non-async callers; for async clients it can only close the
+        underlying httpx client if it exposes a sync close, otherwise cleanup
+        is left to GC.
         """
         if hasattr(self.client, "close"):
             if asyncio.iscoroutinefunction(self.client.close):
-                # For async clients, we cannot call close() synchronously.
-                # The async HTTP client will be closed when garbage collected.
-                # For explicit async cleanup, call aclose() from an async context.
                 if hasattr(self.client, "_client"):
-                    # Try to close the underlying httpx client if available
                     try:
                         self.client._client.close()
                     except Exception:
@@ -322,7 +512,6 @@ class BaseClient(ABC):
             else:
                 self.client.close()
         elif hasattr(self.client, "_client") and hasattr(self.client._client, "close"):
-            # Some clients may have internal _client attribute
             self.client._client.close()
 
     def _format_response_for_log(self, response) -> Dict:

@@ -14,7 +14,8 @@ This module provides functions for:
 import json
 import logging
 import re
-from typing import Any, Dict, List, Union
+import warnings
+from typing import Any, Dict, List, Mapping, Optional, Union
 
 from json_repair import repair_json
 
@@ -60,29 +61,31 @@ def parse_tool_server_mapping(system_prompt: str) -> dict:
     return mapping
 
 
-# Module-level cache for tool_server_mapping
-_tool_server_mapping: dict = {}
+def set_tool_server_mapping(system_prompt: str) -> dict:
+    """兼容旧导入：解析并返回映射，但不保存任何共享状态。
 
-
-def set_tool_server_mapping(system_prompt: str) -> None:
+    旧版本会把映射写入模块全局变量，导致并发任务及同一 Client 的主/子 Agent
+    相互覆盖。调用方应迁移到 :func:`parse_tool_server_mapping`，并将返回值显式
+    绑定到具体 LLM 调用。
     """
-    Parse system prompt and cache the tool_name → server_name mapping.
-
-    Should be called once when system prompt is available.
-
-    Args:
-        system_prompt: The system prompt containing MCP tool definitions
-    """
-    global _tool_server_mapping
-    _tool_server_mapping = parse_tool_server_mapping(system_prompt)
+    warnings.warn(
+        "set_tool_server_mapping() 已弃用；请改用 parse_tool_server_mapping() "
+        "并把返回映射显式传入当前 LLM 调用。",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return parse_tool_server_mapping(system_prompt)
 
 
-def fix_server_name_in_text(text: str) -> str:
+def fix_server_name_in_text(
+    text: str,
+    tool_server_mapping: Optional[Mapping[str, str]] = None,
+) -> str:
     """
     Fix incorrect server_name and tool_name in MCP XML tool calls.
 
-    Uses the cached tool_server_mapping (parsed from system prompt) to determine
-    the correct server_name for each tool. Only fixes the 3 target tools:
+    Uses the explicitly provided tool_server_mapping to determine the correct
+    server_name for each tool. Only fixes the 3 target tools:
     run_python_code, google_search, scrape_and_extract_info.
 
     Also handles the special case where model outputs tool_name=python
@@ -90,6 +93,7 @@ def fix_server_name_in_text(text: str) -> str:
 
     Args:
         text: The LLM response text containing MCP tool calls
+        tool_server_mapping: Mapping bound to the current prompt/call context
 
     Returns:
         Text with corrected server_name and tool_name if needed
@@ -97,7 +101,7 @@ def fix_server_name_in_text(text: str) -> str:
     if not isinstance(text, str):
         return text
 
-    mapping = _tool_server_mapping
+    mapping = tool_server_mapping
     if not mapping:
         return text
 
@@ -142,7 +146,7 @@ def filter_none_values(arguments: Union[Dict, Any]) -> Union[Dict, Any]:
 
 
 def _fix_backslash_escapes(json_str: str) -> str:
-    """
+    r"""
     Fix common backslash escape issues in JSON strings.
     This handles cases where backslashes in string values are not properly escaped.
 
@@ -312,6 +316,7 @@ def extract_llm_response_text(llm_response: Union[str, Dict]) -> str:
 
 def parse_llm_response_for_tool_calls(
     llm_response_content_text: Union[str, Dict, List],
+    tool_server_mapping: Optional[Mapping[str, str]] = None,
 ) -> List[Dict[str, Any]]:
     """
     Parse tool calls from LLM response content.
@@ -323,6 +328,7 @@ def parse_llm_response_for_tool_calls(
 
     Args:
         llm_response_content_text: Response content in any supported format
+        tool_server_mapping: Mapping bound to the current prompt/call context
 
     Returns:
         List of tool call dicts with keys: server_name, tool_name, arguments, id
@@ -422,7 +428,11 @@ def parse_llm_response_for_tool_calls(
             server_name, tool_name = full_name.rsplit("-", maxsplit=1)
         else:
             tool_name = full_name
-            server_name = _tool_server_mapping.get(tool_name, "unknown")
+            server_name = (
+                tool_server_mapping.get(tool_name, "unknown")
+                if tool_server_mapping
+                else "unknown"
+            )
         if tool_name:
             tool_calls.append(
                 {

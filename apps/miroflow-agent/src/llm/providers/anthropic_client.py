@@ -17,7 +17,8 @@ Features:
 import asyncio
 import dataclasses
 import logging
-from typing import Any, Dict, List, Tuple, Union
+import time
+from typing import Any, Dict, List, Mapping, Optional, Tuple, Union
 
 import tiktoken
 from anthropic import (
@@ -30,14 +31,24 @@ from anthropic import (
 from tenacity import retry, stop_after_attempt, wait_fixed
 
 from ...utils.prompt_utils import generate_mcp_system_prompt
-from ..base_client import BaseClient
+from ..base_client import (
+    INTERNAL_MESSAGE_TYPE_KEY,
+    TOOL_RESULT_MESSAGE_TYPE,
+    BaseClient,
+)
 
 logger = logging.getLogger("miroflow_agent")
 
 
 @dataclasses.dataclass
 class AnthropicClient(BaseClient):
-    def __post_init__(self):
+    def _zero_last_call_tokens(self) -> dict:
+        # Anthropic tracks input/output tokens (not prompt/completion).
+        # ensure_summary_context reads these key names; keeping them correct
+        # here prevents context-length under-estimation between turns.
+        return {"input_tokens": 0, "output_tokens": 0}
+
+    def __post_init__(self) -> None:
         super().__post_init__()
 
         # Anthropic-specific token counters
@@ -126,16 +137,19 @@ class AnthropicClient(BaseClient):
 
         # Apply cache control
         processed_messages = self._apply_cache_control(messages_for_llm)
+        request_model_name = self._resolve_model_name(tools_definitions, agent_type)
+        request_max_tokens = self._resolve_stage_max_tokens(agent_type)
 
         try:
             # Note: Anthropic API does not support repetition_penalty parameter
+            request_start_time = time.perf_counter()
             if self.async_client:
                 response = await self.client.messages.create(
-                    model=self.model_name,
+                    model=request_model_name,
                     temperature=self.temperature,
                     top_p=self.top_p if self.top_p != 1.0 else NOT_GIVEN,
                     top_k=self.top_k if self.top_k != -1 else NOT_GIVEN,
-                    max_tokens=self.max_tokens,
+                    max_tokens=request_max_tokens,
                     system=[
                         {
                             "type": "text",
@@ -148,11 +162,11 @@ class AnthropicClient(BaseClient):
                 )
             else:
                 response = self.client.messages.create(
-                    model=self.model_name,
+                    model=request_model_name,
                     temperature=self.temperature,
                     top_p=self.top_p if self.top_p != 1.0 else NOT_GIVEN,
                     top_k=self.top_k if self.top_k != -1 else NOT_GIVEN,
-                    max_tokens=self.max_tokens,
+                    max_tokens=request_max_tokens,
                     system=[
                         {
                             "type": "text",
@@ -163,7 +177,38 @@ class AnthropicClient(BaseClient):
                     messages=processed_messages,
                     stream=False,
                 )
+            request_duration_ms = int((time.perf_counter() - request_start_time) * 1000)
             self._update_token_usage(getattr(response, "usage", None))
+            response_model_name = getattr(response, "model", None) or "N/A"
+            self.task_log.run_metrics.record_model_route(
+                request_model_name,
+                response_model_name,
+            )
+            self.task_log.log_step(
+                "info",
+                "LLM | Model Route",
+                (
+                    f"agent_type={agent_type}, requested={request_model_name}, "
+                    f"responded={response_model_name}"
+                ),
+            )
+            tool_count = sum(
+                len(server.get("tools") or [])
+                for server in tools_definitions or []
+                if hasattr(server, "get")
+            )
+            self.task_log.record_stage_timing(
+                f"llm.request.{agent_type}",
+                request_duration_ms,
+                message=f"LLM request completed in {request_duration_ms}ms",
+                metadata={
+                    "agent_type": agent_type,
+                    "requested_model": request_model_name,
+                    "responded_model": response_model_name,
+                    "tool_count": tool_count,
+                    "message_count": len(processed_messages),
+                },
+            )
             self.task_log.log_step(
                 "info",
                 "LLM | Call Status",
@@ -186,7 +231,11 @@ class AnthropicClient(BaseClient):
             raise e
 
     def process_llm_response(
-        self, llm_response: Any, message_history: List[Dict], agent_type: str = "main"
+        self,
+        llm_response: Any,
+        message_history: List[Dict],
+        agent_type: str = "main",
+        tool_server_mapping: Optional[Mapping[str, str]] = None,
     ) -> tuple[str, bool, List[Dict]]:
         """Process LLM response"""
         if not llm_response:
@@ -226,10 +275,16 @@ class AnthropicClient(BaseClient):
                 )
 
         # Fix server_name in text content
-        assistant_response_text = fix_server_name_in_text(assistant_response_text)
+        assistant_response_text = fix_server_name_in_text(
+            assistant_response_text,
+            tool_server_mapping=tool_server_mapping,
+        )
         for item in assistant_response_content:
             if item.get("type") == "text":
-                item["text"] = fix_server_name_in_text(item["text"])
+                item["text"] = fix_server_name_in_text(
+                    item["text"],
+                    tool_server_mapping=tool_server_mapping,
+                )
 
         # Add assistant response to history
         message_history.append(
@@ -243,12 +298,18 @@ class AnthropicClient(BaseClient):
         return assistant_response_text, False, message_history
 
     def extract_tool_calls_info(
-        self, llm_response: Any, assistant_response_text: str
+        self,
+        llm_response: Any,
+        assistant_response_text: str,
+        tool_server_mapping: Optional[Mapping[str, str]] = None,
     ) -> List[Dict]:
         """Extract tool call information from LLM response"""
         from ...utils.parsing_utils import parse_llm_response_for_tool_calls
 
-        return parse_llm_response_for_tool_calls(assistant_response_text)
+        return parse_llm_response_for_tool_calls(
+            assistant_response_text,
+            tool_server_mapping=tool_server_mapping,
+        )
 
     def update_message_history(
         self, message_history: List[Dict], all_tool_results_content_with_id: List[Tuple]
@@ -267,16 +328,14 @@ class AnthropicClient(BaseClient):
             {
                 "role": "user",
                 "content": [{"type": "text", "text": merged_text}],
+                INTERNAL_MESSAGE_TYPE_KEY: TOOL_RESULT_MESSAGE_TYPE,
             }
         )
 
         return message_history
 
     def generate_agent_system_prompt(self, date: Any, mcp_servers: List[Dict]) -> str:
-        from ...utils.parsing_utils import set_tool_server_mapping
-
         prompt = generate_mcp_system_prompt(date, mcp_servers)
-        set_tool_server_mapping(prompt)
         return prompt
 
     def _estimate_tokens(self, text: str) -> int:
@@ -305,7 +364,7 @@ class AnthropicClient(BaseClient):
     ) -> tuple[bool, list]:
         """
         Check if current message_history + summary_prompt will exceed context
-        If it will exceed, remove the last assistant-user pair and return False
+        If it will exceed, remove the latest marked tool-result pair when available
         Return True to continue, False if messages have been rolled back
         """
         # Get token usage from the last LLM call
@@ -339,18 +398,17 @@ class AnthropicClient(BaseClient):
                 "Context limit reached, proceeding to step back and summarize the conversation",
             )
 
-            # Remove the last user message (tool call results)
-            if message_history[-1]["role"] == "user":
-                message_history.pop()
-
-            # Remove the second-to-last assistant message (tool call request)
-            if message_history[-1]["role"] == "assistant":
-                message_history.pop()
+            trimmed = self._trim_tool_result_pair_for_summary_context(message_history)
 
             self.task_log.log_step(
                 "info",
                 "LLM | Context Limit Reached",
-                f"Removed the last assistant-user pair, current message_history length: {len(message_history)}",
+                (
+                    "Removed the latest marked tool-result pair"
+                    if trimmed
+                    else "No marked tool-result pair available; history preserved"
+                )
+                + f", current message_history length: {len(message_history)}",
             )
 
             return False, message_history

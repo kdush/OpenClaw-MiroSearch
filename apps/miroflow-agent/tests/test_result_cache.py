@@ -16,7 +16,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.cache.result_cache import ResultCache
+from src.cache.result_cache import ResultCache  # noqa: E402
 
 
 def test_basic_get_put():
@@ -77,11 +77,11 @@ def test_make_key_deterministic():
     assert k1 == k2
 
 
-def test_make_key_case_insensitive_query():
-    """query 部分应忽略大小写。"""
+def test_make_key_preserves_query_case_semantics():
+    """用户 query 大小写可能承载语义，不得共用完整研究结论。"""
     k1 = ResultCache.make_key("Hello World")
     k2 = ResultCache.make_key("hello world")
-    assert k1 == k2
+    assert k1 != k2
 
 
 def test_make_key_different_params():
@@ -89,6 +89,33 @@ def test_make_key_different_params():
     k1 = ResultCache.make_key("query", "balanced")
     k2 = ResultCache.make_key("query", "verified")
     assert k1 != k2
+
+
+def test_make_key_full_length_not_truncated():
+    """key 应为完整 sha256（64 hex），不截断，避免碰撞返回错误结论。"""
+    key = ResultCache.make_key("q", "balanced")
+    assert len(key) == 64
+
+
+def test_make_key_includes_search_depth_params():
+    """search_result_num / verification_min_search_rounds 不同应生成不同 key。"""
+    base = ResultCache.make_key("q", "balanced", "parallel", "brief")
+    diff_num = ResultCache.make_key(
+        "q", "balanced", "parallel", "brief", search_result_num=20
+    )
+    diff_rounds = ResultCache.make_key(
+        "q", "balanced", "parallel", "brief", verification_min_search_rounds=5
+    )
+    assert base != diff_num
+    assert base != diff_rounds
+    assert diff_num != diff_rounds
+
+
+def test_make_key_mode_case_insensitive():
+    """策略枚举应大小写不敏感。"""
+    assert ResultCache.make_key("q", "Balanced") == ResultCache.make_key(
+        "q", "balanced"
+    )
 
 
 def test_invalidate():

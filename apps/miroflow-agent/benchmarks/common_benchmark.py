@@ -30,6 +30,45 @@ from src.utils.prompt_utils import (
     FORMAT_ERROR_MESSAGE,
 )
 
+SUMMARY_RETRY_ISSUES = frozenset({"summary_generation_failed", "no_answer_available"})
+
+
+def _is_retryable_summary_failure(
+    pipeline_status: object,
+    result_quality: object,
+    failure_experience_summary: object,
+) -> bool:
+    """仅把总结不可用视为可重试，基础设施失败仍立即终止。"""
+    if pipeline_status != "failed":
+        return False
+    if str(failure_experience_summary or "").strip():
+        return True
+    if not isinstance(result_quality, dict):
+        return False
+    issues = result_quality.get("issues")
+    normalized_issues = (
+        {str(issue) for issue in issues} if isinstance(issues, list) else set()
+    )
+    return result_quality.get("answer_available") is False and bool(
+        normalized_issues & SUMMARY_RETRY_ISSUES
+    )
+
+
+def _build_task_description_with_failures(
+    task_description: str,
+    failure_experiences: List[str],
+) -> str:
+    """把历次失败经验稳定注入下一轮任务描述。"""
+    if not failure_experiences:
+        return task_description
+    enhanced = task_description + FAILURE_EXPERIENCE_HEADER
+    for idx, experience in enumerate(failure_experiences, 1):
+        enhanced += FAILURE_EXPERIENCE_ITEM.format(
+            attempt_number=idx,
+            failure_summary=experience,
+        )
+    return enhanced + FAILURE_EXPERIENCE_FOOTER
+
 
 def _task_worker(task_dict, cfg_dict, evaluator_kwargs):
     """
@@ -89,7 +128,7 @@ class BenchmarkTask:
 
     task_id: str
     task_question: str
-    ground_truth: str
+    ground_truth: Optional[str]
     file_path: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
     model_boxed_answer: str = ""
@@ -102,7 +141,7 @@ class BenchmarkResult:
 
     task_id: str
     task_question: str
-    ground_truth: str
+    ground_truth: Optional[str]
     file_path: Optional[str]
     status: str
     model_boxed_answer: str = ""
@@ -350,12 +389,7 @@ class BenchmarkEvaluator(ABC):
                             # Check if this is the final retry (no more chances after this)
                             is_final_retry = format_retry_count == max_format_retries
 
-                            (
-                                response,
-                                final_boxed_answer,
-                                log_file_path,
-                                failure_experience_summary,
-                            ) = await execute_task_pipeline(
+                            pipeline_result = await execute_task_pipeline(
                                 cfg=self.cfg,
                                 task_id=f"{task.task_id}_attempt-{attempt}_format-retry-{format_retry_count}",
                                 task_file_name=task_file_path,
@@ -368,10 +402,71 @@ class BenchmarkEvaluator(ABC):
                                 is_final_retry=is_final_retry,
                             )
 
+                            pipeline_status = pipeline_result.get("status")
+                            response = pipeline_result.get("final_summary", "")
+                            final_boxed_answer = pipeline_result.get(
+                                "final_boxed_answer", ""
+                            )
+                            log_file_path = pipeline_result.get("log_file_path", "")
+                            failure_experience_summary = pipeline_result.get(
+                                "failure_experience_summary"
+                            )
+                            pipeline_error = pipeline_result.get("error")
+                            result_quality = pipeline_result.get("result_quality")
+
+                            attempt_result["final_summary"] = response
+                            attempt_result["result_quality"] = result_quality
+                            attempt_result["pipeline_status"] = pipeline_status
+                            attempt_result["log_file_path"] = log_file_path
+
+                            if pipeline_status == "cancelled":
+                                attempt_result["status"] = "cancelled"
+                                attempt_result["error_message"] = (
+                                    pipeline_error
+                                    or response
+                                    or "Pipeline execution was cancelled"
+                                )
+                                break
+
+                            if pipeline_status != "completed":
+                                should_retry_summary = _is_retryable_summary_failure(
+                                    pipeline_status,
+                                    result_quality,
+                                    failure_experience_summary,
+                                )
+                                if should_retry_summary:
+                                    format_retry_count += 1
+                                    if format_retry_count <= max_format_retries:
+                                        if failure_experience_summary:
+                                            failure_experiences.append(
+                                                failure_experience_summary
+                                            )
+                                        current_task_description = (
+                                            _build_task_description_with_failures(
+                                                task_description,
+                                                failure_experiences,
+                                            )
+                                        )
+                                        print(
+                                            "    Summary unavailable; retrying "
+                                            f"with failure context ({format_retry_count}/"
+                                            f"{max_format_retries})..."
+                                        )
+                                        continue
+                                attempt_result["status"] = "failed"
+                                attempt_result["error_message"] = (
+                                    pipeline_error
+                                    or response
+                                    or (
+                                        "Pipeline returned non-completed status: "
+                                        f"{pipeline_status!r}"
+                                    )
+                                )
+                                break
+
                             attempt_result["model_boxed_answer"] = (
                                 final_boxed_answer if final_boxed_answer else ""
                             )
-                            attempt_result["log_file_path"] = log_file_path
 
                             # Check for format error
                             if (
@@ -392,21 +487,11 @@ class BenchmarkEvaluator(ABC):
 
                                         # Build enhanced task description with accumulated failure experiences
                                         # Start fresh from original task_description each time
-                                        current_task_description = task_description
-                                        current_task_description += (
-                                            FAILURE_EXPERIENCE_HEADER
-                                        )
-                                        for idx, exp in enumerate(
-                                            failure_experiences, 1
-                                        ):
-                                            current_task_description += (
-                                                FAILURE_EXPERIENCE_ITEM.format(
-                                                    attempt_number=idx,
-                                                    failure_summary=exp,
-                                                )
+                                        current_task_description = (
+                                            _build_task_description_with_failures(
+                                                task_description,
+                                                failure_experiences,
                                             )
-                                        current_task_description += (
-                                            FAILURE_EXPERIENCE_FOOTER
                                         )
 
                                         print(
@@ -442,7 +527,11 @@ class BenchmarkEvaluator(ABC):
 
                 # Perform LLM verification if we have an answer and haven't verified yet
                 if (
-                    attempt_result["model_boxed_answer"]
+                    attempt_result["status"] == "success"
+                    and attempt_result["model_boxed_answer"]
+                    and not attempt_result["model_boxed_answer"].startswith(
+                        FORMAT_ERROR_MESSAGE
+                    )
                     and attempt_result["final_judge_result"] is None
                     and task.ground_truth is not None
                 ):
@@ -505,20 +594,31 @@ class BenchmarkEvaluator(ABC):
                 result.attempts.append(attempt_result)
 
                 # Update main result with the first successful attempt or best attempt so far
-                if attempt == 1 or (
-                    attempt_result["status"] == "success"
-                    and not result.model_boxed_answer
+                if (
+                    attempt_result["is_correct"]
+                    or attempt == 1
+                    or (
+                        attempt_result["status"] == "success"
+                        and not result.model_boxed_answer
+                    )
                 ):
                     result.model_boxed_answer = attempt_result["model_boxed_answer"]
                     result.log_file_path = attempt_result["log_file_path"]
                     result.status = attempt_result["status"]
-                    if "error_message" in attempt_result:
-                        result.error_message = attempt_result["error_message"]
+                    result.error_message = attempt_result.get(
+                        "error_message",
+                        "",
+                    )
 
                 # Early stopping: if we found a correct answer, we can stop
                 if found_correct_answer:
                     print(
                         f"    🎯 Found correct answer! Stopping early after {attempt} attempts."
+                    )
+                    break
+                if attempt_result["status"] == "cancelled":
+                    print(
+                        f"    Task {task.task_id} was cancelled; stopping pass@k attempts."
                     )
                     break
 
