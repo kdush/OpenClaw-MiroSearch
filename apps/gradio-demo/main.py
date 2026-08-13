@@ -55,6 +55,62 @@ def _env_int(name: str, default_value: int) -> int:
         return default_value
 
 
+def _env_int_at_least(name: str, default_value: int, minimum: int) -> int:
+    """读取带下限的整数环境变量；越界值按配置错误回退默认值。"""
+    parsed_value = _env_int(name, default_value)
+    return parsed_value if parsed_value >= minimum else default_value
+
+
+def _env_int_choice(
+    name: str,
+    default_value: int,
+    choices: List[int],
+) -> int:
+    """读取枚举整数；环境值非法或不在允许集合时回退到默认值。"""
+    parsed_value = _env_int(name, default_value)
+    return parsed_value if parsed_value in choices else default_value
+
+
+def _env_int_range(
+    name: str,
+    default_value: int,
+    minimum: int,
+    maximum: int,
+) -> int:
+    """读取范围整数；越界时回退默认值而不是夹到另一运行档位。"""
+    parsed_value = _env_int(name, default_value)
+    if minimum <= parsed_value <= maximum:
+        return parsed_value
+    return default_value
+
+
+def _env_float(name: str, default_value: float) -> float:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default_value
+    try:
+        return float(raw_value)
+    except ValueError:
+        return default_value
+
+
+def _env_non_empty(name: str, default_value: str) -> str:
+    """读取非空字符串环境变量；空白值安全回退。"""
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default_value
+    normalized = raw_value.strip()
+    if normalized:
+        return normalized
+    logger.warning(
+        "环境变量 %s=%r 为空，回退到 %s",
+        name,
+        raw_value,
+        default_value,
+    )
+    return default_value
+
+
 def _load_logo_data_uri() -> str:
     """加载本地 Logo 并转换为 data URI，避免依赖外部静态资源服务。"""
     logo_path = Path(__file__).resolve().parents[2] / "assets" / "mirologo.png"
@@ -175,8 +231,10 @@ DEFAULT_BENCHMARK_NAME = "debug"
 DEFAULT_RESEARCH_MODE = os.getenv("DEFAULT_RESEARCH_MODE", "balanced")
 DEFAULT_SEARCH_PROFILE = os.getenv("DEFAULT_SEARCH_PROFILE", "searxng-first")
 SEARCH_RESULT_NUM_CHOICES = [10, 20, 30]
-DEFAULT_SEARCH_RESULT_NUM = _env_int(
-    "DEFAULT_SEARCH_RESULT_NUM", SEARCH_RESULT_NUM_CHOICES[1]
+DEFAULT_SEARCH_RESULT_NUM = _env_int_choice(
+    "DEFAULT_SEARCH_RESULT_NUM",
+    SEARCH_RESULT_NUM_CHOICES[1],
+    SEARCH_RESULT_NUM_CHOICES,
 )
 SEARCH_RESULT_DISPLAY_MAX = max(1, _env_int("SEARCH_RESULT_DISPLAY_MAX", 30))
 SEARCH_STEP_QUERY_PREVIEW_CHARS = max(
@@ -186,16 +244,35 @@ SEARCH_STEP_SOURCE_PREVIEW_CHARS = max(
     10, _env_int("SEARCH_STEP_SOURCE_PREVIEW_CHARS", 48)
 )
 COLLAPSE_PROCESS_AFTER_SUMMARY = _env_flag("COLLAPSE_PROCESS_AFTER_SUMMARY", True)
-DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS = max(
-    1, _env_int("DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS", 3)
-)
 MAX_VERIFICATION_MIN_SEARCH_ROUNDS = 8
-DEFAULT_MODEL_NAME = os.getenv("DEFAULT_MODEL_NAME", "qwen/qwen3.6-plus")
-DEFAULT_MODEL_TOOL_NAME = os.getenv("MODEL_TOOL_NAME", DEFAULT_MODEL_NAME)
-DEFAULT_MODEL_FAST_NAME = os.getenv("MODEL_FAST_NAME", "qwen/qwen3.6-35b-a3b")
-DEFAULT_MODEL_THINKING_NAME = os.getenv("MODEL_THINKING_NAME", DEFAULT_MODEL_NAME)
-DEFAULT_MODEL_SUMMARY_NAME = os.getenv("MODEL_SUMMARY_NAME", DEFAULT_MODEL_FAST_NAME)
+DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS = _env_int_range(
+    "DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS",
+    3,
+    1,
+    MAX_VERIFICATION_MIN_SEARCH_ROUNDS,
+)
+DEFAULT_MODEL_NAME = _env_non_empty(
+    "DEFAULT_MODEL_NAME",
+    "qwen/qwen3.6-plus",
+)
+DEFAULT_MODEL_TOOL_NAME = _env_non_empty("MODEL_TOOL_NAME", DEFAULT_MODEL_NAME)
+DEFAULT_MODEL_FAST_NAME = _env_non_empty(
+    "MODEL_FAST_NAME",
+    "qwen/qwen3.6-35b-a3b",
+)
+DEFAULT_MODEL_THINKING_NAME = _env_non_empty(
+    "MODEL_THINKING_NAME",
+    DEFAULT_MODEL_NAME,
+)
+DEFAULT_MODEL_SUMMARY_NAME = _env_non_empty(
+    "MODEL_SUMMARY_NAME",
+    DEFAULT_MODEL_FAST_NAME,
+)
 ENABLE_TIMING_DIAGNOSTICS = _env_flag("ENABLE_TIMING_DIAGNOSTICS", True)
+PIPELINE_CANCEL_POLL_INTERVAL_SECONDS = max(
+    0.01,
+    _env_float("PIPELINE_CANCEL_POLL_INTERVAL_SECONDS", 0.1),
+)
 STALE_TASK_REAPER_ENABLED = _env_flag("STALE_TASK_REAPER_ENABLED", True)
 STALE_TASK_REAPER_INTERVAL_SECONDS = max(
     30, _env_int("STALE_TASK_REAPER_INTERVAL_SECONDS", 120)
@@ -218,7 +295,9 @@ DEFAULT_SKILLS_PACKAGE_URL = os.getenv("SKILLS_PACKAGE_URL", "").strip()
 SKILLS_DOWNLOAD_FALLBACK_HINT_EN = "No download URL detected. Please configure SKILLS_PACKAGE_URL environment variable."
 SKILLS_DOWNLOAD_BUTTON_TEXT_EN = "Download Skills"
 SKILLS_DOWNLOAD_COPIED_TEXT_EN = "Link Copied"
-SKILLS_DOWNLOAD_FALLBACK_HINT_CN = "未检测到可用下载地址，请配置环境变量 SKILLS_PACKAGE_URL。"
+SKILLS_DOWNLOAD_FALLBACK_HINT_CN = (
+    "未检测到可用下载地址，请配置环境变量 SKILLS_PACKAGE_URL。"
+)
 SKILLS_DOWNLOAD_BUTTON_TEXT_CN = "skills下载"
 SKILLS_DOWNLOAD_COPIED_TEXT_CN = "已复制链接"
 EXPORT_FORMAT_CHOICES = [
@@ -334,29 +413,21 @@ VERIFIED_TOOL_RESULT_MAX_CHARS = max(
     2000, _env_int("VERIFIED_TOOL_RESULT_MAX_CHARS", 6000)
 )
 VERIFIED_KEEP_TOOL_RESULT = max(-1, _env_int("VERIFIED_KEEP_TOOL_RESULT", 4))
-VERIFIED_CONTEXT_COMPRESS_LIMIT = max(
-    0, _env_int("VERIFIED_CONTEXT_COMPRESS_LIMIT", 3)
-)
+VERIFIED_CONTEXT_COMPRESS_LIMIT = max(0, _env_int("VERIFIED_CONTEXT_COMPRESS_LIMIT", 3))
 RESEARCH_MAX_TOKENS = max(1024, _env_int("RESEARCH_LLM_MAX_TOKENS", 3072))
 RESEARCH_TOOL_RESULT_MAX_CHARS = max(
     2000, _env_int("RESEARCH_TOOL_RESULT_MAX_CHARS", 6000)
 )
 RESEARCH_KEEP_TOOL_RESULT = max(-1, _env_int("RESEARCH_KEEP_TOOL_RESULT", 3))
-RESEARCH_CONTEXT_COMPRESS_LIMIT = max(
-    0, _env_int("RESEARCH_CONTEXT_COMPRESS_LIMIT", 2)
-)
+RESEARCH_CONTEXT_COMPRESS_LIMIT = max(0, _env_int("RESEARCH_CONTEXT_COMPRESS_LIMIT", 2))
 BALANCED_MAX_TOKENS = max(1024, _env_int("BALANCED_LLM_MAX_TOKENS", 3072))
 BALANCED_TOOL_RESULT_MAX_CHARS = max(
     2000, _env_int("BALANCED_TOOL_RESULT_MAX_CHARS", 5000)
 )
 BALANCED_KEEP_TOOL_RESULT = max(-1, _env_int("BALANCED_KEEP_TOOL_RESULT", 3))
-BALANCED_CONTEXT_COMPRESS_LIMIT = max(
-    0, _env_int("BALANCED_CONTEXT_COMPRESS_LIMIT", 2)
-)
+BALANCED_CONTEXT_COMPRESS_LIMIT = max(0, _env_int("BALANCED_CONTEXT_COMPRESS_LIMIT", 2))
 QUOTA_MAX_TOKENS = max(1024, _env_int("QUOTA_LLM_MAX_TOKENS", 2048))
-QUOTA_TOOL_RESULT_MAX_CHARS = max(
-    2000, _env_int("QUOTA_TOOL_RESULT_MAX_CHARS", 3500)
-)
+QUOTA_TOOL_RESULT_MAX_CHARS = max(2000, _env_int("QUOTA_TOOL_RESULT_MAX_CHARS", 3500))
 QUOTA_KEEP_TOOL_RESULT = max(-1, _env_int("QUOTA_KEEP_TOOL_RESULT", 2))
 QUOTA_CONTEXT_COMPRESS_LIMIT = max(0, _env_int("QUOTA_CONTEXT_COMPRESS_LIMIT", 1))
 THINKING_MAX_TOKENS = max(1024, _env_int("THINKING_LLM_MAX_TOKENS", 3072))
@@ -484,6 +555,7 @@ TOOL_DISPLAY_NAMES: dict[str, str] = {
 
 def _tool_display_name(raw_name: str) -> str:
     return TOOL_DISPLAY_NAMES.get(raw_name, raw_name)
+
 
 RENDER_MODE_CHOICES = {"full", "summary_with_details", "summary_only"}
 DEFAULT_UI_RENDER_MODE = os.getenv("DEFAULT_UI_RENDER_MODE", "summary_with_details")
@@ -806,6 +878,55 @@ def _get_mode_overrides_for_output_detail(level: Optional[str]) -> List[str]:
     ]
 
 
+def _hydra_override_key(override: str) -> str:
+    """提取 Hydra override 的字段或配置组键。"""
+    normalized = override.lstrip("+")
+    key, separator, _ = normalized.partition("=")
+    return key if separator else normalized
+
+
+def _is_config_group_override(override: str) -> bool:
+    """判断是否为 ``agent=...`` 一类配置组选择。"""
+    key = _hydra_override_key(override)
+    return not override.startswith("+") and "." not in key
+
+
+def _combine_detail_and_mode_overrides(
+    detail_overrides: List[str],
+    mode_overrides: List[str],
+) -> List[str]:
+    """组合配置组、篇幅默认值及模式硬约束，并明确模式的最高优先级。"""
+    config_group_overrides = [
+        override for override in mode_overrides if _is_config_group_override(override)
+    ]
+    mode_value_overrides = [
+        override
+        for override in mode_overrides
+        if not _is_config_group_override(override)
+    ]
+    return config_group_overrides + detail_overrides + mode_value_overrides
+
+
+def _build_profile_overrides(
+    mode: str,
+    output_detail_level: str,
+    verification_min_search_rounds: int,
+) -> List[str]:
+    """构建一次预加载使用的完整策略 overrides。"""
+    resolved_mode = _normalize_research_mode(mode)
+    overrides = _combine_detail_and_mode_overrides(
+        detail_overrides=_get_mode_overrides_for_output_detail(output_detail_level),
+        mode_overrides=list(
+            MODE_OVERRIDE_MAP.get(resolved_mode, MODE_OVERRIDE_MAP["balanced"])
+        ),
+    )
+    if resolved_mode == "verified":
+        overrides.append(
+            f"agent.verification.min_search_rounds={verification_min_search_rounds}"
+        )
+    return overrides
+
+
 def _compose_profile_cache_key(
     mode: str,
     search_profile: str,
@@ -877,9 +998,10 @@ def load_miroflow_config(config_overrides: Optional[object] = None) -> DictConfi
     llm_provider = os.getenv(
         "DEFAULT_LLM_PROVIDER", "qwen"
     )  # debug.sh defaults to qwen
-    model_name = os.getenv(
-        "DEFAULT_MODEL_NAME", DEFAULT_MODEL_NAME
-    )  # debug.sh default model
+    model_name = _env_non_empty(
+        "DEFAULT_MODEL_NAME",
+        DEFAULT_MODEL_NAME,
+    )
     agent_set = os.getenv("DEFAULT_AGENT_SET", "demo_search_only")
     base_url = os.getenv("BASE_URL", "http://localhost:11434")
     api_key = os.getenv("API_KEY", "")  # API key for LLM endpoint
@@ -947,16 +1069,112 @@ def load_miroflow_config(config_overrides: Optional[object] = None) -> DictConfi
         cfg = compose(config_name="config", overrides=overrides)
         return cfg
     except Exception as e:
-        logger.error(f"Failed to compose Hydra config: {e}")
-        exit()
+        error_message = f"Failed to compose Hydra config: {e}"
+        logger.error(error_message)
+        raise RuntimeError(error_message) from e
 
 
 # Lazy loading for tool definitions to speed up page load
 # 按检索模式缓存，支持通过参数动态切换
 _preload_cache = {}
-_preload_lock = threading.Lock()
+_preload_cache_lock = threading.Lock()
+_preload_inflight: Dict[Tuple[str, str, int, int, str], Dict[str, Any]] = {}
+_component_env_lock = threading.Lock()
 _stale_task_reaper_started = False
 _stale_task_reaper_lock = threading.Lock()
+
+
+def _build_search_environment(
+    search_profile: str,
+    search_result_num: int,
+) -> Dict[str, str]:
+    """构建创建检索 MCP 参数时使用的临时环境。"""
+    search_env = dict(
+        SEARCH_PROFILE_ENV_MAP.get(
+            search_profile,
+            SEARCH_PROFILE_ENV_MAP["searxng-first"],
+        )
+    )
+    search_env["SEARCH_RESULT_NUM"] = str(search_result_num)
+    return search_env
+
+
+def _create_task_runtime_components(
+    profile_cache: Dict[str, Any],
+) -> Tuple[Any, Dict[str, Any], Any]:
+    """为单个本地任务创建独立的有状态 pipeline 组件。
+
+    ToolManager 会持有 task_log 与 browser_session，不能跨任务复用。组件工厂还会
+    从进程环境读取检索路由参数，因此组件工厂必须串行，避免不同 profile 并发
+    创建时互相覆盖环境；该锁不覆盖工具定义的网络发现。
+    """
+    search_env = _build_search_environment(
+        profile_cache["search_profile"],
+        profile_cache["search_result_num"],
+    )
+    with _component_env_lock:
+        with _temporary_env_vars(search_env):
+            return create_pipeline_components(profile_cache["cfg"])
+
+
+async def _close_preload_tool_managers(
+    main_agent_tool_manager: Any,
+    sub_agent_tool_managers: Dict[str, Any],
+) -> None:
+    """按 identity 去重并尽力关闭预加载阶段的临时 manager。"""
+    managers = [main_agent_tool_manager, *sub_agent_tool_managers.values()]
+    seen_manager_ids = set()
+    unique_managers = []
+    for tool_manager in managers:
+        manager_id = id(tool_manager)
+        if manager_id in seen_manager_ids:
+            continue
+        seen_manager_ids.add(manager_id)
+        unique_managers.append(tool_manager)
+
+    async def close_one(tool_manager: Any) -> None:
+        close = getattr(tool_manager, "aclose", None)
+        if not callable(close):
+            return
+        try:
+            await close()
+        except (Exception, asyncio.CancelledError):
+            pass
+
+    await asyncio.gather(*(close_one(manager) for manager in unique_managers))
+
+
+async def _discover_preload_tool_definitions(
+    main_agent_tool_manager: Any,
+    sub_agent_tool_managers: Dict[str, Any],
+) -> Tuple[List[Dict[str, Any]], Dict[str, List[Dict[str, Any]]]]:
+    """获取静态工具定义，并确保临时 manager 在所有路径都被关闭。"""
+    try:
+        tool_definitions = await main_agent_tool_manager.get_all_tool_definitions()
+        sub_agent_tool_definitions = {}
+        for name, sub_agent_tool_manager in sub_agent_tool_managers.items():
+            sub_agent_tool_definitions[
+                name
+            ] = await sub_agent_tool_manager.get_all_tool_definitions()
+        return tool_definitions, sub_agent_tool_definitions
+    finally:
+        await _close_preload_tool_managers(
+            main_agent_tool_manager,
+            sub_agent_tool_managers,
+        )
+
+
+def _preload_info(
+    cache_key: Tuple[str, str, int, int, str],
+    *,
+    cache_hit: bool,
+    started_at: float,
+) -> Dict[str, Any]:
+    return {
+        "cache_key": cache_key,
+        "cache_hit": cache_hit,
+        "duration_ms": int((time.perf_counter() - started_at) * 1000),
+    }
 
 
 def _ensure_preloaded(
@@ -966,7 +1184,7 @@ def _ensure_preloaded(
     verification_min_search_rounds: int,
     output_detail_level: str,
 ):
-    """按检索模式与检索源策略懒加载 pipeline 组件。"""
+    """按检索模式与检索源策略懒加载配置及工具定义。"""
     global _preload_cache
     preload_start_time = time.perf_counter()
     resolved_mode = _normalize_research_mode(mode)
@@ -983,51 +1201,75 @@ def _ensure_preloaded(
         resolved_min_rounds,
         resolved_output_detail_level,
     )
-    if cache_key in _preload_cache:
-        duration_ms = int((time.perf_counter() - preload_start_time) * 1000)
+
+    with _preload_cache_lock:
+        if cache_key in _preload_cache:
+            preload_info = _preload_info(
+                cache_key,
+                cache_hit=True,
+                started_at=preload_start_time,
+            )
+            is_loader = False
+            preload_state = None
+        else:
+            preload_state = _preload_inflight.get(cache_key)
+            if preload_state is None:
+                preload_state = {
+                    "event": threading.Event(),
+                    "error": None,
+                }
+                _preload_inflight[cache_key] = preload_state
+                is_loader = True
+            else:
+                is_loader = False
+            preload_info = None
+
+    if preload_info is not None:
         if ENABLE_TIMING_DIAGNOSTICS:
             logger.info(
                 "Pipeline preload cache hit | cache_key=%s | duration_ms=%s",
                 cache_key,
-                duration_ms,
+                preload_info["duration_ms"],
             )
-        return {
-            "cache_key": cache_key,
-            "cache_hit": True,
-            "duration_ms": duration_ms,
-        }
+        return preload_info
 
-    with _preload_lock:
-        if cache_key in _preload_cache:
-            duration_ms = int((time.perf_counter() - preload_start_time) * 1000)
-            if ENABLE_TIMING_DIAGNOSTICS:
-                logger.info(
-                    "Pipeline preload cache hit(after lock) | cache_key=%s | duration_ms=%s",
-                    cache_key,
-                    duration_ms,
-                )
-            return {
-                "cache_key": cache_key,
-                "cache_hit": True,
-                "duration_ms": duration_ms,
-            }
+    if not is_loader:
+        preload_state["event"].wait()
+        with _preload_cache_lock:
+            cache_available = cache_key in _preload_cache
+            preload_error = preload_state.get("error")
+        if not cache_available:
+            if preload_error is not None:
+                raise RuntimeError(
+                    f"Pipeline preload failed for cache key {cache_key}: "
+                    f"{preload_error}"
+                ) from preload_error
+            raise RuntimeError(
+                f"Pipeline preload finished without cache entry: {cache_key}"
+            )
+        preload_info = _preload_info(
+            cache_key,
+            cache_hit=True,
+            started_at=preload_start_time,
+        )
+        if ENABLE_TIMING_DIAGNOSTICS:
+            logger.info(
+                "Pipeline preload shared result | cache_key=%s | duration_ms=%s",
+                cache_key,
+                preload_info["duration_ms"],
+            )
+        return preload_info
 
-        search_env = dict(
-            SEARCH_PROFILE_ENV_MAP.get(
-                search_profile, SEARCH_PROFILE_ENV_MAP["searxng-first"]
-            )
+    try:
+        search_env = _build_search_environment(
+            search_profile,
+            resolved_result_num,
         )
-        search_env["SEARCH_RESULT_NUM"] = str(resolved_result_num)
-        mode_overrides = list(
-            MODE_OVERRIDE_MAP.get(resolved_mode, MODE_OVERRIDE_MAP["balanced"])
+        mode_overrides = _build_profile_overrides(
+            mode=resolved_mode,
+            output_detail_level=resolved_output_detail_level,
+            verification_min_search_rounds=resolved_min_rounds,
         )
-        mode_overrides.extend(
-            _get_mode_overrides_for_output_detail(resolved_output_detail_level)
-        )
-        if resolved_mode == "verified":
-            mode_overrides.append(
-                f"agent.verification.min_search_rounds={resolved_min_rounds}"
-            )
         logger.info(
             "Loading pipeline components | mode=%s | search_profile=%s | result_num=%s | min_rounds=%s | detail_level=%s | provider_order=%s | provider_mode=%s",
             resolved_mode,
@@ -1038,27 +1280,29 @@ def _ensure_preloaded(
             search_env.get("SEARCH_PROVIDER_ORDER", ""),
             search_env.get("SEARCH_PROVIDER_MODE", ""),
         )
-        with _temporary_env_vars(search_env):
-            cfg = load_miroflow_config(mode_overrides)
-            main_agent_tool_manager, sub_agent_tool_managers, output_formatter = (
-                create_pipeline_components(cfg)
-            )
-            tool_definitions = asyncio.run(
-                main_agent_tool_manager.get_all_tool_definitions()
-            )
-            if cfg.agent.sub_agents:
-                tool_definitions += expose_sub_agents_as_tools(cfg.agent.sub_agents)
+        with _component_env_lock:
+            with _temporary_env_vars(search_env):
+                cfg = load_miroflow_config(mode_overrides)
+                (
+                    preload_main_tool_manager,
+                    preload_sub_tool_managers,
+                    _,
+                ) = create_pipeline_components(cfg)
 
-            sub_agent_tool_definitions = {
-                name: asyncio.run(sub_agent_tool_manager.get_all_tool_definitions())
-                for name, sub_agent_tool_manager in sub_agent_tool_managers.items()
-            }
+        (
+            tool_definitions,
+            sub_agent_tool_definitions,
+        ) = asyncio.run(
+            _discover_preload_tool_definitions(
+                preload_main_tool_manager,
+                preload_sub_tool_managers,
+            )
+        )
+        if cfg.agent.sub_agents:
+            tool_definitions += expose_sub_agents_as_tools(cfg.agent.sub_agents)
 
-        _preload_cache[cache_key] = {
+        cache_entry = {
             "cfg": cfg,
-            "main_agent_tool_manager": main_agent_tool_manager,
-            "sub_agent_tool_managers": sub_agent_tool_managers,
-            "output_formatter": output_formatter,
             "tool_definitions": tool_definitions,
             "sub_agent_tool_definitions": sub_agent_tool_definitions,
             "search_profile": search_profile,
@@ -1066,26 +1310,40 @@ def _ensure_preloaded(
             "verification_min_search_rounds": resolved_min_rounds,
             "output_detail_level": resolved_output_detail_level,
         }
+    except BaseException as exc:
+        with _preload_cache_lock:
+            preload_state["error"] = exc
+            if _preload_inflight.get(cache_key) is preload_state:
+                _preload_inflight.pop(cache_key, None)
+            preload_state["event"].set()
+        raise
+
+    with _preload_cache_lock:
+        _preload_cache[cache_key] = cache_entry
+        if _preload_inflight.get(cache_key) is preload_state:
+            _preload_inflight.pop(cache_key, None)
+        preload_state["event"].set()
+
+    logger.info(
+        "Pipeline static resources loaded successfully | mode=%s | search_profile=%s | result_num=%s | min_rounds=%s",
+        resolved_mode,
+        search_profile,
+        resolved_result_num,
+        resolved_min_rounds,
+    )
+    preload_info = _preload_info(
+        cache_key,
+        cache_hit=False,
+        started_at=preload_start_time,
+    )
+    if ENABLE_TIMING_DIAGNOSTICS:
         logger.info(
-            "Pipeline components loaded successfully | mode=%s | search_profile=%s | result_num=%s | min_rounds=%s",
-            resolved_mode,
-            search_profile,
-            resolved_result_num,
-            resolved_min_rounds,
+            "Pipeline preload ready | cache_key=%s | cache_hit=%s | duration_ms=%s",
+            cache_key,
+            False,
+            preload_info["duration_ms"],
         )
-        duration_ms = int((time.perf_counter() - preload_start_time) * 1000)
-        if ENABLE_TIMING_DIAGNOSTICS:
-            logger.info(
-                "Pipeline preload ready | cache_key=%s | cache_hit=%s | duration_ms=%s",
-                cache_key,
-                False,
-                duration_ms,
-            )
-        return {
-            "cache_key": cache_key,
-            "cache_hit": False,
-            "duration_ms": duration_ms,
-        }
+    return preload_info
 
 
 class ThreadSafeAsyncQueue:
@@ -1213,9 +1471,11 @@ async def stream_events_optimized(
     resolved_mode = _normalize_research_mode(mode)
     resolved_search_profile = _normalize_search_profile(search_profile)
     resolved_search_result_num = _normalize_search_result_num(search_result_num)
-    resolved_verification_min_rounds = _resolve_effective_verification_min_search_rounds(
-        resolved_mode,
-        verification_min_search_rounds,
+    resolved_verification_min_rounds = (
+        _resolve_effective_verification_min_search_rounds(
+            resolved_mode,
+            verification_min_search_rounds,
+        )
     )
     resolved_output_detail_level = _normalize_output_detail_level(output_detail_level)
     last_send_time = time.time()
@@ -1308,8 +1568,59 @@ async def stream_events_optimized(
             return
         if event_type == "error":
             _touch_stage("异常", detail="执行出现错误")
+            return
+        if event_type == "done":
+            status = str(data.get("status") or "")
+            if status == "cancelled":
+                _touch_stage("已取消", detail="任务已取消")
+            elif status == "failed":
+                _touch_stage("异常", detail="任务执行失败")
+            elif status in {"completed", "cached"}:
+                _touch_stage("完成", detail="任务已完成")
 
     def run_pipeline_in_thread():
+        def publish_event(event: str, data: Dict[str, Any]) -> None:
+            stream_queue.put_nowait_threadsafe(
+                {
+                    "event": event,
+                    "data": {
+                        "workflow_id": workflow_id,
+                        **data,
+                    },
+                }
+            )
+
+        def publish_pipeline_result(pipeline_result: Any) -> None:
+            if not isinstance(pipeline_result, dict):
+                raise RuntimeError("Pipeline returned a non-mapping result.")
+            status = str(pipeline_result.get("status") or "").strip().lower()
+            error = str(
+                pipeline_result.get("error")
+                or pipeline_result.get("final_summary")
+                or ""
+            ).strip()
+            if status == "failed":
+                resolved_error = error or "Pipeline execution failed."
+                publish_event("error", {"error": resolved_error})
+                publish_event(
+                    "done",
+                    {
+                        "status": "failed",
+                        "error": resolved_error,
+                    },
+                )
+                return
+            if status == "cancelled":
+                done_data = {"status": "cancelled"}
+                if error:
+                    done_data["detail"] = error
+                publish_event("done", done_data)
+                return
+            if status == "completed":
+                publish_event("done", {"status": "completed"})
+                return
+            raise RuntimeError(f"Unknown pipeline status: {status or '<empty>'}")
+
         try:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
@@ -1353,6 +1664,11 @@ async def stream_events_optimized(
                 resolved_output_detail_level,
             )
             profile_cache = _preload_cache[cache_key]
+            (
+                main_agent_tool_manager,
+                sub_agent_tool_managers,
+                output_formatter,
+            ) = _create_task_runtime_components(profile_cache)
 
             async def pipeline_with_cancellation():
                 pipeline_task = asyncio.create_task(
@@ -1361,51 +1677,56 @@ async def stream_events_optimized(
                         task_id=workflow_id,
                         task_description=query,
                         task_file_name=None,
-                        main_agent_tool_manager=profile_cache["main_agent_tool_manager"],
-                        sub_agent_tool_managers=profile_cache["sub_agent_tool_managers"],
-                        output_formatter=profile_cache["output_formatter"],
+                        main_agent_tool_manager=main_agent_tool_manager,
+                        sub_agent_tool_managers=sub_agent_tool_managers,
+                        output_formatter=output_formatter,
                         stream_queue=wrapper_queue,
                         log_dir=os.getenv("LOG_DIR", "logs/api-server"),
                         tool_definitions=profile_cache["tool_definitions"],
-                        sub_agent_tool_definitions=profile_cache["sub_agent_tool_definitions"],
+                        sub_agent_tool_definitions=profile_cache[
+                            "sub_agent_tool_definitions"
+                        ],
                     )
                 )
 
                 async def check_cancellation():
                     while not cancel_event.is_set():
-                        await asyncio.sleep(0.5)
-                    logger.info("Cancel event detected, cancelling pipeline")
-                    pipeline_task.cancel()
+                        await asyncio.sleep(PIPELINE_CANCEL_POLL_INTERVAL_SECONDS)
 
                 cancel_task = asyncio.create_task(check_cancellation())
 
                 try:
-                    done, pending = await asyncio.wait(
+                    done, _ = await asyncio.wait(
                         [pipeline_task, cancel_task],
                         return_when=asyncio.FIRST_COMPLETED,
                     )
-                    for task in pending:
-                        task.cancel()
-                    for task in done:
-                        if task == pipeline_task:
-                            try:
-                                await task
-                            except asyncio.CancelledError:
-                                logger.info("Pipeline task was cancelled")
-                except Exception as e:
-                    logger.error(f"Pipeline execution error: {e}")
-                    pipeline_task.cancel()
+                    if cancel_task in done and not pipeline_task.done():
+                        logger.info("Cancel event detected, cancelling pipeline")
+                        pipeline_task.cancel()
+                    try:
+                        return await pipeline_task
+                    except asyncio.CancelledError:
+                        logger.info("Pipeline task was cancelled")
+                        return {
+                            "status": "cancelled",
+                            "error": "Pipeline task was cancelled.",
+                        }
+                finally:
                     cancel_task.cancel()
+                    await asyncio.gather(cancel_task, return_exceptions=True)
 
-            loop.run_until_complete(pipeline_with_cancellation())
+            pipeline_result = loop.run_until_complete(pipeline_with_cancellation())
+            publish_pipeline_result(pipeline_result)
         except Exception as e:
             if not cancel_event.is_set():
                 logger.error(f"Pipeline error: {e}", exc_info=True)
-                stream_queue.put_nowait_threadsafe(
+                publish_event("error", {"error": str(e)})
+                publish_event(
+                    "done",
                     {
-                        "event": "error",
-                        "data": {"error": str(e), "workflow_id": workflow_id},
-                    }
+                        "status": "failed",
+                        "error": str(e),
+                    },
                 )
         finally:
             stream_queue.put_nowait_threadsafe(None)
@@ -1475,10 +1796,20 @@ async def stream_events_optimized(
     finally:
         cancel_event.set()
         stream_queue.close()
-        try:
-            future.result(timeout=1.0)
-        except Exception:
-            pass
+        # concurrent.futures.Future.result() 会阻塞当前 Gradio 事件循环；
+        # 包装为 asyncio Future 后等待，既保证线程完成清理，也不冻结其他请求。
+        wrapped_future = asyncio.wrap_future(future)
+        cancellation_received = False
+        while True:
+            try:
+                await asyncio.shield(wrapped_future)
+                break
+            except asyncio.CancelledError:
+                cancellation_received = True
+                if wrapped_future.done():
+                    break
+            except Exception:
+                break
         executor.shutdown(wait=False)
         if ENABLE_TIMING_DIAGNOSTICS:
             logger.info(
@@ -1487,6 +1818,8 @@ async def stream_events_optimized(
                 int((time.perf_counter() - stream_start_time) * 1000),
                 json.dumps(event_counts, ensure_ascii=False, sort_keys=True),
             )
+        if cancellation_received:
+            raise asyncio.CancelledError
 
 
 # ========================= Gradio Integration =========================
@@ -1510,7 +1843,9 @@ def _init_render_state():
     }
 
 
-def _format_runtime_status_label(state: dict, heartbeat_ts: Optional[float] = None) -> str:
+def _format_runtime_status_label(
+    state: dict, heartbeat_ts: Optional[float] = None
+) -> str:
     runtime_stage = state.get("runtime_stage") or {}
     phase = str(runtime_stage.get("phase") or "执行中")
     turn = int(runtime_stage.get("turn") or 0)
@@ -1617,12 +1952,14 @@ def _format_search_results(
                             str(item)
                             for item in search_params.get("providers_with_results", [])
                         ]
-                        raw_route_trace = result_data.get("route_trace") or search_params.get(
+                        raw_route_trace = result_data.get(
                             "route_trace"
-                        )
+                        ) or search_params.get("route_trace")
                         if isinstance(raw_route_trace, list):
                             route_trace = [
-                                item for item in raw_route_trace if isinstance(item, dict)
+                                item
+                                for item in raw_route_trace
+                                if isinstance(item, dict)
                             ]
                     raw_confidence = result_data.get("confidence")
                     if isinstance(raw_confidence, dict):
@@ -1693,7 +2030,9 @@ def _format_search_results(
         lines.append('<div class="search-results">')
         safe_display_limit = SEARCH_RESULT_DISPLAY_MAX
         if display_limit is not None:
-            safe_display_limit = max(1, min(SEARCH_RESULT_DISPLAY_MAX, int(display_limit)))
+            safe_display_limit = max(
+                1, min(SEARCH_RESULT_DISPLAY_MAX, int(display_limit))
+            )
         visible_count = min(len(results), safe_display_limit)
         for item in results[:visible_count]:
             title = item.get("title", "Untitled")
@@ -1768,7 +2107,9 @@ def _extract_google_search_step_summary(tool_input: dict, tool_output: dict) -> 
             return output_payload
         return {}
 
-    result_data = _extract_result_data(tool_output if isinstance(tool_output, dict) else {})
+    result_data = _extract_result_data(
+        tool_output if isinstance(tool_output, dict) else {}
+    )
     organic_results = result_data.get("organic", [])
     if isinstance(organic_results, list):
         result_count = len(organic_results)
@@ -1781,7 +2122,12 @@ def _extract_google_search_step_summary(tool_input: dict, tool_output: dict) -> 
             if str(item).strip()
         ]
 
-    if not query and result_count is None and not provider_mode and not providers_with_results:
+    if (
+        not query
+        and result_count is None
+        and not provider_mode
+        and not providers_with_results
+    ):
         return ""
 
     line_parts: List[str] = []
@@ -2029,7 +2375,7 @@ def _linkify_reference_citations(markdown_text: str) -> str:
         return markdown_text
 
     body = markdown_text[: heading_match.start()]
-    references_section = markdown_text[heading_match.start():]
+    references_section = markdown_text[heading_match.start() :]
 
     id_to_url: Dict[str, str] = {}
     for entry in _REFERENCE_ENTRY_RE.finditer(references_section):
@@ -2152,7 +2498,7 @@ def _replace_latex_cmd(text: str, cmd: str, replacement_fmt: str) -> str:
         if not match:
             out.append(text[cursor:])
             break
-        out.append(text[cursor:match.start()])
+        out.append(text[cursor : match.start()])
         content_start = match.end()
         depth = 1
         j = content_start
@@ -2171,7 +2517,7 @@ def _replace_latex_cmd(text: str, cmd: str, replacement_fmt: str) -> str:
                     if inner.strip() == "":
                         # 空命令（如 \boxed{}）原样保留，避免干扰后续字面匹配
                         # （例如 fallback 文案依赖 "No \\boxed{} content found" 这一 marker）
-                        out.append(text[match.start():j + 1])
+                        out.append(text[match.start() : j + 1])
                     else:
                         out.append(replacement_fmt.format(inner=inner))
                     cursor = j + 1
@@ -2179,7 +2525,7 @@ def _replace_latex_cmd(text: str, cmd: str, replacement_fmt: str) -> str:
             j += 1
         else:
             # 未找到匹配的右花括号，保留原文（从本次命令起点往后），终止循环
-            out.append(text[match.start():])
+            out.append(text[match.start() :])
             cursor = n
             break
     return "".join(out)
@@ -2208,8 +2554,8 @@ def _unwrap_outer_boxed(text: str) -> str:
         elif ch == "}":
             depth -= 1
             if depth == 0:
-                if text[j + 1:].strip() == "":
-                    return text[match.end():j].strip()
+                if text[j + 1 :].strip() == "":
+                    return text[match.end() : j].strip()
                 return text
         j += 1
     return text
@@ -2477,9 +2823,7 @@ def _build_docx_bytes(markdown_text: str) -> bytes:
     document_xml = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
-        "<w:body>"
-        + "".join(paragraphs)
-        + '<w:sectPr><w:pgSz w:w="11906" w:h="16838"/>'
+        "<w:body>" + "".join(paragraphs) + '<w:sectPr><w:pgSz w:w="11906" w:h="16838"/>'
         '<w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/>'
         "</w:sectPr></w:body></w:document>"
     )
@@ -2515,7 +2859,9 @@ def _create_export_file(
     task_id: Optional[str] = None,
 ) -> str:
     resolved_format = _normalize_export_format(export_format)
-    resolved_output_dir = Path(output_dir) if output_dir is not None else EXPORT_OUTPUT_DIR
+    resolved_output_dir = (
+        Path(output_dir) if output_dir is not None else EXPORT_OUTPUT_DIR
+    )
     resolved_output_dir.mkdir(parents=True, exist_ok=True)
     output_path = resolved_output_dir / _build_export_filename(resolved_format, task_id)
     export_markdown = _prepare_export_markdown(markdown_text)
@@ -2593,12 +2939,12 @@ def _render_markdown(
                             display_name = "子智能体 (Sub Agent)"
                         elif "Search" in display_name:
                             display_name = "检索智能体 (Search Agent)"
-                        
+
                         formatted_thought = (
                             f'<details class="thought-card" open>\n'
-                            f'  <summary>💭 {display_name} 思考与规划</summary>\n'
+                            f"  <summary>💭 {display_name} 思考与规划</summary>\n"
                             f'  <div class="thought-content">\n\n{content}\n\n</div>\n'
-                            f'</details>\n'
+                            f"</details>\n"
                         )
                         process_lines.append(formatted_thought)
                 continue
@@ -2615,7 +2961,9 @@ def _render_markdown(
                     tool_output,
                     display_limit=search_display_limit,
                 )
-                search_step = _extract_google_search_step_summary(tool_input, tool_output)
+                search_step = _extract_google_search_step_summary(
+                    tool_input, tool_output
+                )
                 if search_step:
                     search_step_lines.append(search_step)
                 if formatted:
@@ -2625,7 +2973,9 @@ def _render_markdown(
             # Special formatting for sogou_search
             if tool_name == "sogou_search" and (has_input or has_output):
                 formatted = _format_sogou_search_results(tool_input, tool_output)
-                search_step = _extract_sogou_search_step_summary(tool_input, tool_output)
+                search_step = _extract_sogou_search_step_summary(
+                    tool_input, tool_output
+                )
                 if search_step:
                     search_step_lines.append(search_step)
                 if formatted:
@@ -2687,9 +3037,7 @@ def _render_markdown(
                 process_lines.append(f'<div class="tool-header">🔧 {tool_name}</div>')
                 if has_input and isinstance(tool_input, dict):
                     brief = ", ".join(
-                        f"{k}: {str(v)[:30]}..."
-                        if len(str(v)) > 30
-                        else f"{k}: {v}"
+                        f"{k}: {str(v)[:30]}..." if len(str(v)) > 30 else f"{k}: {v}"
                         for k, v in list(tool_input.items())[:2]
                     )
                     process_lines.append(f'<div class="tool-brief">{brief}</div>')
@@ -2817,9 +3165,9 @@ def _update_state_with_event(state: dict, message: dict):
                 if isinstance(ti, dict) and "result" in ti:
                     entry["output"] = ti
                     if tool_name in {"google_search", "sogou_search"}:
-                        runtime_stage["search_round"] = int(
-                            runtime_stage.get("search_round", 0)
-                        ) + 1
+                        runtime_stage["search_round"] = (
+                            int(runtime_stage.get("search_round", 0)) + 1
+                        )
                         runtime_stage["detail"] = (
                             f"{_tool_display_name(tool_name)} 已完成（第 {runtime_stage['search_round']} 轮）"
                         )
@@ -2889,6 +3237,19 @@ def _update_state_with_event(state: dict, message: dict):
         runtime_stage["phase"] = "异常"
         runtime_stage["detail"] = "执行出现错误"
         runtime_stage["updated_at"] = time.time()
+    elif event == "done":
+        status = str(data.get("status") or "") if isinstance(data, dict) else ""
+        runtime_stage = state.setdefault("runtime_stage", {})
+        if status == "cancelled":
+            runtime_stage["phase"] = "已取消"
+            runtime_stage["detail"] = "任务已取消"
+        elif status == "failed":
+            runtime_stage["phase"] = "异常"
+            runtime_stage["detail"] = "任务执行失败"
+        elif status in {"completed", "cached"}:
+            runtime_stage["phase"] = "完成"
+            runtime_stage["detail"] = "任务已完成"
+        runtime_stage["updated_at"] = time.time()
     elif event == "final_output":
         markdown = ""
         if isinstance(data, dict):
@@ -2936,14 +3297,9 @@ _last_run_metrics_lock = threading.Lock()
 
 # 研究结果缓存（相同 query+mode+profile+detail_level 命中缓存）
 _result_cache = ResultCache(
-    max_size=int(os.getenv("RESULT_CACHE_MAX_SIZE", "128")),
-    ttl_seconds=int(os.getenv("RESULT_CACHE_TTL_SECONDS", "3600")),
+    max_size=_env_int_at_least("RESULT_CACHE_MAX_SIZE", 128, 1),
+    ttl_seconds=_env_int_at_least("RESULT_CACHE_TTL_SECONDS", 3600, 0),
 )
-
-
-def _set_cancel_flag(task_id: str):
-    with _CANCEL_LOCK:
-        _CANCEL_FLAGS[task_id] = True
 
 
 def _reset_cancel_flag(task_id: str):
@@ -2963,21 +3319,34 @@ def _unregister_active_task(task_id: str):
         _CANCEL_FLAGS.pop(task_id, None)
 
 
-def _get_active_task_ids(caller_id: Optional[str] = None) -> List[str]:
+def _get_active_task_ids(
+    caller_id: Optional[str] = None,
+    *,
+    mark_cancelled: bool = False,
+) -> List[str]:
+    """原子筛选活动任务，并可在同一临界区内设置取消标记。"""
     with _CANCEL_LOCK:
         if caller_id is not None:
-            return [tid for tid, cid in _ACTIVE_TASK_IDS.items() if cid == caller_id]
-        return list(_ACTIVE_TASK_IDS.keys())
+            task_ids = [
+                tid for tid, cid in _ACTIVE_TASK_IDS.items() if cid == caller_id
+            ]
+        else:
+            task_ids = list(_ACTIVE_TASK_IDS.keys())
+        if mark_cancelled:
+            for task_id in task_ids:
+                _CANCEL_FLAGS[task_id] = True
+        return task_ids
 
 
 def _cancel_task_ids(task_ids: List[str]) -> int:
-    cancelled = 0
-    for task_id in task_ids:
-        if not task_id:
-            continue
-        _set_cancel_flag(task_id)
-        cancelled += 1
-    return cancelled
+    """只标记当前仍处于活动表中的任务，避免创建孤立取消标记。"""
+    with _CANCEL_LOCK:
+        active_task_ids = [
+            task_id for task_id in task_ids if task_id and task_id in _ACTIVE_TASK_IDS
+        ]
+        for task_id in active_task_ids:
+            _CANCEL_FLAGS[task_id] = True
+        return len(active_task_ids)
 
 
 async def _disconnect_check_for_task(task_id: str):
@@ -3041,9 +3410,7 @@ def _build_launch_kwargs(host: str, port: int) -> dict:
     launch_kwargs = {
         "server_name": host,
         "server_port": port,
-        "prevent_thread_lock": _read_env_bool(
-            "GRADIO_PREVENT_THREAD_LOCK", False
-        ),
+        "prevent_thread_lock": _read_env_bool("GRADIO_PREVENT_THREAD_LOCK", False),
     }
     allowed_paths = _collect_gradio_allowed_paths()
     if allowed_paths:
@@ -3066,11 +3433,23 @@ def _build_reconnect_initial_render_state(snapshot: dict) -> dict:
         runtime_stage["phase"] = "排队"
         runtime_stage["detail"] = "任务排队中"
     elif status == "running":
-        if current_stage.startswith("search") or "search" in current_stage or "检索" in current_stage:
+        if (
+            current_stage.startswith("search")
+            or "search" in current_stage
+            or "检索" in current_stage
+        ):
             runtime_stage["phase"] = "检索"
-        elif current_stage.startswith("tool") or "tool" in current_stage or "工具" in current_stage:
+        elif (
+            current_stage.startswith("tool")
+            or "tool" in current_stage
+            or "工具" in current_stage
+        ):
             runtime_stage["phase"] = "工具调用"
-        elif current_stage.startswith("summary") or "summary" in current_stage or "总结" in current_stage:
+        elif (
+            current_stage.startswith("summary")
+            or "summary" in current_stage
+            or "总结" in current_stage
+        ):
             runtime_stage["phase"] = "总结"
         else:
             runtime_stage["phase"] = "推理"
@@ -3278,9 +3657,11 @@ async def gradio_run(
     resolved_mode = _normalize_research_mode(mode)
     resolved_search_profile = _normalize_search_profile(search_profile)
     resolved_search_result_num = _normalize_search_result_num(search_result_num)
-    resolved_verification_min_rounds = _resolve_effective_verification_min_search_rounds(
-        resolved_mode,
-        verification_min_search_rounds,
+    resolved_verification_min_rounds = (
+        _resolve_effective_verification_min_search_rounds(
+            resolved_mode,
+            verification_min_search_rounds,
+        )
     )
     resolved_output_detail_level = _normalize_output_detail_level(output_detail_level)
     resolved_ui_render_mode = _normalize_render_mode(
@@ -3354,7 +3735,8 @@ async def gradio_run(
         )
         # Initial: disable Run, enable Stop, and show spinner at bottom of text
         yield (
-            initial_markdown + _spinner_markup(True, _format_runtime_status_label(state)),
+            initial_markdown
+            + _spinner_markup(True, _format_runtime_status_label(state)),
             gr.update(interactive=False),
             gr.update(interactive=True),
             ui_state,
@@ -3432,12 +3814,15 @@ async def run_research_once(
 ) -> str:
     """统一 API：支持按请求控制检索条数，最少检索轮次仅在 verified 模式生效。"""
     query = replace_chinese_punctuation(query or "")
+    resolved_caller_id = str(caller_id or "").strip()
     resolved_mode = _normalize_research_mode(mode)
     resolved_search_profile = _normalize_search_profile(search_profile)
     resolved_search_result_num = _normalize_search_result_num(search_result_num)
-    resolved_verification_min_rounds = _resolve_effective_verification_min_search_rounds(
-        resolved_mode,
-        verification_min_search_rounds,
+    resolved_verification_min_rounds = (
+        _resolve_effective_verification_min_search_rounds(
+            resolved_mode,
+            verification_min_search_rounds,
+        )
     )
     resolved_output_detail_level = _normalize_output_detail_level(output_detail_level)
     resolved_api_render_mode = _normalize_render_mode(
@@ -3448,9 +3833,27 @@ async def run_research_once(
         _get_summary_merge_for_output_detail(resolved_output_detail_level)
     )
 
-    # 结果缓存：相同 query+mode+profile+detail_level 命中缓存
+    if api_client.is_api_mode_enabled():
+        return await _run_research_once_via_api(
+            query=query,
+            resolved_mode=resolved_mode,
+            resolved_search_profile=resolved_search_profile,
+            resolved_search_result_num=resolved_search_result_num,
+            resolved_verification_min_rounds=resolved_verification_min_rounds,
+            resolved_output_detail_level=resolved_output_detail_level,
+            resolved_api_render_mode=resolved_api_render_mode,
+            resolved_summary_merge_strategy=resolved_summary_merge_strategy,
+            caller_id=resolved_caller_id,
+        )
+
+    # 本地结果缓存：检索深度参数也会改变最终结论，必须参与缓存键。
     cache_key = ResultCache.make_key(
-        query, resolved_mode, resolved_search_profile, resolved_output_detail_level
+        query,
+        resolved_mode,
+        resolved_search_profile,
+        resolved_output_detail_level,
+        search_result_num=resolved_search_result_num,
+        verification_min_search_rounds=resolved_verification_min_rounds,
     )
     cached = _result_cache.get(cache_key)
     if cached is not None:
@@ -3459,8 +3862,9 @@ async def run_research_once(
 
     task_id = str(uuid.uuid4())
     _reset_cancel_flag(task_id)
-    _register_active_task(task_id, caller_id=caller_id or "")
+    _register_active_task(task_id, caller_id=resolved_caller_id)
     state = _init_render_state()
+    terminal_status = ""
     try:
         async for message in stream_events_optimized(
             task_id,
@@ -3478,18 +3882,173 @@ async def run_research_once(
                 with _last_run_metrics_lock:
                     _last_run_metrics = message.get("data")
                 continue
+            if message.get("event") == "done":
+                done_data = message.get("data")
+                if isinstance(done_data, dict):
+                    terminal_status = str(done_data.get("status") or "").strip().lower()
             state = _update_state_with_event(state, message)
         result = _render_markdown(
             state,
             render_mode=resolved_api_render_mode,
             final_summary_merge_strategy=resolved_summary_merge_strategy,
         )
-        # 写入缓存（仅当结果非空时）
-        if result and len(result) > 100:
+        # 只有明确成功且收到最终总结时才写缓存；失败、取消或流异常不能污染后续请求。
+        if (
+            terminal_status in {"completed", "cached"}
+            and "final-output" in state["agents"]
+            and result
+            and len(result) > 100
+        ):
             _result_cache.put(cache_key, result)
         return result
     finally:
         _unregister_active_task(task_id)
+
+
+async def _run_research_once_via_api(
+    *,
+    query: str,
+    resolved_mode: str,
+    resolved_search_profile: str,
+    resolved_search_result_num: int,
+    resolved_verification_min_rounds: int,
+    resolved_output_detail_level: str,
+    resolved_api_render_mode: str,
+    resolved_summary_merge_strategy: str,
+    caller_id: str,
+) -> str:
+    """通过 api-server 完成非流式公开调用，不触发本地 Pipeline。"""
+    try:
+        created = await api_client.safe_create_task(
+            query=query,
+            mode=resolved_mode,
+            search_profile=resolved_search_profile,
+            search_result_num=resolved_search_result_num,
+            verification_min_search_rounds=resolved_verification_min_rounds,
+            output_detail_level=resolved_output_detail_level,
+            caller_id=caller_id or None,
+        )
+    except api_client.ApiClientError as exc:
+        logger.error("api-server 创建任务失败: %s", exc)
+        return f"提交任务到 api-server 失败：{exc}"
+    except Exception as exc:
+        logger.exception("api-server 创建任务异常")
+        return f"提交任务到 api-server 异常：{exc}"
+
+    task_id = str(created.get("task_id") or "").strip()
+    if not task_id:
+        return "api-server 未返回 task_id，请检查后端日志。"
+
+    _reset_cancel_flag(task_id)
+    _register_active_task(task_id, caller_id=caller_id)
+    state = _init_render_state()
+    done_status = ""
+    cancelled_locally = False
+    try:
+        async for message in api_client.stream_task_events(
+            task_id,
+            cancel_check=lambda: _disconnect_check_for_task(task_id),
+        ):
+            event_type = str(message.get("event") or "")
+            if event_type != "done":
+                state = _update_state_with_event(state, message)
+                continue
+
+            done_data = message.get("data")
+            if not isinstance(done_data, dict):
+                return "api-server 终态协议错误：done.data 必须是对象。"
+            done_status = str(done_data.get("status") or "").strip().lower()
+            if done_status not in {"completed", "cached", "failed", "cancelled"}:
+                return (
+                    "api-server 终态协议错误：done.status 必须是 "
+                    "completed、cached、failed 或 cancelled。"
+                )
+            detail = str(
+                done_data.get("error") or done_data.get("detail") or ""
+            ).strip()
+            if done_status == "failed":
+                message_text = "任务执行失败"
+                if detail:
+                    message_text = f"{message_text}：{detail}"
+                state.setdefault("errors", []).append(message_text)
+            elif done_status == "cancelled":
+                message_text = "任务已取消"
+                if detail:
+                    message_text = f"{message_text}：{detail}"
+                state.setdefault("errors", []).append(message_text)
+            break
+        if not done_status:
+            cancelled_locally = await _disconnect_check_for_task(task_id)
+    except asyncio.CancelledError:
+        await asyncio.shield(_cancel_remote_task_ids([task_id]))
+        raise
+    except api_client.TaskNotFoundError:
+        return f"任务 `{task_id}` 不存在或已过期，请重新发起检索。"
+    except api_client.ApiClientError as exc:
+        logger.error("API SSE 订阅失败 task_id=%s err=%s", task_id, exc)
+        return f"连接 api-server 失败：{exc}"
+    except Exception as exc:
+        logger.exception("API 非流式调用处理异常 task_id=%s", task_id)
+        return f"流处理异常：{exc}"
+    finally:
+        _unregister_active_task(task_id)
+
+    if not done_status and cancelled_locally:
+        state.setdefault("errors", []).append("任务已取消")
+    elif not done_status:
+        return "api-server 事件流已结束，但未收到终态，请稍后重试。"
+    result = _render_markdown(
+        state,
+        render_mode=resolved_api_render_mode,
+        final_summary_merge_strategy=resolved_summary_merge_strategy,
+    )
+    if done_status in {"completed", "cached"} and "final-output" not in state["agents"]:
+        return "api-server 已完成任务，但未返回可展示的最终结果。"
+    return result
+
+
+async def run_research_once_api_binding(
+    query: str,
+    mode: str,
+    search_profile: str = DEFAULT_SEARCH_PROFILE,
+    search_result_num: int = DEFAULT_SEARCH_RESULT_NUM,
+    verification_min_search_rounds: int = DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS,
+    output_detail_level: str = DEFAULT_OUTPUT_DETAIL_LEVEL,
+    caller_id: Optional[str] = None,
+) -> str:
+    """Gradio 公开绑定适配器：第 7 个位置参数专用于 caller_id。"""
+    return await run_research_once(
+        query=query,
+        mode=mode,
+        search_profile=search_profile,
+        search_result_num=search_result_num,
+        verification_min_search_rounds=verification_min_search_rounds,
+        output_detail_level=output_detail_level,
+        caller_id=caller_id,
+    )
+
+
+async def _cancel_remote_task_ids(task_ids: List[str]) -> None:
+    """向 api-server 逐个发送取消请求；单个失败不影响其余任务。"""
+    for task_id in task_ids:
+        try:
+            await api_client.cancel_task(task_id)
+        except Exception as exc:
+            logger.warning("远程 cancel_task 失败 task_id=%s err=%s", task_id, exc)
+
+
+def _schedule_remote_task_cancellation(task_ids: List[str]) -> int:
+    """在当前事件循环调度远端取消，无事件循环时同步完成。"""
+    resolved_task_ids = [task_id for task_id in task_ids if task_id]
+    if not resolved_task_ids:
+        return 0
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        asyncio.run(_cancel_remote_task_ids(resolved_task_ids))
+    else:
+        loop.create_task(_cancel_remote_task_ids(resolved_task_ids))
+    return len(resolved_task_ids)
 
 
 def stop_current_ui(ui_state: Optional[dict] = None):
@@ -3498,19 +4057,7 @@ def stop_current_ui(ui_state: Optional[dict] = None):
     _cancel_task_ids(target_ids)
     # API 模式：同步通知 api-server 设置取消标记，让 worker 协作式中止
     if api_client.is_api_mode_enabled() and tid:
-        async def _remote_cancel():
-            try:
-                await api_client.cancel_task(tid)
-            except Exception as exc:
-                logger.warning("远程 cancel_task 失败 task_id=%s err=%s", tid, exc)
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                asyncio.ensure_future(_remote_cancel())
-            else:
-                loop.run_until_complete(_remote_cancel())
-        except RuntimeError:
-            asyncio.run(_remote_cancel())
+        _schedule_remote_task_cancellation([tid])
     return (
         gr.update(interactive=True),
         gr.update(interactive=False),
@@ -3651,13 +4198,34 @@ async def reconnect_or_init(
 
 
 def stop_current_api(caller_id: Optional[str] = None):
+    caller_id = str(caller_id).strip() if caller_id is not None else None
     caller_id = caller_id or None
-    active_task_ids = _get_active_task_ids(caller_id=caller_id)
-    cancelled = _cancel_task_ids(active_task_ids)
+    active_task_ids = _get_active_task_ids(
+        caller_id=caller_id,
+        mark_cancelled=True,
+    )
+    cancelled = len(active_task_ids)
+    remote_cancel_requested = 0
+    if api_client.is_api_mode_enabled():
+        remote_cancel_requested = _schedule_remote_task_cancellation(active_task_ids)
     return {
         "cancelled": cancelled,
         "active_task_ids": active_task_ids,
+        "remote_cancel_requested": remote_cancel_requested,
     }
+
+
+def stop_current_by_caller_api(caller_id: Optional[str] = None):
+    """公开定向取消入口；空 caller_id 不得退化为全局取消。"""
+    resolved_caller_id = str(caller_id or "").strip()
+    if not resolved_caller_id:
+        return {
+            "cancelled": 0,
+            "active_task_ids": [],
+            "remote_cancel_requested": 0,
+            "reason": "caller_id_required",
+        }
+    return stop_current_api(caller_id=resolved_caller_id)
 
 
 def get_last_metrics() -> dict:
@@ -3666,7 +4234,6 @@ def get_last_metrics() -> dict:
         if _last_run_metrics is None:
             return {"status": "no_data", "message": "尚无已完成的任务"}
         return _last_run_metrics
-
 
 
 def _resolve_task_log_dir() -> Path:
@@ -3811,6 +4378,7 @@ def _update_verification_rounds_visibility(mode: str):
 
 
 def build_demo():
+    api_client.get_backend_mode()
     logo_data_uri = _load_logo_data_uri()
     fallback_favicon_data_uri = _build_fallback_favicon_data_uri()
 
@@ -4816,7 +5384,9 @@ def build_demo():
        因此用 CSS 隐藏一个 visible=True 的 textbox。 */
     #gr-task-id-bridge { position: absolute !important; left: -9999px !important; top: -9999px !important; width: 1px !important; height: 1px !important; opacity: 0 !important; pointer-events: none !important; }
     """
-    custom_css = custom_css.replace("__LOCAL_FONT_FAMILY_STACK__", LOCAL_FONT_FAMILY_STACK)
+    custom_css = custom_css.replace(
+        "__LOCAL_FONT_FAMILY_STACK__", LOCAL_FONT_FAMILY_STACK
+    )
 
     # 统一使用本地 logo，避免外部资源依赖。
     if logo_data_uri:
@@ -4829,7 +5399,11 @@ def build_demo():
         favicon_head = f'<link rel="icon" href="{fallback_favicon_data_uri}">'
         nav_logo_html = ""
     hero_logo_src = logo_data_uri or fallback_favicon_data_uri
-    hero_brand_name_html = "" if logo_data_uri else "<span class=\"hero-brand-name\">OpenClaw-MiroSearch</span>"
+    hero_brand_name_html = (
+        ""
+        if logo_data_uri
+        else '<span class="hero-brand-name">OpenClaw-MiroSearch</span>'
+    )
 
     skills_download_url, _ = _resolve_skills_package_download()
 
@@ -5021,9 +5595,17 @@ def build_demo():
             gr.Markdown(i18n["output_waiting"]),
             gr.HTML(f'<div class="options-title">{i18n["options_title"]}</div>'),
             gr.update(label=i18n["mode_label"], info=i18n["mode_info"]),
-            gr.update(label=i18n["search_profile_label"], info=i18n["search_profile_info"]),
-            gr.update(label=i18n["search_result_num_label"], info=i18n["search_result_num_info"]),
-            gr.update(label=i18n["verification_rounds_label"], info=i18n["verification_rounds_info"]),
+            gr.update(
+                label=i18n["search_profile_label"], info=i18n["search_profile_info"]
+            ),
+            gr.update(
+                label=i18n["search_result_num_label"],
+                info=i18n["search_result_num_info"],
+            ),
+            gr.update(
+                label=i18n["verification_rounds_label"],
+                info=i18n["verification_rounds_info"],
+            ),
             gr.update(
                 label=i18n["output_detail_label"],
                 choices=_build_output_detail_choices(new_lang),
@@ -5077,8 +5659,12 @@ def build_demo():
                         )
 
                 with gr.Column(elem_id="output-section"):
-                    output_label_html = gr.HTML(f'<div class="output-label">{I18N[DEFAULT_LANG]["output_label"]}</div>')
-                    out_md = gr.Markdown(I18N[DEFAULT_LANG]["output_waiting"], elem_id="log-view")
+                    output_label_html = gr.HTML(
+                        f'<div class="output-label">{I18N[DEFAULT_LANG]["output_label"]}</div>'
+                    )
+                    out_md = gr.Markdown(
+                        I18N[DEFAULT_LANG]["output_waiting"], elem_id="log-view"
+                    )
                     with gr.Row(elem_id="export-row"):
                         export_format_selector = gr.Dropdown(
                             label=I18N[DEFAULT_LANG]["export_format_label"],
@@ -5108,7 +5694,9 @@ def build_demo():
                 elem_id="right-options-column",
             ):
                 with gr.Column(elem_id="options-panel"):
-                    options_title_html = gr.HTML(f'<div class="options-title">{I18N[DEFAULT_LANG]["options_title"]}</div>')
+                    options_title_html = gr.HTML(
+                        f'<div class="options-title">{I18N[DEFAULT_LANG]["options_title"]}</div>'
+                    )
                     mode_selector = gr.Dropdown(
                         label=I18N[DEFAULT_LANG]["mode_label"],
                         choices=RESEARCH_MODE_CHOICES,
@@ -5145,7 +5733,9 @@ def build_demo():
                     output_detail_level_selector = gr.Dropdown(
                         label=I18N[DEFAULT_LANG]["output_detail_label"],
                         choices=_build_output_detail_choices(DEFAULT_LANG),
-                        value=_normalize_output_detail_level(DEFAULT_OUTPUT_DETAIL_LEVEL),
+                        value=_normalize_output_detail_level(
+                            DEFAULT_OUTPUT_DETAIL_LEVEL
+                        ),
                         info=I18N[DEFAULT_LANG]["output_detail_info"],
                         elem_id="output-detail-level-selector",
                     )
@@ -5156,13 +5746,19 @@ def build_demo():
                         scale=1,
                     )
 
-        footer_html = gr.HTML(f'<div class="app-footer">{I18N[DEFAULT_LANG]["footer_text"]}</div>')
+        footer_html = gr.HTML(
+            f'<div class="app-footer">{I18N[DEFAULT_LANG]["footer_text"]}</div>'
+        )
 
         # 供统一 API 调用的隐藏输出
         api_output = gr.Markdown(visible=False)
         api_btn = gr.Button(value="api-run", visible=False)
         gr.Textbox(visible=False, value="")
-        api_caller_id = gr.Textbox(visible=False, value="")
+        api_caller_id = gr.Textbox(
+            visible=False,
+            value="",
+            elem_id="api-caller-id",
+        )
         api_stop_output = gr.JSON(visible=False)
         api_stop_btn = gr.Button(value="api-stop", visible=False)
 
@@ -5263,7 +5859,7 @@ def build_demo():
             queue=False,
         )
         api_run_event = api_btn.click(
-            fn=run_research_once,
+            fn=run_research_once_api_binding,
             inputs=[
                 inp,
                 mode_selector,
@@ -5271,13 +5867,14 @@ def build_demo():
                 search_result_num_selector,
                 verification_min_rounds_selector,
                 output_detail_level_selector,
+                api_caller_id,
             ],
             outputs=[api_output],
             api_name="run_research_once",
         )
         api_stop_btn.click(
-            fn=stop_current_api,
-            inputs=[],
+            fn=stop_current_by_caller_api,
+            inputs=[api_caller_id],
             outputs=[api_stop_output],
             cancels=[api_run_event],
             api_name="stop_current",
@@ -5286,7 +5883,7 @@ def build_demo():
         api_stop_by_caller_btn = gr.Button(value="api-stop-caller", visible=False)
         api_stop_by_caller_output = gr.JSON(visible=False)
         api_stop_by_caller_btn.click(
-            fn=stop_current_api,
+            fn=stop_current_by_caller_api,
             inputs=[api_caller_id],
             outputs=[api_stop_by_caller_output],
             cancels=[api_run_event],

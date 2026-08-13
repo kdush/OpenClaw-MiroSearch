@@ -48,6 +48,7 @@ def test_build_demo_uses_two_column_layout_with_right_options():
     assert component_by_elem_id["search-result-num-selector"]["type"] == "dropdown"
     assert component_by_elem_id["verification-rounds-selector"]["type"] == "slider"
     assert component_by_elem_id["output-detail-level-selector"]["type"] == "dropdown"
+    assert component_by_elem_id["api-caller-id"]["type"] == "textbox"
 
     run_research_api = [
         dependency
@@ -55,7 +56,24 @@ def test_build_demo_uses_two_column_layout_with_right_options():
         if dependency.get("api_name") == "run_research_once"
     ]
     assert len(run_research_api) == 1
-    assert len(run_research_api[0]["inputs"]) == 6
+    assert len(run_research_api[0]["inputs"]) == 7
+    assert (
+        run_research_api[0]["inputs"][-1] == component_by_elem_id["api-caller-id"]["id"]
+    )
+    assert (
+        demo.fns[run_research_api[0]["id"]].fn
+        is demo_main.run_research_once_api_binding
+    )
+
+    stop_research_api = [
+        dependency
+        for dependency in dependencies
+        if dependency.get("api_name") == "stop_current"
+    ]
+    assert len(stop_research_api) == 1
+    assert stop_research_api[0]["inputs"] == [
+        component_by_elem_id["api-caller-id"]["id"]
+    ]
 
 
 def test_build_demo_syncs_task_id_bridge_for_load_and_run_stream():
@@ -191,3 +209,11 @@ def test_build_launch_kwargs_respects_env_override(monkeypatch: pytest.MonkeyPat
     launch_kwargs = demo_main._build_launch_kwargs("0.0.0.0", 8080)
 
     assert launch_kwargs["prevent_thread_lock"] is True
+
+
+def test_build_demo_rejects_invalid_backend_mode(monkeypatch: pytest.MonkeyPatch):
+    demo_main = _load_demo_main()
+    monkeypatch.setenv("BACKEND_MODE", "typo")
+
+    with pytest.raises(ValueError, match="BACKEND_MODE.*local.*api"):
+        demo_main.build_demo()

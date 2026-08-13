@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_API_BASE_URL = "http://127.0.0.1:8090"
 DEFAULT_TIMEOUT_SECONDS = 30
 DEFAULT_SSE_READ_TIMEOUT_SECONDS = 600  # SSE 单次读取超时（含阻塞等待）
+VALID_BACKEND_MODES = {"local", "api"}
 
 
 def get_api_base_url() -> str:
@@ -41,19 +42,24 @@ def get_api_bearer_token() -> Optional[str]:
     return os.getenv("API_BEARER_TOKEN") or None
 
 
-def is_api_mode_enabled() -> bool:
-    """是否启用 api-server 后端模式。
+def get_backend_mode() -> str:
+    """返回归一化后的后端模式，并拒绝拼写错误的配置。
 
-    - 显式设置 BACKEND_MODE=api：启用
-    - 显式设置 BACKEND_MODE=local：禁用
-    - 未设置：默认禁用（保持向后兼容）
+    未设置或只包含空白时按 ``local`` 处理，以保持历史默认行为。
     """
     raw = (os.getenv("BACKEND_MODE") or "").strip().lower()
-    if raw == "api":
-        return True
-    if raw == "local":
-        return False
-    return False
+    if not raw:
+        return "local"
+    if raw not in VALID_BACKEND_MODES:
+        raise ValueError(
+            f"BACKEND_MODE 配置无效：仅允许未设置、local 或 api，当前值为 {raw!r}"
+        )
+    return raw
+
+
+def is_api_mode_enabled() -> bool:
+    """是否启用 api-server 后端模式。"""
+    return get_backend_mode() == "api"
 
 
 # ====== 异常 ======

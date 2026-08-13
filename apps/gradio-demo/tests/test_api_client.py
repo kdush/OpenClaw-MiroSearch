@@ -36,8 +36,15 @@ def test_is_api_mode_enabled_explicit_local(monkeypatch):
 
 
 def test_is_api_mode_enabled_uppercase(monkeypatch):
-    monkeypatch.setenv("BACKEND_MODE", "API")
+    monkeypatch.setenv("BACKEND_MODE", " API ")
     assert api_client.is_api_mode_enabled() is True
+
+
+def test_is_api_mode_enabled_rejects_invalid_value(monkeypatch):
+    monkeypatch.setenv("BACKEND_MODE", "unexpected")
+
+    with pytest.raises(ValueError, match="BACKEND_MODE.*local.*api"):
+        api_client.is_api_mode_enabled()
 
 
 # ---------- SSE 块解析 ----------
