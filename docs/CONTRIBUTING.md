@@ -1,13 +1,13 @@
-# Contributing Guide / 贡献指南
+[English](CONTRIBUTING.md) | [中文](CONTRIBUTING_zh.md)
+
+# Contributing Guide
 
 Thank you for contributing to OpenClaw-MiroSearch.
 
-感谢你参与 OpenClaw-MiroSearch 的开发与改进。
+## Development Environment
 
-## Development Environment / 开发环境
-
-1. Install Python 3.10+ and `uv` / 安装 Python 3.10+ 与 `uv`
-2. Clone the repository and install dependencies / 克隆仓库后安装依赖：
+1. Install Python 3.12+ and `uv`.
+1. Clone the repository and install dependencies:
 
 ```bash
 cd apps/gradio-demo && uv sync
@@ -15,105 +15,114 @@ cd ../miroflow-agent && uv sync
 cd ../../libs/miroflow-tools && uv sync
 ```
 
-## Local Validation / 本地验证
+## Local Validation
 
-Before submitting, run / 在提交前建议执行：
+Run the relevant checks before submitting a change:
 
 ```bash
-# Repository root / 仓库根目录
+# Repository root
 just format
 just lint
 
-# Demo compilation check / Demo 可启动性
+# Demo compilation check
 cd apps/gradio-demo && uv run python -m py_compile main.py
 
-# Agent tests / Agent 侧
+# Agent tests
 cd ../miroflow-agent && uv run pytest
+
+# Shared tool tests
+cd ../../libs/miroflow-tools && uv run pytest
 ```
 
-## Branch & Commit Conventions / 分支与提交规范
+## Branch and Commit Conventions
 
-- Submit PRs based on the `dev` branch / 建议基于 `dev` 分支提交 PR
-- Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/), with scope recommended / 提交信息遵循 Conventional Commits，建议带 scope
-- Examples / 示例：
-  - `feat(search): add concurrent retrieval / 增加并发检索与置信补检策略`
-  - `docs(readme): restructure deployment docs / 重构部署与调用文档`
+- Open pull requests against the `dev` branch unless a maintainer requests otherwise.
+- Follow [Conventional Commits](https://www.conventionalcommits.org/) and include a scope: `type(scope): description`.
+- Keep frontend and backend changes in separate, single-purpose commits when both are involved.
+- Examples:
+  - `feat(search): add concurrent retrieval`
+  - `docs(readme): restructure deployment guidance`
 
-## Configuration & Security / 配置与安全
+## Configuration and Security
 
-- Never commit real API keys, secrets, or internal network addresses / 不要提交真实 API Key、密钥、内网地址
-- Use `.env.example` as the configuration template / 使用 `.env.example` 作为配置模板
-- When adding new config options, always update the corresponding `.env.example` and documentation / 新增配置项时，务必同步更新对应 `.env.example` 与文档
+- Never commit real API keys, secrets, or private network addresses.
+- Use `.env.example` as the configuration template.
+- When adding a configuration option, update the corresponding `.env.example` and documentation.
+- The API fails closed: if `API_TOKENS` is empty and `AUTH_DISABLED != 1`, protected endpoints return `503`.
+- Use `AUTH_DISABLED=1` only for local development. Production and shared deployments must configure strong `API_TOKENS`.
 
-## Documentation Requirements / 文档要求
+## Documentation Requirements
 
-- New features must include documentation updates / 新增能力必须补充文档：
-  - Root `README.md` (public overview) / 对外概览
-  - Sub-module README (usage details) / 使用细节
-  - Topic-specific docs under `docs/` when necessary / 必要时新增 `docs/` 下专题文档
+New features must include the relevant documentation updates:
 
-## Pull Request Requirements / Pull Request 要求
+- Root `README.md` for the public overview
+- A submodule README for detailed usage
+- Topic-specific documentation under `docs/` when needed
+- Both English and Chinese counterparts for a paired document
 
-PR descriptions must include at minimum / PR 描述至少包含：
+## Pull Request Requirements
 
-- Change objective and background / 变更目标与背景
-- Impact scope (modules / interfaces / configuration) / 影响范围（模块/接口/配置）
-- Verification method (commands + results) / 验证方式（命令 + 结果）
-- Screenshots if UI changes are involved / 如涉及 UI，请附截图
+A pull request description must include at least:
 
-## Governance / 治理说明
+- The objective and background of the change
+- The affected modules, interfaces, and configuration
+- Verification commands and results
+- Screenshots for user-interface changes
 
-### Roles / 角色
+## Governance
 
-- **Maintainers**: version release, PR merge, roadmap progress / 维护者：版本发布、PR 合并、路线图推进
-- **Contributors**: submit improvements via Issue / PR / 贡献者：通过 Issue / PR 提交改进
+### Roles
 
-### Decision Process / 决策流程
+- **Maintainers:** manage releases, merge pull requests, and advance the roadmap.
+- **Contributors:** propose improvements through issues and pull requests.
 
-1. Requirements or issues recorded via Issue / 需求或问题通过 Issue 记录
-2. Solutions discussed and reviewed in Issue / PR / 方案在 Issue / PR 中讨论并评审
-3. Maintainers make merge decisions based on compatibility, risk, and benefit / 维护者基于兼容性、风险与收益做合并决策
-4. Changes enter CHANGELOG and release process / 变更进入 CHANGELOG 与版本发布流程
+### Decision Process
 
-### Merge Principles / 合并原则
+1. Record requirements or problems in an issue.
+1. Discuss and review solutions in the issue or pull request.
+1. Maintainers decide whether to merge based on compatibility, risk, and benefit.
+1. Accepted changes enter the changelog and release process.
 
-- Breaking changes require migration path documentation / 破坏性改动需提前说明迁移路径
-- New config options must sync `.env.example` and docs / 新增配置项必须同步 `.env.example` 与文档
-- Code changes must include minimal reproducible verification / 代码变更必须附最小可复现验证
+### Merge Principles
 
-## Support / 支持说明
+- Breaking changes require documented migration guidance.
+- New configuration options must be reflected in `.env.example` and the documentation.
+- Code changes must include a minimal, reproducible verification method.
 
-- Submit issues via GitHub Issue, including: branch, commit, runtime mode, env vars (redacted), reproduction steps, logs / 请通过 GitHub Issue 提交问题，并附带：分支与提交号、运行方式、环境变量（脱敏）、复现步骤、报错日志
-- Issue templates: `.github/ISSUE_TEMPLATE/` / Issue 模板
-- No SLA guarantee for the open-source version / 开源版本以社区协作为主，不提供 SLA 承诺
-- Security issues: report privately per [`SECURITY.md`](SECURITY.md) / 安全问题请按 [`SECURITY.md`](SECURITY.md) 私下报告
+## Support
 
-## Release Process / 发布流程
+- Report problems through GitHub Issues and include the branch, commit, runtime mode, redacted environment variables, reproduction steps, and logs.
+- Issue templates are available in `.github/ISSUE_TEMPLATE/`.
+- The open-source version is community-supported and has no SLA.
+- Report security issues privately as described in [`SECURITY.md`](SECURITY.md).
 
-This project follows [Semantic Versioning](https://semver.org/): `MAJOR.MINOR.PATCH` / 本项目采用语义化版本（SemVer）
+## Release Process
 
-### Pre-release Checklist / 发布前检查清单
+This project follows [Semantic Versioning](https://semver.org/): `MAJOR.MINOR.PATCH`.
 
-1. Confirm target branch and milestone / 确认目标分支与里程碑一致
-2. Update docs (README / sub-module README / API spec) / 确认文档已更新
-3. Update [`CHANGELOG.md`](CHANGELOG.md) / 更新变更记录
-4. Run quality checks / 质量校验：
+### Pre-release Checklist
+
+1. Confirm the target branch and milestone.
+1. Update the root README, relevant submodule READMEs, and API documentation.
+1. Update both [`CHANGELOG.md`](CHANGELOG.md) and [`CHANGELOG_zh.md`](CHANGELOG_zh.md).
+1. Run the quality checks:
 
 ```bash
 just format && just lint
 cd apps/gradio-demo && uv run python -m py_compile main.py
 cd ../miroflow-agent && uv run pytest
+cd ../../libs/miroflow-tools && uv run pytest
 ```
 
-5. Tag and push: `v0.x.y` / 打标签并推送
+5. Create and push the `v0.x.y` tag only after the release is approved.
 
-### Version Upgrade Guidelines / 版本升级建议
+### Version Upgrade Guidelines
 
-- `PATCH`: doc fixes, non-behavioral changes, low-risk fixes / 文档修复、非行为变更、低风险修复
-- `MINOR`: backward-compatible new features / 向后兼容的新功能
-- `MAJOR`: breaking changes / 破坏性变更
+- `PATCH`: documentation corrections, non-behavioral changes, and low-risk fixes
+- `MINOR`: backward-compatible features
+- `MAJOR`: breaking changes
 
-### Rollback / 回滚原则
+### Rollback
 
-- Roll back to the latest stable tag on critical failure / 若发布后出现关键故障，优先回滚到最近稳定标签
-- Post-rollback: add RCA and fix plan / 回滚后补充问题根因与修复计划
+- For a critical post-release failure, prefer rolling back to the latest stable tag.
+- After rollback, document the root-cause analysis and remediation plan.
