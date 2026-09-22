@@ -2,6 +2,7 @@ import asyncio
 import importlib.util
 import os
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -228,7 +229,42 @@ def test_public_caller_stop_rejects_empty_caller_id(monkeypatch):
 def test_stop_current_ui_accepts_missing_state(monkeypatch):
     demo_main = _load_demo_main()
     monkeypatch.setenv("BACKEND_MODE", "local")
-    run_update, stop_update = demo_main.stop_current_ui(None)
+    markdown_update, run_update, stop_update = demo_main.stop_current_ui(None)
 
+    assert markdown_update is None
     assert run_update["interactive"] is True
     assert stop_update["interactive"] is False
+
+
+def test_stop_current_ui_marks_runtime_status_cancelled(monkeypatch):
+    """停止后最后一帧不得残留「研究进行中」spinner。"""
+    demo_main = _load_demo_main()
+    monkeypatch.setenv("BACKEND_MODE", "local")
+    streaming_md = "## 结论\n\n内容" + demo_main._spinner_markup(
+        True, "研究进行中 · 分析推理 · 第 3 回合"
+    )
+
+    markdown_update, _, _ = demo_main.stop_current_ui(None, streaming_md)
+
+    assert "runtime-spinner" not in markdown_update
+    assert "研究进行中" not in markdown_update
+    assert "任务已取消" in markdown_update
+    assert "## 结论" in markdown_update
+
+
+def test_stop_current_ui_signals_running_pipeline_cancel(monkeypatch):
+    """停止需直接置位本地 pipeline 的 cancel_event，不能只靠事件流被回收。"""
+    demo_main = _load_demo_main()
+    monkeypatch.setenv("BACKEND_MODE", "local")
+    demo_main._CANCEL_FLAGS.clear()
+    demo_main._ACTIVE_TASK_IDS.clear()
+    demo_main._ACTIVE_CANCEL_EVENTS.clear()
+    cancel_event = threading.Event()
+    demo_main._register_active_task("task-stop")
+    demo_main._ACTIVE_CANCEL_EVENTS["task-stop"] = cancel_event
+
+    demo_main.stop_current_ui({"task_id": "task-stop"}, None)
+
+    assert cancel_event.is_set()
+    assert demo_main._CANCEL_FLAGS["task-stop"] is True
+    assert "task-stop" not in demo_main._ACTIVE_CANCEL_EVENTS

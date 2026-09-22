@@ -30,6 +30,7 @@ from src.config.search_policy import (
 )
 from src.config.settings import expose_sub_agents_as_tools
 from src.cache.result_cache import ResultCache
+from src.core.deep_efficiency import resolve_research_intensity
 from src.core.pipeline import create_pipeline_components, execute_task_pipeline
 from src.io.report_presentation import prepare_user_facing_report
 from utils import replace_chinese_punctuation
@@ -1713,6 +1714,8 @@ async def stream_events_optimized(
     stream_queue.set_loop(asyncio.get_event_loop())
 
     cancel_event = threading.Event()
+    with _CANCEL_LOCK:
+        _ACTIVE_CANCEL_EVENTS[workflow_id] = cancel_event
     first_non_heartbeat_logged = False
     event_counts: Dict[str, int] = {}
     stage_state: Dict[str, Any] = {
@@ -1913,6 +1916,18 @@ async def stream_events_optimized(
                         sub_agent_tool_definitions=profile_cache[
                             "sub_agent_tool_definitions"
                         ],
+                        effective_config={
+                            "mode": resolved_mode,
+                            "search_profile": resolved_search_profile,
+                            "search_result_num": resolved_search_result_num,
+                            "verification_min_search_rounds": (
+                                resolved_verification_min_rounds
+                            ),
+                            "output_detail_level": resolved_output_detail_level,
+                            "research_intensity": resolve_research_intensity(
+                                profile_cache["cfg"]
+                            ),
+                        },
                     )
                 )
 
@@ -2022,6 +2037,8 @@ async def stream_events_optimized(
         }
     finally:
         cancel_event.set()
+        with _CANCEL_LOCK:
+            _ACTIVE_CANCEL_EVENTS.pop(workflow_id, None)
         stream_queue.close()
         # concurrent.futures.Future.result() 会阻塞当前 Gradio 事件循环；
         # 包装为 asyncio Future 后等待，既保证线程完成清理，也不冻结其他请求。
@@ -4150,6 +4167,9 @@ def _update_state_with_event(state: dict, message: dict):
 
 _CANCEL_FLAGS = {}
 _ACTIVE_TASK_IDS: dict[str, str] = {}  # {task_id: caller_id}
+# 本地模式运行中 pipeline 的线程内 cancel_event；停止按钮直接置位，
+# 不依赖被取消的事件流生成器被回收后才触发取消。
+_ACTIVE_CANCEL_EVENTS: dict[str, object] = {}
 _CANCEL_LOCK = threading.Lock()
 
 # 最近一次任务的结构化运行指标，由 run_research_once 在任务结束后写入
@@ -4178,6 +4198,15 @@ def _unregister_active_task(task_id: str):
     with _CANCEL_LOCK:
         _ACTIVE_TASK_IDS.pop(task_id, None)
         _CANCEL_FLAGS.pop(task_id, None)
+
+
+def _signal_pipeline_cancel(task_ids: List[str]) -> None:
+    """置位本地 pipeline 的 cancel_event 并摘除注册。"""
+    with _CANCEL_LOCK:
+        events = [_ACTIVE_CANCEL_EVENTS.pop(task_id, None) for task_id in task_ids]
+    for event in events:
+        if event is not None:
+            event.set()
 
 
 def _get_active_task_ids(
@@ -4986,14 +5015,37 @@ def _schedule_remote_task_cancellation(task_ids: List[str]) -> int:
     return len(resolved_task_ids)
 
 
-def stop_current_ui(ui_state: Optional[dict] = None):
+def _mark_runtime_status_cancelled(markdown: Optional[str]) -> Optional[str]:
+    """把流式状态块改写为终态「任务已取消」。
+
+    停止按钮会 cancel 掉事件流，最后一帧的 spinner 不会再被覆盖，
+    因此在这里就地清掉 spinner 并换成终态文案。
+    """
+    text = str(markdown or "")
+    if 'class="runtime-status"' not in text:
+        return markdown
+    label = _format_runtime_status_label({"runtime_stage": {"phase": "已取消"}})
+    text = re.sub(r'<div class="runtime-spinner"[^>]*></div>', "", text)
+    text = re.sub(
+        r'(<span class="runtime-status-text">)[^<]*(</span>)',
+        lambda match: f"{match.group(1)}{label}{match.group(2)}",
+        text,
+    )
+    return text
+
+
+def stop_current_ui(
+    ui_state: Optional[dict] = None, markdown: Optional[str] = None
+):
     tid = (ui_state or {}).get("task_id")
     target_ids = [tid] if tid else _get_active_task_ids()
     _cancel_task_ids(target_ids)
+    _signal_pipeline_cancel(target_ids)
     # API 模式：同步通知 api-server 设置取消标记，让 worker 协作式中止
     if api_client.is_api_mode_enabled() and tid:
         _schedule_remote_task_cancellation([tid])
     return (
+        _mark_runtime_status_cancelled(markdown),
         gr.update(interactive=True),
         gr.update(interactive=False),
     )
@@ -8994,8 +9046,8 @@ def build_demo():
         )
         stop_btn.click(
             fn=stop_current_ui,
-            inputs=[ui_state],
-            outputs=[run_btn, stop_btn],
+            inputs=[ui_state, out_md],
+            outputs=[out_md, run_btn, stop_btn],
             cancels=[run_event, submit_event],
             api_name=False,
             queue=False,
