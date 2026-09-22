@@ -119,9 +119,9 @@ def _env_non_empty(name: str, default_value: str) -> str:
     return default_value
 
 
-def _load_logo_data_uri() -> str:
+def _load_logo_data_uri(logo_name: str = "diting_logo.png") -> str:
     """加载本地 Logo 并转换为 data URI，避免依赖外部静态资源服务。"""
-    logo_path = Path(__file__).resolve().parents[2] / "assets" / "mirologo.png"
+    logo_path = Path(__file__).resolve().parents[2] / "assets" / logo_name
     if not logo_path.exists():
         logger.warning("未找到本地 logo 文件: %s", logo_path)
         return ""
@@ -219,7 +219,7 @@ def _collect_gradio_allowed_paths() -> List[str]:
 # 控制是否启用 demo prompt patch
 ENABLE_PROMPT_PATCH = _env_flag("ENABLE_PROMPT_PATCH", True)
 if ENABLE_PROMPT_PATCH:
-    # 应用自定义系统提示补丁（注入 OpenClaw-MiroSearch 身份）
+    # 应用自定义系统提示补丁（注入谛听身份）
     apply_prompt_patch()
 
 # 允许通过环境变量控制 DEMO_MODE，默认开启
@@ -294,7 +294,7 @@ LOCAL_FONT_FAMILY_STACK = (
     "'Microsoft YaHei', -apple-system, BlinkMacSystemFont, sans-serif"
 )
 SKILLS_PACKAGE_SAFE_DIR = Path(__file__).resolve().parents[2] / "skills"
-SKILLS_PACKAGE_DEFAULT_FILENAME = "openclaw-mirosearch.zip"
+SKILLS_PACKAGE_DEFAULT_FILENAME = "diting.zip"
 DEFAULT_SKILLS_PACKAGE_PATH = os.getenv(
     "SKILLS_PACKAGE_PATH",
     str(SKILLS_PACKAGE_SAFE_DIR / SKILLS_PACKAGE_DEFAULT_FILENAME),
@@ -309,11 +309,11 @@ SKILLS_DOWNLOAD_FALLBACK_HINT_CN = (
 SKILLS_DOWNLOAD_BUTTON_TEXT_CN = "skills下载"
 SKILLS_DOWNLOAD_COPIED_TEXT_CN = "已复制链接"
 EXPORT_FORMAT_EXTENSIONS = {"md": ".md", "pdf": ".pdf", "docx": ".docx"}
-EXPORT_FILENAME_PREFIX = os.getenv("EXPORT_FILENAME_PREFIX", "mirosearch-conclusion")
+EXPORT_FILENAME_PREFIX = os.getenv("EXPORT_FILENAME_PREFIX", "diting-conclusion")
 EXPORT_OUTPUT_DIR = Path(
     os.getenv(
         "EXPORT_OUTPUT_DIR",
-        str(Path(tempfile.gettempdir()) / "openclaw-mirosearch-exports"),
+        str(Path(tempfile.gettempdir()) / "diting-exports"),
     )
 )
 EXPORT_PDF_PAGE_WIDTH = 595
@@ -335,8 +335,8 @@ _UI_LANG: "contextvars.ContextVar[str]" = contextvars.ContextVar(
 
 I18N = {
     LANG_EN: {
-        "page_title": "OpenClaw-MiroSearch - Deep Research",
-        "nav_brand_text": "OpenClaw-MiroSearch Deep Research",
+        "page_title": "Diting - Deep Research",
+        "nav_brand_text": "Diting Deep Research",
         "hero_title": "Deep Research, Insight into the Future",
         "hero_subtitle": "Verifiable search and reasoning for research tasks.",
         "input_placeholder": "Enter your research question...",
@@ -345,8 +345,8 @@ I18N = {
         "btn_settings": "Settings",
         "settings_modal_title": "Settings",
         "btn_close": "Close",
-        "output_label": "Research Progress",
         "output_waiting": "### Ready when you are\n\nType a question above and click **Start Research**.\n\nProgress, sources, and the final report will appear here.",
+        "output_running_hint": "Research started — analyzing your question. Sources and findings will appear here.",
         "options_title": "Options / Advanced Settings",
         "mode_label": "Search Mode",
         "mode_info": "Daily: Balanced. Need multi-source checks: Verified. Items marked Advanced are optional.",
@@ -385,6 +385,8 @@ I18N = {
         "progress_output": "Output",
         "progress_executed": "Executed",
         "progress_untitled": "Untitled",
+        "scrape_status_failed": "Failed",
+        "scrape_status_done": "Done",
         "progress_process_summary": "Thinking & search process (done — click to expand)",
         "btn_settings_title": "Settings",
         "btn_export_title": "Export",
@@ -397,8 +399,8 @@ I18N = {
         },
     },
     LANG_CN: {
-        "page_title": "OpenClaw-MiroSearch - 深度研究",
-        "nav_brand_text": "OpenClaw-MiroSearch 深度研究",
+        "page_title": "谛听 - 深度研究",
+        "nav_brand_text": "谛听 深度研究",
         "hero_title": "深度研究，洞察未来",
         "hero_subtitle": "用可验证的检索与推理完成研究任务。",
         "input_placeholder": "请输入你的研究问题...",
@@ -407,8 +409,8 @@ I18N = {
         "btn_settings": "设置",
         "settings_modal_title": "设置",
         "btn_close": "关闭",
-        "output_label": "研究进度",
         "output_waiting": "### 准备就绪\n\n在上方输入问题，点击 **开始研究**。\n\n进度、来源与最终报告会显示在这里。",
+        "output_running_hint": "研究已启动，正在分析问题；来源与结论会陆续显示在这里。",
         "options_title": "Options / 高级配置",
         "mode_label": "检索模式",
         "mode_info": "日常用「均衡」；要多源交叉验证用「交叉验证」。带「高级」的一般不用。",
@@ -447,6 +449,8 @@ I18N = {
         "progress_output": "输出",
         "progress_executed": "已执行",
         "progress_untitled": "无标题",
+        "scrape_status_failed": "抓取失败",
+        "scrape_status_done": "抓取完成",
         "progress_process_summary": "思考与检索过程（已完成，点击展开）",
         "btn_settings_title": "设置",
         "btn_export_title": "导出",
@@ -736,6 +740,7 @@ TOOL_DISPLAY_NAMES: dict[str, str] = {
     "scrape": "网页抓取",
     "scrape_website": "网页抓取",
     "scrape_webpage": "网页抓取",
+    "scrape_url": "网页抓取",
     "scrape_and_extract_info": "信息提取",
     "show_text": "文本展示",
 }
@@ -1720,7 +1725,6 @@ async def stream_events_optimized(
     event_counts: Dict[str, int] = {}
     stage_state: Dict[str, Any] = {
         "phase": "初始化",
-        "turn": 0,
         "search_round": 0,
         "agent_name": "",
         "detail": "等待开始",
@@ -1731,7 +1735,6 @@ async def stream_events_optimized(
     def _touch_stage(
         phase: Optional[str] = None,
         *,
-        turn: Optional[int] = None,
         detail: Optional[str] = None,
         agent_name: Optional[str] = None,
         last_tool: Optional[str] = None,
@@ -1739,8 +1742,6 @@ async def stream_events_optimized(
     ) -> None:
         if phase:
             stage_state["phase"] = phase
-        if turn is not None:
-            stage_state["turn"] = max(0, int(turn))
         if detail is not None:
             stage_state["detail"] = str(detail)
         if agent_name is not None:
@@ -1757,12 +1758,9 @@ async def stream_events_optimized(
         if event_type == "stage_heartbeat":
             _touch_stage(
                 data.get("phase"),
-                turn=data.get("turn"),
                 detail=data.get("detail"),
                 agent_name=data.get("agent_name"),
             )
-            if data.get("search_round") is not None:
-                stage_state["search_round"] = int(data.get("search_round") or 0)
             return
         if event_type == "start_of_agent":
             current_agent = str(data.get("agent_name") or "")
@@ -2077,11 +2075,11 @@ def _init_render_state():
         "errors": [],
         "runtime_stage": {
             "phase": "初始化",
-            "turn": 0,
             "search_round": 0,
             "detail": "等待开始",
             "agent_name": "",
             "last_tool": "",
+            "started_at": time.time(),
             "updated_at": 0.0,
         },
     }
@@ -2089,26 +2087,42 @@ def _init_render_state():
 
 _RUNTIME_PHASE_LABELS = {
     "初始化": "准备中",
-    "推理": "分析推理",
-    "检索": "检索资料",
-    "总结": "生成报告",
-    "校验": "交叉校验",
-    "工具调用": "调用工具",
-    "异常": "执行出现问题",
-    "已取消": "任务已取消",
-    "完成": "任务已完成",
+    "排队": "排队中",
+    "推理": "正在分析",
+    "检索": "正在检索",
+    "总结": "正在生成报告",
+    "校验": "正在交叉校验",
+    "工具调用": "正在调用工具",
+    "并行工具": "正在并行处理",
+    "线索追踪": "正在追踪线索",
+    "异常": "研究中断",
+    "已取消": "已停止",
+    "完成": "研究完成",
 }
 
 # agent 心跳里的内部措辞 → 用户可读文案；返回 "" 表示与阶段重复、不展示
 _RUNTIME_DETAIL_DROP = {
+    "等待开始",
     "模型推理中",
     "主模型推理中",
+    "内容生成中",
     "交叉校验中（无工具）",
     "进入最终总结阶段",
+    "最终总结生成中",
+    "输出前交叉校验汇总中",
     "执行出现错误",
+    "任务执行失败",
     "任务已取消",
     "任务已完成",
+    "最终结果已生成",
+    "主流程已启动",
+    "追踪研究线索",
 }
+
+# 与阶段标签重复的模板化措辞：{agent} 已启动 / 执行工具 X / 并行执行 N 个工具调用
+_RUNTIME_DETAIL_DROP_RE = re.compile(
+    r"^(?:.+ 已启动|执行工具 \S+|并行执行 \d+ 个工具调用)$"
+)
 
 
 def _clean_runtime_detail(detail: str) -> str:
@@ -2118,45 +2132,51 @@ def _clean_runtime_detail(detail: str) -> str:
     retry_match = re.match(r"^最终总结生成中（第 (\d+)/(\d+) 次）$", text)
     if retry_match:
         if retry_match.group(1) == "1":
-            return "生成最终总结中"
+            return ""
         return f"第 {retry_match.group(1)} 次重试生成总结"
-    if text in _RUNTIME_DETAIL_DROP:
+    if text in _RUNTIME_DETAIL_DROP or _RUNTIME_DETAIL_DROP_RE.match(text):
         return ""
     if text == "交叉校验降级重试":
-        return "校验重试中"
-    if text == "输出前交叉校验汇总中":
-        return "输出前校验中"
+        return "降级重试"
     if text == "命中交叉校验门槛，追加检索指令":
         return "校验未通过，补充检索"
     tool_running = re.match(r"^(.+?) 执行中$", text)
     if tool_running:
-        return f"正在{tool_running.group(1)}"
+        return tool_running.group(1)
     return text
 
 
-def _format_runtime_status_label(
-    state: dict, heartbeat_ts: Optional[float] = None
-) -> str:
-    # heartbeat_ts 保留在签名中（调用方传心跳时间戳），但不再展示给用户
-    del heartbeat_ts
+def _format_runtime_status_label(state: dict) -> str:
     runtime_stage = state.get("runtime_stage") or {}
     phase = str(runtime_stage.get("phase") or "执行中")
-    turn = int(runtime_stage.get("turn") or 0)
     search_round = int(runtime_stage.get("search_round") or 0)
     detail = _clean_runtime_detail(str(runtime_stage.get("detail") or ""))
-    phase_label = _RUNTIME_PHASE_LABELS.get(phase, phase)
-    if phase in ("异常", "已取消", "完成"):
-        parts = [phase_label]
-    else:
-        parts = ["研究进行中", phase_label]
-    if turn > 0:
-        parts.append(f"第 {turn} 回合")
+    parts = [_RUNTIME_PHASE_LABELS.get(phase, phase)]
     if search_round > 0:
-        parts.append(f"第 {search_round} 轮检索")
-    label = " · ".join(parts)
+        parts.append(f"已完成 {search_round} 次检索")
     if detail:
-        label = f"{label} · {detail}"
-    return label
+        parts.append(detail)
+    return " · ".join(parts)
+
+
+def _format_elapsed_value(started_at: float) -> str:
+    seconds = max(0, int(time.time() - float(started_at or 0)))
+    return f"{seconds // 60}:{seconds % 60:02d}"
+
+
+def _runtime_status_markup(state: dict) -> str:
+    """运行态状态卡：状态文案 + 耗时（耗时由前端每秒自增）。"""
+    started_at = float((state.get("runtime_stage") or {}).get("started_at") or 0.0)
+    elapsed_html = ""
+    if started_at > 0:
+        # 起始时间放进 style 自定义属性：Markdown 净化会剥掉 data-*，
+        # 只有 class/style 能活着到达前端，供每秒自增的计时脚本读取。
+        elapsed_html = (
+            '<span class="runtime-elapsed">已用 <span class="runtime-elapsed-value" '
+            f'style="--start-ts:{int(started_at)}">'
+            f"{_format_elapsed_value(started_at)}</span></span>"
+        )
+    return _spinner_markup(_format_runtime_status_label(state), elapsed_html)
 
 
 def _format_think_content(text: str) -> str:
@@ -2607,7 +2627,9 @@ def _format_scrape_results(
             f'<span class="scrape-url">{url[:60]}{"..." if len(url) > 60 else ""}</span>'
         )
         lines.append("</div>")
-        lines.append('<div class="scrape-status error">❌ Failed</div>')
+        lines.append(
+            f'<div class="scrape-status error">{_progress_copy("scrape_status_failed")}</div>'
+        )
         lines.append("</div>")
         return "\n".join(lines)
 
@@ -2620,7 +2642,9 @@ def _format_scrape_results(
             f'<span class="scrape-url">{url[:60]}{"..." if len(url) > 60 else ""}</span>'
         )
         lines.append("</div>")
-        lines.append('<div class="scrape-status success">✓ Done</div>')
+        lines.append(
+            f'<div class="scrape-status success">{_progress_copy("scrape_status_done")}</div>'
+        )
     preview_text = _extract_scrape_preview_text(tool_output, preview_chars)
     if preview_text:
         lines.append("</div>")
@@ -3998,16 +4022,16 @@ def _render_markdown_inner(
             if sources:
                 lines.extend(_build_references_section(sources))
 
+    runtime_stage = state.get("runtime_stage") or {}
+    if str(runtime_stage.get("phase") or "") == "已取消":
+        # 停止后最后一帧不再带状态卡，补一行终态文案说明输出为何到此为止。
+        lines.append(f"*{_format_runtime_status_label(state)}*")
+
     if lines:
         return "\n".join(lines)
 
-    runtime_stage = state.get("runtime_stage") or {}
     if float(runtime_stage.get("updated_at") or 0) > 0:
-        status_label = _format_runtime_status_label(state)
-        return (
-            f"*{status_label}*\n\n"
-            "> 当前任务已启动，暂时还没有可展示的正文或工具输出。"
-        )
+        return f"*{_progress_copy('output_running_hint')}*"
 
     return "*等待开始研究...*"
 
@@ -4092,9 +4116,8 @@ def _update_state_with_event(state: dict, message: dict):
                         runtime_stage["search_round"] = (
                             int(runtime_stage.get("search_round", 0)) + 1
                         )
-                        runtime_stage["detail"] = (
-                            f"{_tool_display_name(tool_name)} 已完成（第 {runtime_stage['search_round']} 轮）"
-                        )
+                        # 轮次改由状态标签的「已完成 N 次检索」呈现，避免重复
+                        runtime_stage["detail"] = ""
                 else:
                     # Only update input if we don't already have valid input data, or if the new data is not empty
                     if "input" not in entry or not _is_empty_payload(ti):
@@ -4129,18 +4152,8 @@ def _update_state_with_event(state: dict, message: dict):
         phase = str((data or {}).get("phase") or "").strip()
         if phase:
             runtime_stage["phase"] = phase
-        if (data or {}).get("turn") is not None:
-            try:
-                runtime_stage["turn"] = max(0, int((data or {}).get("turn") or 0))
-            except (TypeError, ValueError):
-                pass
-        if (data or {}).get("search_round") is not None:
-            try:
-                runtime_stage["search_round"] = max(
-                    0, int((data or {}).get("search_round") or 0)
-                )
-            except (TypeError, ValueError):
-                pass
+        # 心跳里的 search_round 是 agent 侧的「校验轮次」，非本次检索次数；
+        # 检索轮次统一由检索工具的输出事件累加，避免两个口径互相覆盖。
         detail = str((data or {}).get("detail") or "").strip()
         if detail:
             runtime_stage["detail"] = detail
@@ -4166,13 +4179,22 @@ def _update_state_with_event(state: dict, message: dict):
         runtime_stage = state.setdefault("runtime_stage", {})
         if status == "cancelled":
             runtime_stage["phase"] = "已取消"
-            runtime_stage["detail"] = "任务已取消"
         elif status == "failed":
             runtime_stage["phase"] = "异常"
-            runtime_stage["detail"] = "任务执行失败"
+            reason = ""
+            if isinstance(data, dict):
+                reason = str(data.get("error") or data.get("detail") or "").strip()
+            errors = state.setdefault("errors", [])
+            label = f"研究中断：{reason}" if reason else "研究中断"
+            # 终态前通常已有 error 事件：同因就地升级为带状态标签的文案，
+            # 既保证失败态有可读的终态文案，也不重复渲染两块 ❌。
+            if reason and reason in errors:
+                errors[errors.index(reason)] = label
+            else:
+                errors.append(label)
         elif status in {"completed", "cached"}:
             runtime_stage["phase"] = "完成"
-            runtime_stage["detail"] = "任务已完成"
+        runtime_stage["detail"] = ""
         runtime_stage["updated_at"] = time.time()
     elif event == "final_output":
         markdown = ""
@@ -4290,14 +4312,13 @@ async def _disconnect_check_for_task(task_id: str):
         return _CANCEL_FLAGS.get(task_id, False)
 
 
-def _spinner_markup(running: bool, status_text: str = "研究进行中…") -> str:
-    if not running:
-        return ""
-    safe = html.escape(str(status_text or "研究进行中…"), quote=False)
+def _spinner_markup(status_text: str, elapsed_html: str = "") -> str:
+    safe = html.escape(str(status_text), quote=False)
     return (
         '\n\n<div class="runtime-status">'
         '<div class="runtime-spinner" aria-hidden="true"></div>'
         f'<span class="runtime-status-text">{safe}</span>'
+        f"{elapsed_html}"
         "</div>\n"
     )
 
@@ -4379,7 +4400,6 @@ def _build_reconnect_initial_render_state(snapshot: dict) -> dict:
     runtime_stage = state.setdefault("runtime_stage", {})
     if status == "queued":
         runtime_stage["phase"] = "排队"
-        runtime_stage["detail"] = "任务排队中"
     elif status == "running":
         if (
             current_stage.startswith("search")
@@ -4401,7 +4421,6 @@ def _build_reconnect_initial_render_state(snapshot: dict) -> dict:
             runtime_stage["phase"] = "总结"
         else:
             runtime_stage["phase"] = "推理"
-        runtime_stage["detail"] = "任务恢复中"
     else:
         return state
 
@@ -4480,7 +4499,7 @@ async def _render_stream_via_api(
         ui_lang=(ui_state or {}).get("ui_lang"),
     )
     yield _pack_ui_stream(
-        initial_markdown + _spinner_markup(True, _format_runtime_status_label(state)),
+        initial_markdown + _runtime_status_markup(state),
         gr.update(interactive=False),
         gr.update(interactive=True),
         ui_state,
@@ -4495,33 +4514,10 @@ async def _render_stream_via_api(
         async for message in api_client.stream_task_events(
             task_id, cancel_check=_cancel_check
         ):
-            event_type = message.get("event", "unknown")
-            if event_type == "done":
-                # 服务端终态信号：completed / cancelled / failed / cached
-                done_status = (message.get("data") or {}).get("status", "completed")
-                if done_status == "failed":
-                    state["errors"].append("任务执行失败")
-                break
-            if event_type == "heartbeat":
-                state = _update_state_with_event(state, message)
-                heartbeat_ts = (message.get("data") or {}).get("timestamp")
-                heartbeat_label = _format_runtime_status_label(state, heartbeat_ts)
-                heartbeat_md = _render_markdown(
-                    state,
-                    render_mode=resolved_ui_render_mode,
-                    final_summary_merge_strategy=resolved_summary_merge_strategy,
-                    output_detail_level=(ui_state or {}).get("output_detail_level"),
-                    ui_lang=(ui_state or {}).get("ui_lang"),
-                )
-                yield _pack_ui_stream(
-                    heartbeat_md + _spinner_markup(True, heartbeat_label),
-                    gr.update(interactive=False),
-                    gr.update(interactive=True),
-                    ui_state,
-                    show_output=True,
-                )
-                continue
             state = _update_state_with_event(state, message)
+            if str(message.get("event") or "") == "done":
+                # 服务端终态信号：completed / cancelled / failed / cached
+                break
             md = _render_markdown(
                 state,
                 render_mode=resolved_ui_render_mode,
@@ -4530,7 +4526,7 @@ async def _render_stream_via_api(
                 ui_lang=(ui_state or {}).get("ui_lang"),
             )
             yield _pack_ui_stream(
-                md + _spinner_markup(True, _format_runtime_status_label(state)),
+                md + _runtime_status_markup(state),
                 gr.update(interactive=False),
                 gr.update(interactive=True),
                 ui_state,
@@ -4567,6 +4563,14 @@ async def _render_stream_via_api(
             show_output=True,
         )
         return
+
+    phase = str((state.get("runtime_stage") or {}).get("phase") or "")
+    cancelled_locally = await _disconnect_check_for_task(task_id)
+    if cancelled_locally and phase not in ("异常", "已取消", "完成"):
+        # 本地停止后 done 事件不会再到达，补一个终态，避免最后一帧看不到取消标记。
+        state = _update_state_with_event(
+            state, {"event": "done", "data": {"status": "cancelled"}}
+        )
 
     final_md = _render_markdown(
         state,
@@ -4740,8 +4744,7 @@ async def gradio_run(
         )
         # Initial: disable Run, enable Stop, and show spinner at bottom of text
         yield _pack_ui_stream(
-            initial_markdown
-            + _spinner_markup(True, _format_runtime_status_label(state)),
+            initial_markdown + _runtime_status_markup(state),
             gr.update(interactive=False),
             gr.update(interactive=True),
             ui_state,
@@ -4757,26 +4760,6 @@ async def gradio_run(
             resolved_output_detail_level,
             lambda: _disconnect_check_for_task(task_id),
         ):
-            event_type = message.get("event", "unknown")
-            if event_type == "heartbeat":
-                state = _update_state_with_event(state, message)
-                heartbeat_ts = (message.get("data") or {}).get("timestamp")
-                heartbeat_label = _format_runtime_status_label(state, heartbeat_ts)
-                heartbeat_markdown = _render_markdown(
-                    state,
-                    render_mode=resolved_ui_render_mode,
-                    final_summary_merge_strategy=resolved_summary_merge_strategy,
-                    output_detail_level=resolved_output_detail_level,
-                )
-                yield _pack_ui_stream(
-                    heartbeat_markdown + _spinner_markup(True, heartbeat_label),
-                    gr.update(interactive=False),
-                    gr.update(interactive=True),
-                    ui_state,
-                    show_output=True,
-                )
-                continue
-
             state = _update_state_with_event(state, message)
             md = _render_markdown(
                 state,
@@ -4785,7 +4768,7 @@ async def gradio_run(
                 output_detail_level=resolved_output_detail_level,
             )
             yield _pack_ui_stream(
-                md + _spinner_markup(True, _format_runtime_status_label(state)),
+                md + _runtime_status_markup(state),
                 gr.update(interactive=False),
                 gr.update(interactive=True),
                 ui_state,
@@ -4972,19 +4955,7 @@ async def _run_research_once_via_api(
                     "api-server 终态协议错误：done.status 必须是 "
                     "completed、cached、failed 或 cancelled。"
                 )
-            detail = str(
-                done_data.get("error") or done_data.get("detail") or ""
-            ).strip()
-            if done_status == "failed":
-                message_text = "任务执行失败"
-                if detail:
-                    message_text = f"{message_text}：{detail}"
-                state.setdefault("errors", []).append(message_text)
-            elif done_status == "cancelled":
-                message_text = "任务已取消"
-                if detail:
-                    message_text = f"{message_text}：{detail}"
-                state.setdefault("errors", []).append(message_text)
+            state = _update_state_with_event(state, message)
             break
         if not done_status:
             cancelled_locally = await _disconnect_check_for_task(task_id)
@@ -5003,7 +4974,9 @@ async def _run_research_once_via_api(
         _unregister_active_task(task_id)
 
     if not done_status and cancelled_locally:
-        state.setdefault("errors", []).append("任务已取消")
+        state = _update_state_with_event(
+            state, {"event": "done", "data": {"status": "cancelled"}}
+        )
     elif not done_status:
         return "api-server 事件流已结束，但未收到终态，请稍后重试。"
     result = _render_markdown(
@@ -5062,7 +5035,7 @@ def _schedule_remote_task_cancellation(task_ids: List[str]) -> int:
 
 
 def _mark_runtime_status_cancelled(markdown: Optional[str]) -> Optional[str]:
-    """把流式状态块改写为终态「任务已取消」。
+    """把流式状态块改写为终态「已停止」。
 
     停止按钮会 cancel 掉事件流，最后一帧的 spinner 不会再被覆盖，
     因此在这里就地清掉 spinner 并换成终态文案。
@@ -5072,6 +5045,16 @@ def _mark_runtime_status_cancelled(markdown: Optional[str]) -> Optional[str]:
         return markdown
     label = _format_runtime_status_label({"runtime_stage": {"phase": "已取消"}})
     text = re.sub(r'<div class="runtime-spinner"[^>]*></div>', "", text)
+    # 终态不再自增：摘掉计时钩子，并按停止这一刻重算耗时
+    # （最后一帧是上一次服务端渲染的，直接沿用会让耗时回跳到几秒前）
+    text = re.sub(
+        r'<span class="runtime-elapsed-value" style="--start-ts:(\d+)">[^<]*</span>',
+        lambda match: (
+            '<span class="runtime-elapsed-value">'
+            f"{_format_elapsed_value(float(match.group(1)))}</span>"
+        ),
+        text,
+    )
     text = re.sub(
         r'(<span class="runtime-status-text">)[^<]*(</span>)',
         lambda match: f"{match.group(1)}{label}{match.group(2)}",
@@ -5463,37 +5446,40 @@ def _icon_mask_data_uri(name: str) -> str:
 def build_demo():
     api_client.get_backend_mode()
     logo_data_uri = _load_logo_data_uri()
+    favicon_data_uri = _load_logo_data_uri("diting_mark.png")
     fallback_favicon_data_uri = _build_fallback_favicon_data_uri()
 
     custom_css = """
-    /* ========== MiroThinker - Tech / Sci-Fi Dark ========== */
+    /* ========== MiroThinker - Deep Space / Cosmic Dark ========== */
     
     /* Base tokens — also on :root so html/body wash can resolve vars */
     :root, .gradio-container {
-        --app-bg: #1a2332;
-        --app-bg-elevated: #1e293b;
-        --panel-bg: rgba(30, 41, 59, 0.88);
-        --panel-bg-solid: #243044;
-        --panel-border: rgba(100, 180, 200, 0.18);
-        --panel-shadow: 0 8px 28px rgba(15, 23, 42, 0.28);
-        --glass-bg: rgba(30, 41, 59, 0.72);
-        --glass-border: rgba(148, 163, 184, 0.22);
-        --ink-strong: #e2e8f0;
-        --ink-body: #cbd5e1;
-        --ink-soft: #94a3b8;
-        --accent: #38bdf8;
-        --accent-strong: #0ea5e9;
-        --accent-soft: rgba(56, 189, 248, 0.12);
-        --accent-green: #34d399;
+        --app-bg: #000208;
+        --app-bg-elevated: #060a14;
+        --panel-bg: rgba(6, 10, 20, 0.72);
+        --panel-bg-solid: rgba(6, 10, 20, 0.78);
+        --panel-border: rgba(140, 170, 220, 0.14);
+        --panel-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+        --glass-bg: rgba(6, 10, 20, 0.55);
+        --glass-border: rgba(140, 170, 220, 0.16);
+        --ink-strong: #e8eef8;
+        --ink-body: #c5d0e2;
+        --ink-soft: #8b9bb8;
+        --accent: #7dd3fc;
+        --accent-strong: #38bdf8;
+        --accent-soft: rgba(56, 189, 248, 0.14);
         --accent-emerald: #34d399;
-        --btn-gray: rgba(36, 48, 68, 0.92);
-        --btn-gray-hover: rgba(51, 65, 85, 0.95);
-        --icon-muted: #94a3b8;
-        --icon-accent: #38bdf8;
-        --focus-ring: 0 0 0 2px rgba(56, 189, 248, 0.32);
+        --btn-gray: rgba(6, 10, 20, 0.72);
+        --btn-gray-hover: rgba(12, 18, 36, 0.85);
+        --icon-muted: #9eb0cc;
+        --icon-accent: #7dd3fc;
+        --focus-ring: 0 0 0 2px rgba(125, 211, 252, 0.35);
+        --search-pill-bg: rgba(8, 12, 24, 0.72);
+        --search-pill-border: rgba(140, 170, 220, 0.22);
+        --search-pill-glow: 0 0 0 1px rgba(56, 189, 248, 0.06), 0 10px 36px rgba(0, 0, 0, 0.45);
         /* Soft theme still ships light checkbox-label fills — pin dark tokens */
-        --checkbox-label-background-fill: rgba(15, 23, 42, 0.88);
-        --checkbox-label-background-fill-hover: rgba(30, 41, 59, 0.95);
+        --checkbox-label-background-fill: rgba(8, 14, 32, 0.92);
+        --checkbox-label-background-fill-hover: rgba(14, 22, 44, 0.95);
         --checkbox-label-background-fill-selected: rgba(14, 165, 233, 0.78);
         --checkbox-label-text-color: #cbd5e1;
         --checkbox-label-text-color-selected: #f8fafc;
@@ -5506,65 +5492,97 @@ def build_demo():
         margin: 0 !important;
         padding: 0 !important;
         font-family: __LOCAL_FONT_FAMILY_STACK__ !important;
-        background:
-            radial-gradient(1200px 600px at 50% -10%, rgba(56, 189, 248, 0.07), transparent 55%),
-            radial-gradient(900px 500px at 90% 10%, rgba(52, 211, 153, 0.05), transparent 50%),
-            var(--app-bg) !important;
+        background: transparent !important;
         color: var(--ink-body);
         min-height: 100vh;
         position: relative;
+        z-index: 1;
     }
 
     .gradio-container::before {
         display: none;
     }
 
-    /* Force full-page soft dark wash — never transparent (avoids white canvas) */
+    /* Deep void base — near-black; nebulae stay local so most of the canvas is empty space */
     html, body {
-        background: #1a2332 !important;
-        color: #cbd5e1 !important;
+        background: #000208 !important;
+        color: #c5d0e2 !important;
     }
-    html, body, .gradio-container, .main, .wrap, .app,
+    body {
+        background:
+            radial-gradient(780px 420px at 12% 8%, rgba(56, 20, 110, 0.16), transparent 62%),
+            radial-gradient(900px 500px at 88% 4%, rgba(10, 50, 110, 0.14), transparent 60%),
+            radial-gradient(700px 400px at 48% 96%, rgba(18, 36, 90, 0.12), transparent 65%),
+            radial-gradient(520px 300px at 40% 36%, rgba(40, 120, 200, 0.04), transparent 55%),
+            #000208 !important;
+        background-attachment: fixed !important;
+    }
+    .gradio-container, .main, .wrap, .app,
     #layout-shell, .hero-section-parent, .hero-wrap,
     #main-content-column, #top-utility-bar {
-        background: var(--app-bg, #1a2332) !important;
-        color: var(--ink-body, #cbd5e1) !important;
+        background: transparent !important;
+        color: var(--ink-body, #c5d0e2) !important;
     }
     .gradio-container {
-        background:
-            radial-gradient(1200px 600px at 50% -10%, rgba(56, 189, 248, 0.07), transparent 55%),
-            radial-gradient(900px 500px at 90% 10%, rgba(52, 211, 153, 0.05), transparent 50%),
-            var(--app-bg) !important;
+        position: relative !important;
+        z-index: 1 !important;
+    }
+    #bg-particles {
+        z-index: 0 !important;
+    }
+
+    /* Thin dark scrollbar — default OS bar breaks the void look */
+    * {
+        scrollbar-width: thin;
+        scrollbar-color: rgba(120, 150, 190, 0.32) transparent;
+    }
+    *::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
+    }
+    *::-webkit-scrollbar-track {
+        background: transparent;
+    }
+    *::-webkit-scrollbar-thumb {
+        background: rgba(120, 150, 190, 0.28);
+        border-radius: 999px;
+    }
+    *::-webkit-scrollbar-thumb:hover {
+        background: rgba(140, 170, 220, 0.42);
     }
 
     /* 强力清除 Gradio 默认包装盒的丑陋背景与边框 */
     .gradio-container .form,
     .gradio-container fieldset,
     #main-content-column .form,
-    #right-options-column .form,
     #settings-modal .form,
     #input-section .block,
     #input-section .solid,
     #settings-modal .block,
-    #settings-modal .solid,
-    #options-panel .block,
-    #options-panel .solid {
+    #settings-modal .solid {
         background: transparent !important;
         border: none !important;
         box-shadow: none !important;
     }
 
-    /* ===== Google-like Search Home (visual polish) ===== */
+    /* ===== Search home (void glass capsule) ===== */
+    /* 搜索行：右侧操作图标叠在输入框内（绝对定位），行内只剩输入框占满整行，
+       窄屏不再出现「按钮换行」。半透明玻璃胶囊 + 悬停抬升。 */
     #input-section {
+        position: relative !important;
         background: transparent !important;
         border: none !important;
         border-radius: 0 !important;
         box-shadow: none !important;
         padding: 0 !important;
         margin: 0 auto 12px !important;
-        max-width: 584px !important;
         width: 100% !important;
-        gap: 0 !important;
+        max-width: 584px !important;
+    }
+
+    #input-section #question-input {
+        flex: 1 1 auto !important;
+        min-width: 0 !important;
     }
 
     #input-section #question-input,
@@ -5575,19 +5593,22 @@ def build_demo():
         box-shadow: none !important;
     }
 
+    /* 深空玻璃胶囊：半透明蓝黑底 + 细星光边，贴合宇宙背景 */
     #input-section #question-input textarea,
     #input-section textarea {
-        background: rgba(30, 42, 61, 0.88) !important;
-        border: 1px solid rgba(148, 163, 184, 0.26) !important;
-        border-radius: 16px !important;
-        min-height: 56px !important;
+        background: var(--search-pill-bg) !important;
+        border: 1px solid var(--search-pill-border) !important;
+        border-radius: 28px !important;
+        min-height: 52px !important;
         max-height: 140px !important;
-        padding: 15px 20px !important;
+        /* 右侧留出两个 36px 图标位，文字不会钻到图标下面 */
+        padding: 14px 96px 14px 24px !important;
         font-size: 16px !important;
         line-height: 1.5 !important;
-        color: var(--ink-strong) !important;
-        box-shadow: 0 10px 28px rgba(2, 6, 23, 0.35), inset 0 1px 0 rgba(255,255,255,0.05) !important;
-        backdrop-filter: blur(12px);
+        color: #e8eef8 !important;
+        box-shadow: var(--search-pill-glow) !important;
+        backdrop-filter: blur(14px) saturate(1.15);
+        -webkit-backdrop-filter: blur(14px) saturate(1.15);
         resize: none !important;
         text-align: left !important;
         transition: box-shadow 0.18s ease, border-color 0.18s ease, background 0.18s ease !important;
@@ -5595,100 +5616,146 @@ def build_demo():
 
     #input-section #question-input textarea::placeholder,
     #input-section textarea::placeholder {
-        color: #64748b !important;
+        color: #8b9bb8 !important;
         opacity: 1 !important;
     }
 
     #input-section #question-input textarea:hover,
     #input-section textarea:hover {
-        border-color: rgba(56, 189, 248, 0.35) !important;
-        background: rgba(36, 50, 72, 0.94) !important;
-        box-shadow: 0 12px 30px rgba(2, 6, 23, 0.4) !important;
+        border-color: rgba(140, 170, 220, 0.34) !important;
+        background: rgba(10, 14, 28, 0.82) !important;
+        box-shadow:
+            0 0 0 1px rgba(56, 189, 248, 0.08),
+            0 12px 40px rgba(0, 0, 0, 0.5) !important;
     }
 
     #input-section #question-input textarea:focus,
     #input-section textarea:focus {
-        border-color: rgba(56, 189, 248, 0.55) !important;
-        box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.16), 0 12px 32px rgba(2, 6, 23, 0.42) !important;
-        background: rgba(36, 50, 72, 0.98) !important;
+        border-color: rgba(125, 211, 252, 0.4) !important;
+        box-shadow:
+            0 0 0 1px rgba(56, 189, 248, 0.12),
+            0 0 24px rgba(56, 189, 248, 0.1),
+            0 12px 40px rgba(0, 0, 0, 0.55) !important;
+        background: rgba(10, 14, 28, 0.88) !important;
         outline: none !important;
     }
 
+    /* 图标按钮组：贴输入框内部右端，相对输入框几何中心水平/垂直居中。
+       Gradio 给每个 block 子项压了 min-width: min(160px, 100%)，不放开的话行宽
+       至少 160px，按钮会从行左端排布、离右端差出一大截。 */
     #btn-row {
+        position: absolute !important;
+        right: 10px !important;
+        top: 0 !important;
+        bottom: 0 !important;
+        transform: none !important;
         display: flex !important;
         align-items: center !important;
         justify-content: center !important;
-        flex-wrap: wrap !important;
-        gap: 10px !important;
-        padding: 18px 4px 6px !important;
-        border-top: none !important;
+        gap: 2px !important;
+        width: auto !important;
+        min-width: 0 !important;
+        max-width: none !important;
+        height: auto !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        z-index: 3 !important;
+        border: none !important;
         background: transparent !important;
     }
 
     #btn-row > * {
         flex: 0 0 auto !important;
+        min-width: 0 !important;
     }
 
-    #btn-row button,
-    #settings-open-btn,
-    #stop-btn,
-    #run-btn {
-        height: 38px !important;
-        min-height: 38px !important;
-        padding: 0 18px !important;
-        font-size: 14px !important;
-        font-weight: 500 !important;
-        letter-spacing: 0.01em !important;
-        border-radius: 12px !important;
-        line-height: 38px !important;
+    /* 图标化：36×36 圆形幽灵按钮。文字用 font-size:0 收起，
+       文案仍留在 DOM 里——无障碍名与悬停提示都取自它，不新增文案 key。
+       ::before 绝对居中，避免 Gradio 文本节点把图标挤偏。 */
+    #btn-row button {
+        position: relative !important;
+        display: inline-flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        width: 36px !important;
+        min-width: 36px !important;
+        max-width: 36px !important;
+        height: 36px !important;
+        min-height: 36px !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        font-size: 0 !important;
+        line-height: 0 !important;
+        letter-spacing: 0 !important;
+        border-radius: 50% !important;
+        border: none !important;
         box-shadow: none !important;
         transform: none !important;
+        background: transparent !important;
+        background-image: none !important;
+        color: #9eb0cc !important;
+        transition: background 0.15s ease, color 0.15s ease !important;
     }
 
-    #settings-open-btn,
-    #stop-btn {
-        min-width: auto !important;
-        max-width: none !important;
-        border: 1px solid rgba(148, 163, 184, 0.2) !important;
-        background: rgba(36, 48, 68, 0.85) !important;
-        color: var(--ink-soft) !important;
+    #btn-row button::before {
+        position: absolute !important;
+        left: 50% !important;
+        top: 50% !important;
+        transform: translate(-50%, -50%) !important;
+        margin: 0 !important;
+        flex: none !important;
     }
 
-    #settings-open-btn:hover,
-    #stop-btn:hover {
-        background: rgba(51, 65, 85, 0.9) !important;
-        border-color: rgba(148, 163, 184, 0.32) !important;
-        color: var(--ink-body) !important;
-        box-shadow: 0 2px 8px rgba(15, 23, 42, 0.2) !important;
+    /* 放大镜视觉重心偏左上：多挪一点做光学居中 */
+    #btn-row #run-btn::before {
+        transform: translate(calc(-50% + 1.5px), calc(-50% + 1.5px)) !important;
+    }
+    #btn-row #settings-open-btn::before {
+        transform: translate(-50%, calc(-50% + 0.5px)) !important;
     }
 
-    #run-btn {
-        min-width: auto !important;
-        max-width: none !important;
-        border: 1px solid rgba(45, 180, 170, 0.35) !important;
-        background: linear-gradient(135deg, rgba(14, 165, 180, 0.88), rgba(45, 180, 140, 0.82)) !important;
-        color: #0b1a1c !important;
-        font-weight: 600 !important;
-        box-shadow: 0 4px 14px rgba(14, 165, 180, 0.18) !important;
+    #btn-row button:hover {
+        background: rgba(148, 180, 230, 0.12) !important;
+        color: #e8eef8 !important;
+    }
+
+    #btn-row button:focus-visible {
+        outline: 2px solid rgba(125, 211, 252, 0.7) !important;
+        outline-offset: 1px !important;
+    }
+
+    /* ID 选择器压过 Gradio primary/secondary 默认底色；悬停再各自强调 */
+    #run-btn,
+    #stop-btn,
+    #settings-open-btn {
+        background: transparent !important;
+        background-image: none !important;
+        border: none !important;
+        box-shadow: none !important;
+        color: #9eb0cc !important;
     }
 
     #run-btn:hover {
-        background: linear-gradient(135deg, rgba(20, 180, 190, 0.95), rgba(52, 190, 150, 0.9)) !important;
-        box-shadow: 0 6px 18px rgba(14, 165, 180, 0.22) !important;
-        transform: none !important;
+        color: #7dd3fc !important;
+        background: rgba(125, 211, 252, 0.14) !important;
+        background-image: none !important;
     }
 
-    #stop-btn[disabled],
-    #stop-btn:disabled {
-        opacity: 0.82 !important;
-        filter: none !important;
-        color: #94a3b8 !important;
-        background: rgba(30, 41, 59, 0.55) !important;
-        border-color: rgba(148, 163, 184, 0.28) !important;
+    #stop-btn:hover {
+        background: rgba(248, 113, 113, 0.14) !important;
+        background-image: none !important;
+        color: #f28b82 !important;
     }
 
-    /* Hide legacy right options column if present */
-    #right-options-column {
+    #settings-open-btn:hover {
+        color: #e8eef8 !important;
+        background: rgba(148, 180, 230, 0.12) !important;
+        background-image: none !important;
+    }
+
+    /* 开始/停止互斥显示：状态机已用 interactive 精确表达互斥，这里把不可用的那个收起 */
+    #run-btn[disabled],
+    #stop-btn[disabled] {
         display: none !important;
     }
 
@@ -5742,10 +5809,12 @@ def build_demo():
         z-index: 1 !important;
         cursor: default !important;
         color: var(--ink-strong) !important;
-        background: linear-gradient(180deg, rgba(32, 44, 64, 0.98), rgba(22, 31, 47, 0.98)) !important;
-        border: 1px solid rgba(148, 163, 184, 0.16) !important;
+        background: linear-gradient(180deg, rgba(8, 12, 24, 0.96), rgba(3, 5, 12, 0.98)) !important;
+        border: 1px solid rgba(140, 170, 220, 0.14) !important;
         border-radius: 16px !important;
-        box-shadow: 0 24px 64px rgba(2, 6, 23, 0.55), 0 0 0 1px rgba(148, 163, 184, 0.10) !important;
+        box-shadow: 0 24px 64px rgba(0, 0, 0, 0.65), 0 0 0 1px rgba(140, 170, 220, 0.08) !important;
+        backdrop-filter: blur(18px) saturate(1.1) !important;
+        -webkit-backdrop-filter: blur(18px) saturate(1.1) !important;
         animation: miro-modal-pop 0.16s ease-out !important;
         /* Option lists are absolutely positioned inside their own block, so no
            ancestor may clip. The overlay scrolls instead of the card. */
@@ -5810,22 +5879,51 @@ def build_demo():
         max-width: 100% !important;
     }
     /* Gradio stacks a 14px block margin plus 10px of padding inside every HTML
-       block; together they added ~150px of blank to the card. */
+       block; together they added ~150px of blank to the card. The 12px side
+       padding also indented hint text past every field label, so it goes too:
+       text starts flush with the fields and spacing comes from the top margin. */
     #settings-modal .modal-card .block{
         margin-bottom: 0 !important;
     }
     #settings-modal .modal-card .html-container{
-        padding-top: 0 !important;
-        padding-bottom: 0 !important;
+        padding: 0 !important;
+        margin-top: 8px !important;
     }
     #settings-modal .modal-card .prose{
         margin: 0 !important;
     }
     /* Gradio pads the dropdown's inner wrap by 12px top/bottom, which made each
-       field ~24px taller than it looks. */
+       field ~24px taller than it looks. Keep padding symmetric + flex-center the
+       chevron so the arrow sits on the text midline. */
     #settings-modal .modal-card .wrap-inner{
-        padding-top: 6px !important;
-        padding-bottom: 6px !important;
+        display: flex !important;
+        align-items: center !important;
+        padding-top: 8px !important;
+        padding-bottom: 8px !important;
+        min-height: 40px !important;
+        box-sizing: border-box !important;
+        background: rgba(4, 8, 16, 0.78) !important;
+        border-color: rgba(140, 170, 220, 0.18) !important;
+        border-radius: 10px !important;
+    }
+    #settings-modal .modal-card .wrap-inner .secondary-wrap,
+    #settings-modal .modal-card .wrap-inner .icon-wrap,
+    #settings-modal .modal-card .wrap-inner > .icon,
+    #settings-modal .modal-card .wrap-inner svg {
+        display: inline-flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        align-self: center !important;
+        margin-top: 0 !important;
+        margin-bottom: 0 !important;
+    }
+    #settings-modal .modal-card .wrap-inner input,
+    #settings-modal .modal-card .wrap-inner .single-select {
+        display: flex !important;
+        align-items: center !important;
+        line-height: 1.35 !important;
+        padding-top: 0 !important;
+        padding-bottom: 0 !important;
     }
 
     /* Gradio writes overflow:hidden inline on blocks; the option list must
@@ -5844,21 +5942,21 @@ def build_demo():
         z-index: 5000 !important;
         max-height: 240px !important;
         overflow-y: auto !important;
-        background: #1e293b !important;
-        border: 1px solid rgba(100, 180, 200, 0.25) !important;
+        background: #060a14 !important;
+        border: 1px solid rgba(140, 170, 220, 0.2) !important;
         border-radius: 10px !important;
-        box-shadow: 0 12px 32px rgba(15, 23, 42, 0.45) !important;
-        color: #e2e8f0 !important;
+        box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55) !important;
+        color: #e8eef8 !important;
     }
     #settings-modal ul[role="listbox"] li{
-        color: #e2e8f0 !important;
+        color: #e8eef8 !important;
         background: transparent !important;
         padding: 8px 12px !important;
         white-space: normal !important;
     }
     #settings-modal ul[role="listbox"] li:hover,
     #settings-modal ul[role="listbox"] li[aria-selected="true"]{
-        background: rgba(34, 211, 238, 0.15) !important;
+        background: rgba(56, 189, 248, 0.12) !important;
         color: #a5f3fc !important;
     }
 
@@ -5869,10 +5967,9 @@ def build_demo():
     }
     #settings-modal input,
     #settings-modal select,
-    #settings-modal textarea,
-    #settings-modal .secondary-wrap{
-        background: rgba(15, 23, 42, 0.85) !important;
-        border-color: var(--glass-border) !important;
+    #settings-modal textarea{
+        background: rgba(4, 8, 16, 0.82) !important;
+        border-color: rgba(140, 170, 220, 0.18) !important;
         color: var(--ink-strong) !important;
     }
 
@@ -5885,7 +5982,7 @@ def build_demo():
         justify-content: flex-end !important;
         gap: 8px !important;
         width: 100% !important;
-        margin-top: 0 !important;
+        margin-top:22px !important;
     }
     /* Status sits on its own full-width row above the action buttons. The
        direct flex child is Gradio's block wrapper (#settings-status), not
@@ -5944,9 +6041,9 @@ def build_demo():
         font-weight: 600 !important;
     }
     #settings-reset-btn {
-        background: rgba(15, 23, 42, 0.72) !important;
-        border: 1px solid rgba(148, 163, 184, 0.22) !important;
-        color: #cbd5e1 !important;
+        background: rgba(4, 8, 16, 0.78) !important;
+        border: 1px solid rgba(140, 170, 220, 0.2) !important;
+        color: #c5d0e2 !important;
     }
     #settings-reset-btn:hover {
         border-color: rgba(34, 211, 238, 0.45) !important;
@@ -6004,6 +6101,12 @@ def build_demo():
     #settings-modal input[type="radio"] {
         accent-color: #22d3ee !important;
     }
+    /* Gradio 用 --neutral-200 画滑块的未填充轨道（浅色主题的近白色 #e2e8f0），
+       在深色卡片上会变成一根刺眼的白条；只在弹窗范围内把它压深，已填充段用主题青蓝。 */
+    #settings-modal input[type="range"] {
+        --neutral-200: rgba(148, 163, 184, 0.28);
+        --slider-color: #0ea5e9;
+    }
     #settings-apply-btn {
         background: linear-gradient(135deg, #0ea5e9, #22d3ee) !important;
         border: none !important;
@@ -6029,12 +6132,12 @@ def build_demo():
     #settings-modal .option-hint {
         margin: 0 !important;
         padding: 6px 10px !important;
-        border-left: 2px solid rgba(56, 189, 248, 0.45) !important;
+        border-left: 2px solid rgba(125, 211, 252, 0.4) !important;
         border-radius: 0 6px 6px 0 !important;
-        background: rgba(56, 189, 248, 0.07) !important;
+        background: rgba(8, 14, 28, 0.72) !important;
         font-size: 12px !important;
         line-height: 1.55 !important;
-        color: #a5c3d9 !important;
+        color: #9eb0cc !important;
     }
     #settings-modal .preset-row {
         display: flex !important;
@@ -6052,8 +6155,8 @@ def build_demo():
         font-size: 12.5px !important;
         font-weight: 500 !important;
         border-radius: 999px !important;
-        background: rgba(15, 23, 42, 0.55) !important;
-        border: 1px solid rgba(148, 163, 184, 0.26) !important;
+        background: rgba(4, 8, 16, 0.7) !important;
+        border: 1px solid rgba(140, 170, 220, 0.2) !important;
         color: var(--ink-body) !important;
         box-shadow: none !important;
         transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease !important;
@@ -6105,7 +6208,7 @@ def build_demo():
         font-weight: 500 !important;
         letter-spacing: 0.01em !important;
         background: transparent !important;
-        border: 1px solid rgba(148, 163, 184, 0.22) !important;
+        border: 1px solid rgba(140, 170, 220, 0.18) !important;
         color: var(--ink-soft) !important;
         box-shadow: none !important;
         transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease !important;
@@ -6206,28 +6309,14 @@ def build_demo():
         pointer-events: none !important;
     }
 
-    /* Options helper text under each field (block-info is the TITLE). */
+    /* Options helper text under each field (block-info is the TITLE).
+       0.72em of the 12px info font landed at 8.6px — off the readable scale,
+       so the helpers sit on the same 12px floor as the rest of the card. */
     #settings-modal .md p{
         color: #94a3b8 !important;
-        font-size: 0.72em !important;
+        font-size: 12px !important;
         line-height: 1.4 !important;
         margin: 2px 0 6px !important;
-    }
-
-    #options-accordion,
-    #options-panel .gr-accordion,
-    #options-panel details {
-        border: none !important;
-        background: transparent !important;
-    }
-
-    #options-accordion > summary,
-    #options-panel .label-wrap {
-        font-size: 0.78em !important;
-        font-weight: 700 !important;
-        letter-spacing: 0.08em !important;
-        text-transform: uppercase !important;
-        color: #64748b !important;
     }
 
     /* Empty progress state */
@@ -6265,29 +6354,7 @@ def build_demo():
         border-radius: 16px;
     }
 
-    /* ===== Options Panel ===== */
-    #right-options-column {
-        gap: 0 !important;
-    }
-
-    #options-panel {
-        width: 100% !important;
-        background: var(--panel-bg) !important;
-        border: 1px solid rgba(0, 0, 0, 0.03) !important;
-        border-radius: 16px !important;
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.02) !important;
-        padding: 18px 16px !important;
-    }
-
-    .options-title {
-        font-size: 0.72em;
-        font-weight: 700;
-        letter-spacing: 0.12em;
-        text-transform: uppercase;
-        color: #64748b;
-        margin-bottom: 12px;
-    }
-
+    /* ===== Settings field controls (live inside #settings-modal) ===== */
     #mode-selector,
     #search-profile-selector,
     #search-result-num-selector,
@@ -6337,36 +6404,63 @@ def build_demo():
     #verification-rounds-selector .md p,
     #output-detail-level-selector .md p {
         color: #94a3b8 !important;
-        font-size: 0.7em !important;
+        font-size: 12px !important;
         line-height: 1.45 !important;
         margin: 4px 0 8px !important;
     }
 
-    #mode-selector .wrap,
-    #search-profile-selector .wrap,
-    #search-result-num-selector .wrap,
-    #verification-rounds-selector .wrap,
-    #output-detail-level-selector .wrap {
-        background: var(--panel-bg) !important;
-        border: 1px solid rgba(0, 0, 0, 0.1) !important;
-        border-radius: 10px !important;
-        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02) !important;
-        transition: border-color 0.2s ease;
-    }
-    
-    #mode-selector .wrap:hover,
-    #search-profile-selector .wrap:hover,
-    #search-result-num-selector .wrap:hover,
-    #verification-rounds-selector .wrap:hover,
-    #output-detail-level-selector .wrap:hover {
-        border-color: rgba(16, 185, 129, 0.4) !important;
+    /* Gradio 在每个 block 里额外放了一层纯背景层（.wrap.default.full，与控件同级），
+       它盖住整块（含标题与说明），并不是输入框；整块底色交给弹窗卡片，这层须透明。
+       （radio 块的这一层已由下方 #output-detail-level-selector .wrap 一并置透明） */
+    #mode-selector > .wrap.default.full,
+    #search-profile-selector > .wrap.default.full,
+    #search-result-num-selector > .wrap.default.full,
+    #verification-rounds-selector > .wrap.default.full {
+        background: transparent !important;
+        border-color: transparent !important;
+        box-shadow: none !important;
     }
 
+    /* 只有真正能点的输入面才铺「浅底 + 浅描边」：弹窗卡片是深色渐变，输入框若与卡片
+       同色就会糊成一片认不出来。浅底与同卡片里的单选项 chip 用同一套语言。
+       .tab-like-container 是滑块里的数字框（Gradio 默认给它 4px 圆角窄边框，这里
+       按同组控件对齐到 10px）；#output-detail-level-selector 的 .wrap 是 chip 组而
+       非输入框，样式见下方 radio 块。 */
+    #mode-selector .wrap:not(.default),
+    #search-profile-selector .wrap:not(.default),
+    #search-result-num-selector .wrap:not(.default),
+    #verification-rounds-selector .tab-like-container {
+        background: rgba(51, 65, 85, 0.6) !important;
+        border: 1px solid rgba(148, 163, 184, 0.3) !important;
+        border-radius: 10px !important;
+        box-shadow: none !important;
+        transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease !important;
+    }
+
+    #mode-selector .wrap:not(.default):hover,
+    #search-profile-selector .wrap:not(.default):hover,
+    #search-result-num-selector .wrap:not(.default):hover,
+    #verification-rounds-selector .tab-like-container:hover {
+        background: rgba(65, 82, 110, 0.65) !important;
+        border-color: rgba(148, 163, 184, 0.5) !important;
+    }
+
+    #mode-selector .wrap:not(.default):focus-within,
+    #search-profile-selector .wrap:not(.default):focus-within,
+    #search-result-num-selector .wrap:not(.default):focus-within,
+    #verification-rounds-selector .tab-like-container:focus-within {
+        background: rgba(65, 82, 110, 0.75) !important;
+        border-color: rgba(56, 189, 248, 0.65) !important;
+        box-shadow: var(--focus-ring) !important;
+    }
+
+    /* 输入区一律透明：控件底色只由 .wrap 决定，避免出现「浅色外框 + 深色内芯」双层盒子 */
     #mode-selector input,
     #search-profile-selector input,
     #search-result-num-selector input,
     #verification-rounds-selector input,
     #output-detail-level-selector input {
+        background: transparent !important;
         color: var(--ink-strong) !important;
         font-weight: 600 !important;
     }
@@ -6376,34 +6470,7 @@ def build_demo():
     #search-result-num-selector svg,
     #verification-rounds-selector svg,
     #output-detail-level-selector svg {
-        fill: #475569 !important;
-    }
-    
-    /* btn-row layout owned by P0 search-card rules above */
-    #btn-row {
-        padding: 14px 4px 4px !important;
-        border-top: none !important;
-        gap: 10px !important;
-        background: transparent !important;
-    }
-    
-    /* Primary CTA styles owned by Google polish block above */
-    #run-btn {
-        cursor: pointer !important;
-        transition: background 0.15s ease, box-shadow 0.15s ease !important;
-    }
-    
-    #run-btn:hover {
-        /* keep Google blue hover from polish block */
-    }
-    
-    #stop-btn {
-        cursor: pointer !important;
-        transition: background 0.15s ease, color 0.15s ease !important;
-    }
-    
-    #stop-btn:hover {
-        /* gray hover from polish block */
+        fill: #94a3b8 !important;
     }
     
     /* ===== Output Section ===== */
@@ -6412,16 +6479,6 @@ def build_demo():
         max-width: 800px !important;
         margin: 0 auto !important;
         padding: 0 0 60px !important;
-    }
-    
-    .output-label {
-        font-size: 0.78em;
-        font-weight: 700;
-        color: var(--ink-soft);
-        text-transform: uppercase;
-        letter-spacing: 0.12em;
-        margin-bottom: 12px;
-        padding: 0 6px;
     }
     
     #log-view {
@@ -6687,20 +6744,23 @@ def build_demo():
         color: #67e8f9 !important;
     }
 
-    /* Search result cards nested in dark #log-view — force high contrast */
+    /* Search result cards nested in dark #log-view — void glass, not slate slabs */
     #log-view .search-card {
-        background: rgba(15, 23, 42, 0.92) !important;
-        border: 1px solid rgba(34, 211, 238, 0.2) !important;
-        color: #e2e8f0 !important;
+        background: rgba(6, 10, 20, 0.62) !important;
+        border: 1px solid rgba(140, 170, 220, 0.14) !important;
+        color: #e8eef8 !important;
+        backdrop-filter: blur(14px) saturate(1.05) !important;
+        -webkit-backdrop-filter: blur(14px) saturate(1.05) !important;
+        box-shadow: 0 10px 36px rgba(0, 0, 0, 0.4) !important;
     }
     #log-view .search-header,
     #log-view .search-count {
-        background: rgba(8, 47, 73, 0.45) !important;
-        border-bottom-color: rgba(34, 211, 238, 0.12) !important;
-        color: #cbd5e1 !important;
+        background: rgba(4, 8, 16, 0.55) !important;
+        border-bottom-color: rgba(140, 170, 220, 0.1) !important;
+        color: #c5d0e2 !important;
     }
     #log-view .search-query {
-        color: #f1f5f9 !important;
+        color: #e8eef8 !important;
     }
     #log-view .search-result-item,
     #log-view a.search-result-item {
@@ -6709,16 +6769,20 @@ def build_demo():
     }
     #log-view .search-result-item:hover,
     #log-view a.search-result-item:hover {
-        background: rgba(34, 211, 238, 0.08) !important;
-        border-left-color: #22d3ee !important;
+        background: rgba(125, 211, 252, 0.07) !important;
+        border-left-color: #7dd3fc !important;
         color: #f8fafc !important;
     }
     #log-view .result-title,
     #log-view .search-result-item .result-title {
-        color: #f1f5f9 !important;
+        color: #e8eef8 !important;
     }
     #log-view .search-result-item .result-icon {
         opacity: 0.9 !important;
+        display: inline-flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        align-self: center !important;
     }
 
     /* ===== Footer ===== */
@@ -6752,11 +6816,14 @@ def build_demo():
     
     /* ===== Search Results Card ===== */
     .search-card {
-        background: var(--panel-bg-solid);
-        border: 1px solid var(--glass-border);
+        background: rgba(6, 10, 20, 0.62);
+        border: 1px solid rgba(140, 170, 220, 0.14);
         border-radius: 12px;
         margin: 16px 0;
         overflow: hidden;
+        backdrop-filter: blur(14px) saturate(1.05);
+        -webkit-backdrop-filter: blur(14px) saturate(1.05);
+        box-shadow: 0 10px 36px rgba(0, 0, 0, 0.4);
     }
     
     .search-header {
@@ -6764,27 +6831,27 @@ def build_demo():
         align-items: center;
         gap: 10px;
         padding: 14px 18px;
-        background: #fafafa;
-        border-bottom: 1px solid #f0f0f0;
+        background: rgba(4, 8, 16, 0.55);
+        border-bottom: 1px solid rgba(140, 170, 220, 0.1);
     }
     
     .search-icon {
         font-size: 1em;
-        color: #10b981;
+        color: #7dd3fc;
     }
     
     .search-query {
         font-size: 0.9em;
-        color: #3f3f46;
+        color: #e8eef8;
         font-weight: 500;
     }
     
     .search-count {
         padding: 10px 18px;
         font-size: 0.8em;
-        color: #71717a;
-        background: #fafafa;
-        border-bottom: 1px solid #f0f0f0;
+        color: #9eb0cc;
+        background: rgba(4, 8, 16, 0.45);
+        border-bottom: 1px solid rgba(140, 170, 220, 0.08);
     }
     
     .search-results {
@@ -7123,11 +7190,7 @@ def build_demo():
         gap: 12px;
     }
 
-    /* ===== Hero Section (Google-like typography) ===== */
-    .hero-section {
-        position: relative !important;
-        isolation: isolate;
-    }
+    /* ===== Hero Section ===== */
     /* Gradio HTML wrappers must not stack old+new text during updates */
     #top-utility-bar,
     #main-content-column > .html-container,
@@ -7136,11 +7199,12 @@ def build_demo():
     }
 
     .hero-section {
+        position: relative !important;
+        isolation: isolate;
         text-align: center;
         padding: 56px 16px 22px;
         max-width: 584px;
         margin: 0 auto 0;
-        position: relative;
     }
 
     .hero-brand {
@@ -7148,12 +7212,12 @@ def build_demo():
         align-items: center;
         justify-content: center;
         gap: 8px;
-        margin-bottom: 8px;
+        margin-bottom: 16px;
     }
 
     .hero-logo {
-        width: min(180px, 42vw);
-        max-height: 72px;
+        width: min(200px, 44vw);
+        max-height: 88px;
         height: auto;
         object-fit: contain;
         box-shadow: none;
@@ -7172,7 +7236,7 @@ def build_demo():
         color: #e2e8f0;
         background: none;
         -webkit-text-fill-color: #e2e8f0;
-        margin: 4px 0 6px 0;
+        margin: 0 0 8px 0;
         letter-spacing: 0.01em;
         line-height: 1.3;
     }
@@ -7204,13 +7268,6 @@ def build_demo():
         max-width: 680px !important;
         margin: 36px auto 0 !important;
         padding-bottom: 48px !important;
-    }
-
-    .output-label {
-        font-size: 11px !important;
-        font-weight: 500 !important;
-        color: #94a3b8 !important;
-        letter-spacing: 0.06em !important;
     }
 
     #log-view {
@@ -7305,7 +7362,8 @@ def build_demo():
         }
         
         .hero-section {
-            padding: 8px 16px 16px;
+            /* 顶部固定工具栏会压在页头 logo 上，窄屏留出工具条高度 */
+            padding: 88px 16px 16px;
         }
 
         .hero-brand {
@@ -7314,8 +7372,8 @@ def build_demo():
         }
 
         .hero-logo {
-            width: min(188px, 68vw);
-            max-height: 72px;
+            width: min(220px, 70vw);
+            max-height: 84px;
         }
 
         .hero-brand-name {
@@ -7333,31 +7391,15 @@ def build_demo():
         }
 
         #main-content-column {
-            order: 1;
             padding: 0 !important;
         }
 
-        #right-options-column {
-            order: 2;
-            position: static;
-        }
-
-        #input-section,
-        #options-panel,
-        #log-view {
-            border-radius: 22px !important;
-        }
-
-        
         #log-view {
             min-height: 260px;
             padding: 22px 20px !important;
+            border-radius: 22px !important;
         }
     }
-
-    /* task_id <-> URL 同步桥的隐藏样式：
-       Gradio 5 中 visible=False 的组件不进入 DOM，JS 无法找到，
-       因此用 CSS 隐藏一个 visible=True 的 textbox。 */
 
     /* ===== Unified icon system (outline, 20px in 36px hit target) ===== */
     .ui-icon-btn,
@@ -7435,13 +7477,8 @@ def build_demo():
         max-width: 100% !important;
     }
     #question-input textarea {
-        min-height: 48px !important;
         height: auto !important;
     }
-
-
-
-
 
     /* idle-output-collapse */
     #output-section.hidden,
@@ -7477,6 +7514,14 @@ def build_demo():
         flex: 0 0 16px !important;
     }
     @keyframes miro-spin { to { transform: rotate(360deg); } }
+    .runtime-elapsed {
+        margin-left: auto !important;
+        flex: 0 0 auto !important;
+        color: rgba(186, 230, 253, 0.75) !important;
+        font-size: 12px !important;
+        font-variant-numeric: tabular-nums !important;
+        letter-spacing: 0.02em !important;
+    }
 
     #log-view .thought-card,
     #log-view .tool-card,
@@ -7768,53 +7813,6 @@ def build_demo():
     }
     a.ref-citation:hover { background: rgba(34, 211, 238, 0.22) !important; }
 
-    .output-label {
-        color: #22d3ee !important;
-        letter-spacing: 0.08em !important;
-        text-transform: uppercase !important;
-        font-size: 11px !important;
-        font-weight: 600 !important;
-        margin: 0 0 8px !important;
-    }
-
-    /* e2e-stop-disabled — idle Stop: readable muted, not invisible */
-    #stop-btn[disabled],
-    #stop-btn.disabled,
-    #stop-btn[aria-disabled="true"],
-    #btn-row #stop-btn:disabled,
-    #btn-row #stop-btn[disabled] button,
-    #stop-btn[disabled] button,
-    #stop-btn:disabled button {
-        opacity: 0.82 !important;
-        filter: none !important;
-        cursor: not-allowed !important;
-        pointer-events: none !important;
-        box-shadow: none !important;
-        border-color: rgba(148, 163, 184, 0.28) !important;
-        color: #94a3b8 !important;
-        background: rgba(30, 41, 59, 0.55) !important;
-    }
-
-    /* Primary Start should dominate the row */
-    #run-btn,
-    #btn-row #run-btn {
-        min-width: 132px !important;
-        font-weight: 600 !important;
-        box-shadow: 0 0 0 1px rgba(34, 211, 238, 0.25), 0 8px 24px rgba(34, 211, 238, 0.18) !important;
-    }
-
-    /* Secondary settings: quieter than primary, same chip language as top icons */
-    #settings-open-btn {
-        background: rgba(15, 23, 42, 0.72) !important;
-        border: 1px solid rgba(34, 211, 238, 0.18) !important;
-        color: #cbd5e1 !important;
-    }
-    #settings-open-btn:hover {
-        border-color: rgba(34, 211, 238, 0.45) !important;
-        color: #22d3ee !important;
-        background: rgba(34, 211, 238, 0.08) !important;
-    }
-
     /* e2e-hide-textbox-word */
     #question-input label > span:not(.svelte-input),
     #question-input [data-testid="block-info"],
@@ -8026,31 +8024,16 @@ def build_demo():
         display: none !important;
     }
 
-    .output-label {
-        color: var(--accent) !important;
-        letter-spacing: 0.08em !important;
-        text-transform: uppercase !important;
-        font-size: 11px !important;
-        font-weight: 600 !important;
-    }
-
     .app-footer {
         display: none !important;
     }
 
-    /* Action buttons: shared outline icons via CSS masks */
+    /* Action buttons: shared outline icons via CSS masks（尺寸由下方按钮规则统一给定） */
     .ui-action-btn {
         display: inline-flex !important;
         align-items: center !important;
         justify-content: center !important;
         gap: 8px !important;
-        height: 36px !important;
-        min-height: 36px !important;
-        padding: 0 14px !important;
-        border-radius: 10px !important;
-        font-size: 13px !important;
-        font-weight: 500 !important;
-        letter-spacing: 0.01em !important;
     }
 
     .ui-action-btn::before {
@@ -8068,17 +8051,19 @@ def build_demo():
         mask-size: contain !important;
     }
 
+    /* 滑杆图标：语义=参数调节，替代原先的太阳形图标 */
     .ui-icon-settings::before {
-        -webkit-mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%271.75%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Ccircle%20cx%3D%2212%22%20cy%3D%2212%22%20r%3D%223%22%2F%3E%3Cpath%20d%3D%22M12%202v2%22%2F%3E%3Cpath%20d%3D%22M12%2020v2%22%2F%3E%3Cpath%20d%3D%22m4.93%204.93%201.41%201.41%22%2F%3E%3Cpath%20d%3D%22m17.66%2017.66%201.41%201.41%22%2F%3E%3Cpath%20d%3D%22M2%2012h2%22%2F%3E%3Cpath%20d%3D%22M20%2012h2%22%2F%3E%3Cpath%20d%3D%22m4.93%2019.07%201.41-1.41%22%2F%3E%3Cpath%20d%3D%22m17.66%206.34%201.41-1.41%22%2F%3E%3C%2Fsvg%3E") !important;
-        mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%271.75%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Ccircle%20cx%3D%2212%22%20cy%3D%2212%22%20r%3D%223%22%2F%3E%3Cpath%20d%3D%22M12%202v2%22%2F%3E%3Cpath%20d%3D%22M12%2020v2%22%2F%3E%3Cpath%20d%3D%22m4.93%204.93%201.41%201.41%22%2F%3E%3Cpath%20d%3D%22m17.66%2017.66%201.41%201.41%22%2F%3E%3Cpath%20d%3D%22M2%2012h2%22%2F%3E%3Cpath%20d%3D%22M20%2012h2%22%2F%3E%3Cpath%20d%3D%22m4.93%2019.07%201.41-1.41%22%2F%3E%3Cpath%20d%3D%22m17.66%206.34%201.41-1.41%22%2F%3E%3C%2Fsvg%3E") !important;
+        -webkit-mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%271.75%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Cpath%20d%3D%22M20%207h-9%22%2F%3E%3Cpath%20d%3D%22M14%2017H5%22%2F%3E%3Ccircle%20cx%3D%2217%22%20cy%3D%2217%22%20r%3D%223%22%2F%3E%3Ccircle%20cx%3D%227%22%20cy%3D%227%22%20r%3D%223%22%2F%3E%3C%2Fsvg%3E") !important;
+        mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%271.75%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Cpath%20d%3D%22M20%207h-9%22%2F%3E%3Cpath%20d%3D%22M14%2017H5%22%2F%3E%3Ccircle%20cx%3D%2217%22%20cy%3D%2217%22%20r%3D%223%22%2F%3E%3Ccircle%20cx%3D%227%22%20cy%3D%227%22%20r%3D%223%22%2F%3E%3C%2Fsvg%3E") !important;
     }
     .ui-icon-stop::before {
         -webkit-mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%271.75%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Crect%20x%3D%226%22%20y%3D%226%22%20width%3D%2212%22%20height%3D%2212%22%20rx%3D%221.5%22%2F%3E%3C%2Fsvg%3E") !important;
         mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%271.75%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Crect%20x%3D%226%22%20y%3D%226%22%20width%3D%2212%22%20height%3D%2212%22%20rx%3D%221.5%22%2F%3E%3C%2Fsvg%3E") !important;
     }
+    /* 放大镜图标：语义=「提交检索」，与问题输入框组成的搜索习惯一致 */
     .ui-icon-run::before {
-        -webkit-mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%271.75%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Cpath%20d%3D%22M8%205.5v13l11-6.5-11-6.5z%22%2F%3E%3C%2Fsvg%3E") !important;
-        mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%271.75%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Cpath%20d%3D%22M8%205.5v13l11-6.5-11-6.5z%22%2F%3E%3C%2Fsvg%3E") !important;
+        -webkit-mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%271.75%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Ccircle%20cx%3D%2211%22%20cy%3D%2211%22%20r%3D%228%22%2F%3E%3Cpath%20d%3D%22m21%2021-4.3-4.3%22%2F%3E%3C%2Fsvg%3E") !important;
+        mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%271.75%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Ccircle%20cx%3D%2211%22%20cy%3D%2211%22%20r%3D%228%22%2F%3E%3Cpath%20d%3D%22m21%2021-4.3-4.3%22%2F%3E%3C%2Fsvg%3E") !important;
     }
 
 
@@ -8102,9 +8087,9 @@ def build_demo():
     }
 
     #log-view pre {
-        background: #1e293b !important;
-        color: #e2e8f0 !important;
-        border: 1px solid var(--glass-border) !important;
+        background: rgba(4, 8, 16, 0.78) !important;
+        color: #e8eef8 !important;
+        border: 1px solid rgba(140, 170, 220, 0.14) !important;
     }
 
     #log-view code {
@@ -8120,10 +8105,6 @@ def build_demo():
     /* ===== Aesthetic polish: document + compact emphasis ===== */
     #layout-shell {
         gap: 4px !important;
-    }
-    #btn-row {
-        padding: 20px 4px 8px !important;
-        gap: 12px !important;
     }
     .report-glance-body p,
     .report-glance-body {
@@ -8148,10 +8129,6 @@ def build_demo():
     #output-section {
         max-width: 680px !important;
         margin: 28px auto 0 !important;
-    }
-    .output-label {
-        margin-bottom: 6px !important;
-        opacity: 0.85 !important;
     }
     /* Kill leftover hard boxes on progress empty state */
     .progress-empty-wrap {
@@ -8267,21 +8244,31 @@ def build_demo():
     }
 
     #gr-task-id-bridge { position: absolute !important; left: -9999px !important; top: -9999px !important; width: 1px !important; height: 1px !important; opacity: 0 !important; pointer-events: none !important; }
+
+    /* 宽屏：报告区放宽到 960，让表格/图表有横向空间；正文段落另设 42em 上限保住阅读行宽 */
+    @media (min-width: 1200px) {
+        #layout-shell,
+        #output-section {
+            max-width: 960px !important;
+        }
+        #log-view p {
+            max-width: 42em;
+        }
+    }
     """
     custom_css = custom_css.replace(
         "__LOCAL_FONT_FAMILY_STACK__", LOCAL_FONT_FAMILY_STACK
     )
 
-    # 统一使用本地 logo，避免外部资源依赖。
-    if logo_data_uri:
-        favicon_head = f'<link rel="icon" href="{logo_data_uri}">'
-    else:
-        favicon_head = f'<link rel="icon" href="{fallback_favicon_data_uri}">'
+    # 统一使用本地 logo，避免外部资源依赖；favicon 用方形标，横版锁合只用于页头。
+    favicon_head = (
+        f'<link rel="icon" href="{favicon_data_uri or fallback_favicon_data_uri}">'
+    )
     hero_logo_src = logo_data_uri or fallback_favicon_data_uri
     hero_brand_name_html = (
         ""
         if logo_data_uri
-        else '<span class="hero-brand-name">OpenClaw-MiroSearch</span>'
+        else '<span class="hero-brand-name">谛听 Diting</span>'
     )
 
     skills_download_url, _ = _resolve_skills_package_download()
@@ -8359,16 +8346,30 @@ def build_demo():
                 });
             });
         };
+        // 搜索行的图标按钮只显示图标（文字用 CSS font-size:0 收起），
+        // 把按钮自身的文案回填成 title/aria-label，中英文随界面语言自动跟随。
+        const bindActionButtonLabels = () => {
+            document.querySelectorAll('#btn-row .ui-action-btn').forEach((el) => {
+                if (el.dataset.labelBound === '1') { return; }
+                const label = (el.textContent || '').trim();
+                if (!label) { return; }
+                el.dataset.labelBound = '1';
+                el.setAttribute('title', label);
+                if (!el.getAttribute('aria-label')) { el.setAttribute('aria-label', label); }
+            });
+        };
         const mo = new MutationObserver((mutations) => {
             for (const m of mutations) {
                 if (m.type === 'childList' || m.type === 'attributes') {
                     closeFinishedProcessPanels(document);
+                    bindActionButtonLabels();
                     break;
                 }
             }
         });
         const start = () => {
             closeFinishedProcessPanels(document);
+            bindActionButtonLabels();
             mo.observe(document.body, {
                 childList: true,
                 subtree: true,
@@ -8631,7 +8632,273 @@ def build_demo():
 })();
 </script>
 """
-    demo_head = f"{favicon_head}{skills_bind_script}{process_details_force_close_script}{task_id_url_bridge_script}{miro_modal_js}{enter_submit_script}{export_titles_script}"
+    # 运行态耗时：单一定时器每秒刷新所有带起始时间的计时节点；
+    # 终态由服务端摘掉起始时间，计时随即停在最后一帧（不再自增）。
+    elapsed_timer_script = """
+<script>
+(function () {
+  function pad(n) { return (n < 10 ? "0" : "") + n; }
+  function tick() {
+    var now = Math.floor(Date.now() / 1000);
+    var nodes = document.querySelectorAll(".runtime-elapsed-value");
+    for (var i = 0; i < nodes.length; i++) {
+      var match = /--start-ts:\\s*(\\d+)/.exec(nodes[i].getAttribute("style") || "");
+      if (!match) continue;
+      var seconds = Math.max(0, now - parseInt(match[1], 10));
+      nodes[i].textContent = Math.floor(seconds / 60) + ":" + pad(seconds % 60);
+    }
+  }
+  tick();
+  setInterval(tick, 1000);
+})();
+</script>
+"""
+    # 全屏星空：三层视差漂流 + 柔光晕 + 流星（始终 RAF）
+    bg_particles_script = """
+<script>
+(function () {
+  var VER = 4;
+  if (window.__miroStarfieldVer === VER) return;
+  window.__miroStarfieldVer = VER;
+
+  var old = document.getElementById("bg-particles");
+  if (old) old.remove();
+
+  var LAYER = [
+    { speed: 0.18, size: 0.35, alpha: 0.35, countDiv: 4200, maxN: 220, minN: 90 },
+    { speed: 0.45, size: 0.7, alpha: 0.55, countDiv: 5600, maxN: 160, minN: 40 },
+    { speed: 1.05, size: 1.35, alpha: 0.85, countDiv: 9000, maxN: 90, minN: 40 }
+  ];
+
+  var canvas = document.createElement("canvas");
+  canvas.id = "bg-particles";
+  canvas.setAttribute("aria-hidden", "true");
+  canvas.style.cssText =
+    "position:fixed;inset:0;width:100%;height:100%;pointer-events:none;z-index:0;";
+  var ctx = canvas.getContext("2d");
+  var layers = [[], [], []];
+  var meteors = [];
+  var w = 0, h = 0, rafId = 0, t = 0, nextMeteorAt = 0;
+  var camVX = 0.12, camVY = 0.07, windPhase = 0;
+
+  function newStar(depth) {
+    var spec = LAYER[depth];
+    var giant = depth === 2 && Math.random() < 0.08;
+    var twinkly = Math.random() < (depth === 2 ? 0.45 : 0.18);
+    return {
+      x: Math.random() * w,
+      y: Math.random() * h,
+      vx: (Math.random() - 0.5) * 0.08 * spec.speed,
+      vy: (Math.random() - 0.5) * 0.08 * spec.speed,
+      r: (giant ? 1.6 + Math.random() * 1.4 : 0.35 + Math.random() * 1.1) * spec.size,
+      a: (0.25 + Math.random() * 0.55) * spec.alpha,
+      tw: Math.random() * Math.PI * 2,
+      twSpeed: twinkly ? (0.012 + Math.random() * 0.02) : (0.004 + Math.random() * 0.008),
+      twAmp: twinkly ? (0.35 + Math.random() * 0.35) : (0.08 + Math.random() * 0.12),
+      glow: giant || (depth >= 1 && Math.random() < 0.12),
+      hue: Math.random() < 0.12 ? 210
+        : (Math.random() < 0.08 ? 255
+          : (Math.random() < 0.1 ? 40 : 200))
+    };
+  }
+
+  function spawnMeteor() {
+    var heavy = Math.random() < 0.3;
+    var fromLeft = Math.random() < 0.6;
+    var angle = 0.28 + Math.random() * 0.5;
+    var speed = heavy ? (7 + Math.random() * 4.5) : (9 + Math.random() * 6);
+    var ux = fromLeft ? Math.cos(angle) : -Math.cos(angle);
+    var uy = Math.sin(angle) * (0.75 + Math.random() * 0.35);
+    return {
+      x: fromLeft ? (-60 - Math.random() * 100) : (w + 60 + Math.random() * 100),
+      y: Math.random() * h * 0.5,
+      vx: ux * speed,
+      vy: uy * speed,
+      speed: speed,
+      heavy: heavy,
+      len: heavy ? (120 + Math.random() * 90) : (70 + Math.random() * 70),
+      life: 0,
+      maxLife: heavy ? (55 + Math.random() * 30) : (35 + Math.random() * 25),
+      width: heavy ? (2.2 + Math.random() * 1.5) : (1.0 + Math.random() * 0.8),
+      hue: heavy ? (26 + Math.random() * 22) : (190 + Math.random() * 35)
+    };
+  }
+
+  function rebuild() {
+    layers = [[], [], []];
+    for (var d = 0; d < 3; d++) {
+      var spec = LAYER[d];
+      var n = Math.min(
+        spec.maxN,
+        Math.max(spec.minN, Math.round((w * h) / spec.countDiv))
+      );
+      for (var i = 0; i < n; i++) layers[d].push(newStar(d));
+    }
+    nextMeteorAt = t + 30 + Math.random() * 50;
+  }
+
+  function resize() {
+    var dpr = Math.min(window.devicePixelRatio || 1, 2);
+    w = window.innerWidth;
+    h = window.innerHeight;
+    canvas.width = Math.round(w * dpr);
+    canvas.height = Math.round(h * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    rebuild();
+  }
+
+  function wrap(v, max) {
+    if (v < -20) return v + max + 40;
+    if (v > max + 20) return v - max - 40;
+    return v;
+  }
+
+  function hsla(h, s, l, a) {
+    return "hsla(" + h + ", " + s + "%, " + l + "%, " + a.toFixed(3) + ")";
+  }
+
+  function drawSoftStar(s, x, y, alpha) {
+    if (s.glow && alpha > 0.15) {
+      var g = ctx.createRadialGradient(x, y, 0, x, y, s.r * 6);
+      g.addColorStop(0, hsla(s.hue, 70, 88, alpha * 0.45));
+      g.addColorStop(0.35, hsla(s.hue, 75, 70, alpha * 0.14));
+      g.addColorStop(1, hsla(s.hue, 80, 60, 0));
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(x, y, s.r * 6, 0, 6.2832);
+      ctx.fill();
+    }
+    ctx.beginPath();
+    ctx.fillStyle = hsla(s.hue, 65, 92, Math.min(1, alpha));
+    ctx.arc(x, y, Math.max(0.4, s.r), 0, 6.2832);
+    ctx.fill();
+  }
+
+  function fadeLife(life, maxLife) {
+    var p = life / maxLife;
+    if (p < 0.1) return p / 0.1;
+    if (p > 0.6) return (1 - p) / 0.4;
+    return 1;
+  }
+
+  function drawMeteor(m) {
+    var fade = Math.max(0, Math.min(1, fadeLife(m.life, m.maxLife)));
+    var tx = m.x - (m.vx / m.speed) * m.len;
+    var ty = m.y - (m.vy / m.speed) * m.len;
+    var grad = ctx.createLinearGradient(tx, ty, m.x, m.y);
+    if (m.heavy) {
+      grad.addColorStop(0, "rgba(0,0,0,0)");
+      grad.addColorStop(0.4, hsla(m.hue, 90, 65, 0.18 * fade));
+      grad.addColorStop(0.8, hsla(m.hue, 95, 78, 0.55 * fade));
+      grad.addColorStop(1, hsla(48, 100, 94, 0.95 * fade));
+    } else {
+      grad.addColorStop(0, "rgba(0,0,0,0)");
+      grad.addColorStop(0.5, hsla(m.hue, 80, 78, 0.22 * fade));
+      grad.addColorStop(1, hsla(m.hue, 90, 94, 0.88 * fade));
+    }
+    ctx.strokeStyle = grad;
+    ctx.lineWidth = m.width;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(tx, ty);
+    ctx.lineTo(m.x, m.y);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.fillStyle = m.heavy
+      ? hsla(48, 100, 96, 0.95 * fade)
+      : hsla(m.hue, 90, 96, 0.8 * fade);
+    ctx.arc(m.x, m.y, m.heavy ? 2.6 : 1.4, 0, 6.2832);
+    ctx.fill();
+
+    if (m.heavy) {
+      var hg = ctx.createRadialGradient(m.x, m.y, 0, m.x, m.y, 10);
+      hg.addColorStop(0, hsla(m.hue, 90, 70, 0.35 * fade));
+      hg.addColorStop(1, hsla(m.hue, 90, 60, 0));
+      ctx.fillStyle = hg;
+      ctx.beginPath();
+      ctx.arc(m.x, m.y, 10, 0, 6.2832);
+      ctx.fill();
+    }
+  }
+
+  function draw() {
+    var i, d, s, m, spec;
+    t += 1;
+    windPhase += 0.0022;
+    camVX += (Math.sin(windPhase * 0.7) * 0.02 - camVX) * 0.02;
+    camVY += (Math.cos(windPhase * 0.55) * 0.015 - camVY) * 0.02;
+
+    ctx.clearRect(0, 0, w, h);
+
+    for (d = 0; d < 3; d++) {
+      spec = LAYER[d];
+      for (i = 0; i < layers[d].length; i++) {
+        s = layers[d][i];
+        s.x = wrap(s.x + s.vx + camVX * spec.speed, w);
+        s.y = wrap(s.y + s.vy + camVY * spec.speed, h);
+        s.tw += s.twSpeed;
+        drawSoftStar(
+          s, s.x, s.y,
+          s.a * (1 - s.twAmp + s.twAmp * (0.5 + 0.5 * Math.sin(s.tw)))
+        );
+      }
+    }
+
+    if (t >= nextMeteorAt && meteors.length < 3) {
+      meteors.push(spawnMeteor());
+      nextMeteorAt = t + (55 + Math.random() * 110);
+    }
+
+    for (i = meteors.length - 1; i >= 0; i--) {
+      m = meteors[i];
+      m.x += m.vx;
+      m.y += m.vy;
+      m.life += 1;
+      drawMeteor(m);
+      if (
+        m.life >= m.maxLife ||
+        m.x < -160 || m.x > w + 160 ||
+        m.y < -120 || m.y > h + 120
+      ) {
+        meteors.splice(i, 1);
+      }
+    }
+  }
+
+  function loop() {
+    draw();
+    rafId = window.requestAnimationFrame(loop);
+  }
+
+  function stop() {
+    if (rafId) {
+      window.cancelAnimationFrame(rafId);
+      rafId = 0;
+    }
+  }
+
+  function start() {
+    if (!document.body) {
+      document.addEventListener("DOMContentLoaded", start, { once: true });
+      return;
+    }
+    document.body.appendChild(canvas);
+    resize();
+    window.addEventListener("resize", resize);
+    document.addEventListener("visibilitychange", function () {
+      if (document.hidden) stop();
+      else if (!rafId) loop();
+    });
+    loop();
+  }
+
+  start();
+})();
+</script>
+"""
+
+    demo_head = f"{favicon_head}{skills_bind_script}{process_details_force_close_script}{task_id_url_bridge_script}{miro_modal_js}{enter_submit_script}{export_titles_script}{elapsed_timer_script}{bg_particles_script}"
 
     def _get_i18n(lang: str):
         return I18N.get(lang, I18N[DEFAULT_LANG])
@@ -8672,7 +8939,7 @@ def build_demo():
         return f"""
             <div class="hero-section">
                 <div class="hero-brand">
-                    <img src="{hero_logo_src}" class="hero-logo" alt="OpenClaw-MiroSearch logo" />
+                    <img src="{hero_logo_src}" class="hero-logo" alt="Diting logo" />
                     {hero_brand_name_html}
                 </div>
                 <h1 class="hero-title">{i18n["hero_title"]}</h1>
@@ -8713,7 +8980,6 @@ def build_demo():
             gr.update(value=i18n["btn_settings"]),
             gr.update(value=i18n["btn_stop"]),
             gr.update(value=i18n["btn_run"]),
-            gr.update(value=f'<div class="output-label">{i18n["output_label"]}</div>'),
             gr.update(),  # preserve report markdown
             gr.update(),  # preserve output section visibility
             gr.update(
@@ -8779,32 +9045,32 @@ def build_demo():
             neutral_hue="slate",
             text_size="md",
         ).set(
-            body_background_fill="#1a2332",
-            body_background_fill_dark="#1a2332",
-            background_fill_primary="#1e293b",
-            background_fill_primary_dark="#1e293b",
-            background_fill_secondary="#243044",
-            background_fill_secondary_dark="#243044",
-            block_background_fill="#1e293b",
-            block_background_fill_dark="#1e293b",
-            border_color_primary="#334155",
-            border_color_primary_dark="#334155",
-            body_text_color="#cbd5e1",
-            body_text_color_dark="#cbd5e1",
+            body_background_fill="#000208",
+            body_background_fill_dark="#000208",
+            background_fill_primary="#060a14",
+            background_fill_primary_dark="#060a14",
+            background_fill_secondary="#0a1020",
+            background_fill_secondary_dark="#0a1020",
+            block_background_fill="#060a14",
+            block_background_fill_dark="#060a14",
+            border_color_primary="#1e2d4d",
+            border_color_primary_dark="#1e2d4d",
+            body_text_color="#c5d0e2",
+            body_text_color_dark="#c5d0e2",
             # Soft defaults to white checkbox-label chips — force dark
             block_info_text_color="#e2e8f0",
             block_info_text_color_dark="#e2e8f0",
-            checkbox_label_background_fill="#0f172a",
-            checkbox_label_background_fill_dark="#0f172a",
-            checkbox_label_background_fill_hover="#1e293b",
-            checkbox_label_background_fill_hover_dark="#1e293b",
+            checkbox_label_background_fill="#0a1024",
+            checkbox_label_background_fill_dark="#0a1024",
+            checkbox_label_background_fill_hover="#121c38",
+            checkbox_label_background_fill_hover_dark="#121c38",
             checkbox_label_background_fill_selected="#0284c7",
             checkbox_label_background_fill_selected_dark="#0284c7",
-            checkbox_label_text_color="#cbd5e1",
-            checkbox_label_text_color_dark="#cbd5e1",
+            checkbox_label_text_color="#c5d0e2",
+            checkbox_label_text_color_dark="#c5d0e2",
             checkbox_label_text_color_selected="#f8fafc",
             checkbox_label_text_color_selected_dark="#f8fafc",
-            checkbox_label_border_color="#334155",
+            checkbox_label_border_color="#1e2d4d",
             checkbox_label_border_color_dark="#334155",
             checkbox_label_border_color_hover="#475569",
             checkbox_label_border_color_hover_dark="#475569",
@@ -8831,7 +9097,7 @@ def build_demo():
 
         with gr.Column(elem_id="layout-shell"):
             with gr.Column(elem_id="main-content-column"):
-                with gr.Column(elem_id="input-section"):
+                with gr.Row(elem_id="input-section"):
                     inp = gr.Textbox(
                         lines=1,
                         max_lines=3,
@@ -8839,8 +9105,24 @@ def build_demo():
                         show_label=False,
                         elem_id="question-input",
                         container=False,
+                        scale=1,
                     )
-                    with gr.Row(elem_id="btn-row"):
+                    with gr.Row(elem_id="btn-row", scale=0):
+                        run_btn = gr.Button(
+                            I18N[DEFAULT_LANG]["btn_run"],
+                            elem_id="run-btn",
+                            elem_classes=["ui-action-btn", "ui-icon-run"],
+                            variant="primary",
+                            scale=0,
+                        )
+                        stop_btn = gr.Button(
+                            I18N[DEFAULT_LANG]["btn_stop"],
+                            elem_id="stop-btn",
+                            elem_classes=["ui-action-btn", "ui-icon-stop"],
+                            variant="stop",
+                            interactive=False,
+                            scale=0,
+                        )
                         settings_btn = gr.Button(
                             I18N[DEFAULT_LANG]["btn_settings"],
                             elem_id="settings-open-btn",
@@ -8852,28 +9134,10 @@ def build_demo():
                             variant="secondary",
                             scale=0,
                         )
-                        stop_btn = gr.Button(
-                            I18N[DEFAULT_LANG]["btn_stop"],
-                            elem_id="stop-btn",
-                            elem_classes=["ui-action-btn", "ui-icon-stop"],
-                            variant="stop",
-                            interactive=False,
-                            scale=0,
-                        )
-                        run_btn = gr.Button(
-                            I18N[DEFAULT_LANG]["btn_run"],
-                            elem_id="run-btn",
-                            elem_classes=["ui-action-btn", "ui-icon-run"],
-                            variant="primary",
-                            scale=0,
-                        )
 
                 with gr.Column(
                     elem_id="output-section", visible=False
                 ) as output_section:
-                    output_label_html = gr.HTML(
-                        f'<div class="output-label">{I18N[DEFAULT_LANG]["output_label"]}</div>'
-                    )
                     out_md = gr.Markdown(
                         I18N[DEFAULT_LANG]["output_waiting"], elem_id="log-view"
                     )
@@ -9100,6 +9364,9 @@ def build_demo():
             inputs=run_inputs,
             outputs=run_outputs,
             api_name="run_research_stream",
+            # Gradio 默认会在流式组件顶部画一条脉冲边框线；进行中状态改由正文里的
+            # 状态行表达，这里关掉那条线以免看起来像一条多余的分隔线。
+            show_progress="hidden",
         )
         # Enter 键同样触发研究
         submit_event = inp.submit(
@@ -9107,6 +9374,7 @@ def build_demo():
             inputs=run_inputs,
             outputs=run_outputs,
             api_name=False,
+            show_progress="hidden",
         )
 
         # ui_state 任意一次更新都同步 task_id 到隐藏 textbox（JS 据此写 URL）
@@ -9146,6 +9414,7 @@ def build_demo():
                 export_bar,
             ],
             api_name=False,
+            show_progress="hidden",
             js="""
             (uiState, taskIdBridge) => {
                 const urlTaskId = new URL(window.location.href).searchParams.get('task_id') || '';
@@ -9404,7 +9673,6 @@ def build_demo():
                 settings_btn,
                 stop_btn,
                 run_btn,
-                output_label_html,
                 out_md,
                 output_section,
                 settings_modal_title_html,

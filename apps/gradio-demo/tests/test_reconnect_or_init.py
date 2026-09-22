@@ -83,8 +83,8 @@ async def test_reconnect_or_init_first_frame_uses_running_placeholder(monkeypatc
     await agen.aclose()
 
     assert "等待开始研究" not in first_markdown
-    assert "当前任务已启动" in first_markdown
-    assert "分析推理" in first_markdown
+    assert "研究已启动" in first_markdown
+    assert "正在分析" in first_markdown
     assert run_update["interactive"] is False
     assert stop_update["interactive"] is True
     assert ui_state["task_id"] == "task-running-1"
@@ -147,7 +147,7 @@ async def test_reconnect_or_init_uses_task_id_bridge_when_request_has_no_query(
     await agen.aclose()
 
     assert "等待开始研究" not in first_markdown
-    assert "当前任务已启动" in first_markdown
+    assert "研究已启动" in first_markdown
     assert run_update["interactive"] is False
     assert stop_update["interactive"] is True
     assert ui_state["task_id"] == "task-from-bridge"

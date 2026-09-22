@@ -266,17 +266,18 @@ async def test_api_mode_run_once_uses_only_remote_backend_and_forwards_effective
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("done_status", "expected_text"),
+    ("done_status", "expected_texts"),
     [
-        ("failed", "任务执行失败"),
-        ("cancelled", "任务已取消"),
+        ("failed", ("研究中断", "上游终态说明")),
+        # 停止是用户主动行为：只给终态文案，不把服务端内部原因渲染成报错
+        ("cancelled", ("已停止",)),
     ],
 )
 async def test_api_mode_run_once_returns_clear_terminal_failure(
     demo_main,
     monkeypatch,
     done_status,
-    expected_text,
+    expected_texts,
 ):
     monkeypatch.setenv("BACKEND_MODE", "api")
 
@@ -303,8 +304,7 @@ async def test_api_mode_run_once_returns_clear_terminal_failure(
         caller_id="caller-terminal",
     )
 
-    assert expected_text in result
-    assert "上游终态说明" in result
+    assert all(text in result for text in expected_texts)
     assert demo_main._ACTIVE_TASK_IDS == {}
 
 
@@ -407,7 +407,7 @@ async def test_api_mode_run_once_reports_local_stop_when_stream_ends_before_done
 
     result = await running
 
-    assert "任务已取消" in result
+    assert "已停止" in result
     assert demo_main._ACTIVE_TASK_IDS == {}
 
 

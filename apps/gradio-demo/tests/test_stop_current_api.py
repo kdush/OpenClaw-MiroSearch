@@ -237,18 +237,18 @@ def test_stop_current_ui_accepts_missing_state(monkeypatch):
 
 
 def test_stop_current_ui_marks_runtime_status_cancelled(monkeypatch):
-    """停止后最后一帧不得残留「研究进行中」spinner。"""
+    """停止后最后一帧不得残留运行中 spinner，并换成「已停止」终态。"""
     demo_main = _load_demo_main()
     monkeypatch.setenv("BACKEND_MODE", "local")
     streaming_md = "## 结论\n\n内容" + demo_main._spinner_markup(
-        True, "研究进行中 · 分析推理 · 第 3 回合"
+        "正在分析 · 已完成 2 次检索"
     )
 
     markdown_update, _, _ = demo_main.stop_current_ui(None, streaming_md)
 
     assert "runtime-spinner" not in markdown_update
-    assert "研究进行中" not in markdown_update
-    assert "任务已取消" in markdown_update
+    assert "已完成 2 次检索" not in markdown_update
+    assert "已停止" in markdown_update
     assert "## 结论" in markdown_update
 
 
