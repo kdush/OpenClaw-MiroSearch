@@ -5510,10 +5510,10 @@ def build_demo():
     }
     body {
         background:
-            radial-gradient(780px 420px at 12% 8%, rgba(56, 20, 110, 0.16), transparent 62%),
-            radial-gradient(900px 500px at 88% 4%, rgba(10, 50, 110, 0.14), transparent 60%),
-            radial-gradient(700px 400px at 48% 96%, rgba(18, 36, 90, 0.12), transparent 65%),
-            radial-gradient(520px 300px at 40% 36%, rgba(40, 120, 200, 0.04), transparent 55%),
+            radial-gradient(800px 440px at 12% 8%, rgba(56, 20, 110, 0.18), transparent 62%),
+            radial-gradient(920px 500px at 88% 4%, rgba(10, 50, 110, 0.15), transparent 60%),
+            radial-gradient(720px 400px at 48% 96%, rgba(18, 36, 90, 0.13), transparent 64%),
+            radial-gradient(540px 300px at 40% 36%, rgba(40, 120, 200, 0.05), transparent 55%),
             #000208 !important;
         background-attachment: fixed !important;
     }
@@ -8653,11 +8653,11 @@ def build_demo():
 })();
 </script>
 """
-    # 全屏星空：三层视差漂流 + 柔光晕 + 流星（始终 RAF）
+    # 全屏星空：中等视差漂浮 + 轻闪烁 + 偶发流星
     bg_particles_script = """
 <script>
 (function () {
-  var VER = 4;
+  var VER = 6;
   if (window.__miroStarfieldVer === VER) return;
   window.__miroStarfieldVer = VER;
 
@@ -8665,9 +8665,9 @@ def build_demo():
   if (old) old.remove();
 
   var LAYER = [
-    { speed: 0.18, size: 0.35, alpha: 0.35, countDiv: 4200, maxN: 220, minN: 90 },
-    { speed: 0.45, size: 0.7, alpha: 0.55, countDiv: 5600, maxN: 160, minN: 40 },
-    { speed: 1.05, size: 1.35, alpha: 0.85, countDiv: 9000, maxN: 90, minN: 40 }
+    { speed: 0.15, size: 0.32, alpha: 0.32, countDiv: 3600, maxN: 240, minN: 100 },
+    { speed: 0.48, size: 0.72, alpha: 0.58, countDiv: 5600, maxN: 160, minN: 45 },
+    { speed: 1.15, size: 1.35, alpha: 0.88, countDiv: 8600, maxN: 95, minN: 40 }
   ];
 
   var canvas = document.createElement("canvas");
@@ -8679,23 +8679,32 @@ def build_demo():
   var layers = [[], [], []];
   var meteors = [];
   var w = 0, h = 0, rafId = 0, t = 0, nextMeteorAt = 0;
-  var camVX = 0.12, camVY = 0.07, windPhase = 0;
+  var camVX = 0.16, camVY = 0.09, windPhase = 0;
 
   function newStar(depth) {
     var spec = LAYER[depth];
-    var giant = depth === 2 && Math.random() < 0.08;
-    var twinkly = Math.random() < (depth === 2 ? 0.45 : 0.18);
+    var giant = depth === 2 && Math.random() < 0.1;
+    var twinkly = Math.random() < (depth === 0 ? 0.16 : depth === 1 ? 0.32 : 0.5);
+    var floatR = (0.08 + Math.random() * 0.28) * (0.3 + depth * 0.4);
     return {
       x: Math.random() * w,
       y: Math.random() * h,
-      vx: (Math.random() - 0.5) * 0.08 * spec.speed,
-      vy: (Math.random() - 0.5) * 0.08 * spec.speed,
-      r: (giant ? 1.6 + Math.random() * 1.4 : 0.35 + Math.random() * 1.1) * spec.size,
-      a: (0.25 + Math.random() * 0.55) * spec.alpha,
+      vx: (Math.random() - 0.5) * 0.12 * spec.speed,
+      vy: (Math.random() - 0.5) * 0.12 * spec.speed,
+      r: (giant ? 1.6 + Math.random() * 1.5 : 0.35 + Math.random() * 1.1) * spec.size,
+      a: (0.28 + Math.random() * 0.52) * spec.alpha,
       tw: Math.random() * Math.PI * 2,
-      twSpeed: twinkly ? (0.012 + Math.random() * 0.02) : (0.004 + Math.random() * 0.008),
-      twAmp: twinkly ? (0.35 + Math.random() * 0.35) : (0.08 + Math.random() * 0.12),
-      glow: giant || (depth >= 1 && Math.random() < 0.12),
+      tw2: Math.random() * Math.PI * 2,
+      twSpeed: twinkly ? (0.016 + Math.random() * 0.024) : (0.006 + Math.random() * 0.01),
+      twSpeed2: 0.035 + Math.random() * 0.05,
+      twAmp: twinkly ? (0.32 + Math.random() * 0.28) : (0.1 + Math.random() * 0.14),
+      flash: twinkly && Math.random() < 0.18,
+      floatPhase: Math.random() * Math.PI * 2,
+      floatSpeed: 0.005 + Math.random() * 0.01,
+      floatRx: floatR * (0.55 + Math.random() * 0.7),
+      floatRy: floatR * (0.45 + Math.random() * 0.7),
+      glow: giant || (depth === 2 && Math.random() < 0.45) || (depth === 1 && Math.random() < 0.18),
+      spike: giant || (depth === 2 && Math.random() < 0.1),
       hue: Math.random() < 0.12 ? 210
         : (Math.random() < 0.08 ? 255
           : (Math.random() < 0.1 ? 40 : 200))
@@ -8704,23 +8713,23 @@ def build_demo():
 
   function spawnMeteor() {
     var heavy = Math.random() < 0.3;
-    var fromLeft = Math.random() < 0.6;
-    var angle = 0.28 + Math.random() * 0.5;
-    var speed = heavy ? (7 + Math.random() * 4.5) : (9 + Math.random() * 6);
+    var fromLeft = Math.random() < 0.58;
+    var angle = 0.26 + Math.random() * 0.5;
+    var speed = heavy ? (6.5 + Math.random() * 4) : (8.5 + Math.random() * 5);
     var ux = fromLeft ? Math.cos(angle) : -Math.cos(angle);
-    var uy = Math.sin(angle) * (0.75 + Math.random() * 0.35);
+    var uy = Math.sin(angle) * (0.72 + Math.random() * 0.35);
     return {
-      x: fromLeft ? (-60 - Math.random() * 100) : (w + 60 + Math.random() * 100),
+      x: fromLeft ? (-70 - Math.random() * 100) : (w + 70 + Math.random() * 100),
       y: Math.random() * h * 0.5,
       vx: ux * speed,
       vy: uy * speed,
       speed: speed,
       heavy: heavy,
-      len: heavy ? (120 + Math.random() * 90) : (70 + Math.random() * 70),
+      len: heavy ? (120 + Math.random() * 90) : (75 + Math.random() * 70),
       life: 0,
-      maxLife: heavy ? (55 + Math.random() * 30) : (35 + Math.random() * 25),
-      width: heavy ? (2.2 + Math.random() * 1.5) : (1.0 + Math.random() * 0.8),
-      hue: heavy ? (26 + Math.random() * 22) : (190 + Math.random() * 35)
+      maxLife: heavy ? (55 + Math.random() * 30) : (36 + Math.random() * 26),
+      width: heavy ? (2.2 + Math.random() * 1.4) : (1.0 + Math.random() * 0.8),
+      hue: heavy ? (24 + Math.random() * 24) : (188 + Math.random() * 35)
     };
   }
 
@@ -8734,7 +8743,7 @@ def build_demo():
       );
       for (var i = 0; i < n; i++) layers[d].push(newStar(d));
     }
-    nextMeteorAt = t + 30 + Math.random() * 50;
+    nextMeteorAt = t + 40 + Math.random() * 60;
   }
 
   function resize() {
@@ -8748,8 +8757,8 @@ def build_demo():
   }
 
   function wrap(v, max) {
-    if (v < -20) return v + max + 40;
-    if (v > max + 20) return v - max - 40;
+    if (v < -24) return v + max + 48;
+    if (v > max + 24) return v - max - 48;
     return v;
   }
 
@@ -8757,19 +8766,46 @@ def build_demo():
     return "hsla(" + h + ", " + s + "%, " + l + "%, " + a.toFixed(3) + ")";
   }
 
+  function twinkleFactor(s) {
+    var base = 0.5 + 0.5 * Math.sin(s.tw);
+    if (s.flash) {
+      var pulse = Math.pow(0.5 + 0.5 * Math.sin(s.tw2), 5);
+      base = Math.max(base, pulse * 0.85 + base * 0.15);
+    }
+    return Math.max(0.12, 1 - s.twAmp + s.twAmp * base);
+  }
+
   function drawSoftStar(s, x, y, alpha) {
-    if (s.glow && alpha > 0.15) {
-      var g = ctx.createRadialGradient(x, y, 0, x, y, s.r * 6);
-      g.addColorStop(0, hsla(s.hue, 70, 88, alpha * 0.45));
-      g.addColorStop(0.35, hsla(s.hue, 75, 70, alpha * 0.14));
-      g.addColorStop(1, hsla(s.hue, 80, 60, 0));
+    var glowR = s.r * (s.spike ? 7.5 : 5.5);
+    if (s.glow && alpha > 0.14) {
+      var g = ctx.createRadialGradient(x, y, 0, x, y, glowR);
+      g.addColorStop(0, hsla(s.hue, 70, 88, alpha * 0.42));
+      g.addColorStop(0.32, hsla(s.hue, 72, 70, alpha * 0.14));
+      g.addColorStop(1, hsla(s.hue, 80, 55, 0));
       ctx.fillStyle = g;
       ctx.beginPath();
-      ctx.arc(x, y, s.r * 6, 0, 6.2832);
+      ctx.arc(x, y, glowR, 0, 6.2832);
       ctx.fill();
     }
+
+    if (s.spike && alpha > 0.55) {
+      var len = s.r * (3.2 + 3.5 * (alpha - 0.55));
+      var spikeA = (alpha - 0.55) * 0.35;
+      ctx.save();
+      ctx.strokeStyle = hsla(s.hue, 75, 96, spikeA);
+      ctx.lineWidth = Math.max(0.5, s.r * 0.28);
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      ctx.moveTo(x - len, y);
+      ctx.lineTo(x + len, y);
+      ctx.moveTo(x, y - len * 0.8);
+      ctx.lineTo(x, y + len * 0.8);
+      ctx.stroke();
+      ctx.restore();
+    }
+
     ctx.beginPath();
-    ctx.fillStyle = hsla(s.hue, 65, 92, Math.min(1, alpha));
+    ctx.fillStyle = hsla(s.hue, 62, 92, Math.min(1, alpha));
     ctx.arc(x, y, Math.max(0.4, s.r), 0, 6.2832);
     ctx.fill();
   }
@@ -8777,7 +8813,7 @@ def build_demo():
   function fadeLife(life, maxLife) {
     var p = life / maxLife;
     if (p < 0.1) return p / 0.1;
-    if (p > 0.6) return (1 - p) / 0.4;
+    if (p > 0.58) return (1 - p) / 0.42;
     return 1;
   }
 
@@ -8789,12 +8825,12 @@ def build_demo():
     if (m.heavy) {
       grad.addColorStop(0, "rgba(0,0,0,0)");
       grad.addColorStop(0.4, hsla(m.hue, 90, 65, 0.18 * fade));
-      grad.addColorStop(0.8, hsla(m.hue, 95, 78, 0.55 * fade));
-      grad.addColorStop(1, hsla(48, 100, 94, 0.95 * fade));
+      grad.addColorStop(0.8, hsla(m.hue, 95, 78, 0.52 * fade));
+      grad.addColorStop(1, hsla(48, 100, 94, 0.94 * fade));
     } else {
       grad.addColorStop(0, "rgba(0,0,0,0)");
       grad.addColorStop(0.5, hsla(m.hue, 80, 78, 0.22 * fade));
-      grad.addColorStop(1, hsla(m.hue, 90, 94, 0.88 * fade));
+      grad.addColorStop(1, hsla(m.hue, 90, 94, 0.86 * fade));
     }
     ctx.strokeStyle = grad;
     ctx.lineWidth = m.width;
@@ -8806,28 +8842,28 @@ def build_demo():
 
     ctx.beginPath();
     ctx.fillStyle = m.heavy
-      ? hsla(48, 100, 96, 0.95 * fade)
+      ? hsla(48, 100, 96, 0.94 * fade)
       : hsla(m.hue, 90, 96, 0.8 * fade);
     ctx.arc(m.x, m.y, m.heavy ? 2.6 : 1.4, 0, 6.2832);
     ctx.fill();
 
     if (m.heavy) {
-      var hg = ctx.createRadialGradient(m.x, m.y, 0, m.x, m.y, 10);
-      hg.addColorStop(0, hsla(m.hue, 90, 70, 0.35 * fade));
+      var hg = ctx.createRadialGradient(m.x, m.y, 0, m.x, m.y, 11);
+      hg.addColorStop(0, hsla(m.hue, 90, 70, 0.32 * fade));
       hg.addColorStop(1, hsla(m.hue, 90, 60, 0));
       ctx.fillStyle = hg;
       ctx.beginPath();
-      ctx.arc(m.x, m.y, 10, 0, 6.2832);
+      ctx.arc(m.x, m.y, 11, 0, 6.2832);
       ctx.fill();
     }
   }
 
   function draw() {
-    var i, d, s, m, spec;
+    var i, d, s, m, spec, fx, fy, alpha;
     t += 1;
-    windPhase += 0.0022;
-    camVX += (Math.sin(windPhase * 0.7) * 0.02 - camVX) * 0.02;
-    camVY += (Math.cos(windPhase * 0.55) * 0.015 - camVY) * 0.02;
+    windPhase += 0.003;
+    camVX += (Math.sin(windPhase * 0.7) * 0.22 + Math.sin(windPhase * 1.2) * 0.06 - camVX) * 0.028;
+    camVY += (Math.cos(windPhase * 0.52) * 0.14 + Math.cos(windPhase * 1.05) * 0.04 - camVY) * 0.028;
 
     ctx.clearRect(0, 0, w, h);
 
@@ -8835,19 +8871,21 @@ def build_demo():
       spec = LAYER[d];
       for (i = 0; i < layers[d].length; i++) {
         s = layers[d][i];
+        s.floatPhase += s.floatSpeed;
+        fx = Math.sin(s.floatPhase) * s.floatRx;
+        fy = Math.cos(s.floatPhase * 0.83) * s.floatRy;
         s.x = wrap(s.x + s.vx + camVX * spec.speed, w);
         s.y = wrap(s.y + s.vy + camVY * spec.speed, h);
         s.tw += s.twSpeed;
-        drawSoftStar(
-          s, s.x, s.y,
-          s.a * (1 - s.twAmp + s.twAmp * (0.5 + 0.5 * Math.sin(s.tw)))
-        );
+        s.tw2 += s.twSpeed2;
+        alpha = s.a * twinkleFactor(s);
+        drawSoftStar(s, s.x + fx, s.y + fy, alpha);
       }
     }
 
     if (t >= nextMeteorAt && meteors.length < 3) {
       meteors.push(spawnMeteor());
-      nextMeteorAt = t + (55 + Math.random() * 110);
+      nextMeteorAt = t + (70 + Math.random() * 120);
     }
 
     for (i = meteors.length - 1; i >= 0; i--) {
@@ -8897,7 +8935,6 @@ def build_demo():
 })();
 </script>
 """
-
     demo_head = f"{favicon_head}{skills_bind_script}{process_details_force_close_script}{task_id_url_bridge_script}{miro_modal_js}{enter_submit_script}{export_titles_script}{elapsed_timer_script}{bg_particles_script}"
 
     def _get_i18n(lang: str):
