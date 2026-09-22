@@ -1,4 +1,5 @@
 import asyncio
+import contextvars
 import base64
 import io
 import html
@@ -13,6 +14,7 @@ import uuid
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from functools import partial
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 from urllib.parse import quote, urlparse
@@ -22,9 +24,14 @@ from dotenv import load_dotenv
 from hydra import compose, initialize_config_dir
 from omegaconf import DictConfig
 from prompt_patch import apply_prompt_patch
+from src.config.search_policy import (
+    apply_explicit_budget_overrides,
+    apply_user_search_env_precedence,
+)
 from src.config.settings import expose_sub_agents_as_tools
 from src.cache.result_cache import ResultCache
 from src.core.pipeline import create_pipeline_components, execute_task_pipeline
+from src.io.report_presentation import prepare_user_facing_report
 from utils import replace_chinese_punctuation
 
 import api_client
@@ -300,11 +307,6 @@ SKILLS_DOWNLOAD_FALLBACK_HINT_CN = (
 )
 SKILLS_DOWNLOAD_BUTTON_TEXT_CN = "skills下载"
 SKILLS_DOWNLOAD_COPIED_TEXT_CN = "已复制链接"
-EXPORT_FORMAT_CHOICES = [
-    ("Markdown (.md)", "md"),
-    ("PDF (.pdf)", "pdf"),
-    ("Word (.docx)", "docx"),
-]
 EXPORT_FORMAT_EXTENSIONS = {"md": ".md", "pdf": ".pdf", "docx": ".docx"}
 EXPORT_FILENAME_PREFIX = os.getenv("EXPORT_FILENAME_PREFIX", "mirosearch-conclusion")
 EXPORT_OUTPUT_DIR = Path(
@@ -324,39 +326,69 @@ EXPORT_PDF_LINE_CHARS = 58
 
 LANG_EN = "en"
 LANG_CN = "cn"
-DEFAULT_LANG = LANG_EN
+DEFAULT_LANG = LANG_CN
+
+_UI_LANG: "contextvars.ContextVar[str]" = contextvars.ContextVar(
+    "ui_lang", default=DEFAULT_LANG
+)
 
 I18N = {
     LANG_EN: {
         "page_title": "OpenClaw-MiroSearch - Deep Research",
         "nav_brand_text": "OpenClaw-MiroSearch Deep Research",
         "hero_title": "Deep Research, Insight into the Future",
-        "hero_subtitle": "Beyond chat, complete research tasks with verifiable search and reasoning.",
+        "hero_subtitle": "Verifiable search and reasoning for research tasks.",
         "input_placeholder": "Enter your research question...",
-        "btn_stop": "⏹ Stop",
-        "btn_run": "Start Research ➤",
+        "btn_stop": "Stop",
+        "btn_run": "Start Research",
+        "btn_settings": "Settings",
+        "settings_modal_title": "Settings",
+        "btn_close": "Close",
         "output_label": "Research Progress",
-        "output_waiting": "*Waiting to start research...*",
+        "output_waiting": "### Ready when you are\n\nType a question above and click **Start Research**.\n\nProgress, sources, and the final report will appear here.",
         "options_title": "Options / Advanced Settings",
         "mode_label": "Search Mode",
-        "mode_info": "verified=multi-round verification(high-quality sources) / research=quality first / balanced=recommended default / quota=quota priority / thinking=pure reasoning / production-web=production style",
+        "mode_info": "Daily: Balanced. Need multi-source checks: Verified. Items marked Advanced are optional.",
         "search_profile_label": "Search Source Strategy",
-        "search_profile_info": "searxng-first=default / serp-first=Serp priority / multi-route=serial aggregation / parallel=parallel aggregation / parallel-trusted=parallel+confidence fallback / searxng-only=SearXNG only",
+        "search_profile_info": "Active default: {profile}. Switch only if that provider is configured.",
         "search_result_num_label": "Results per Search",
-        "search_result_num_info": "Maximum results returned per google_search aggregation. Recommended: 20 or 30 for cross-verification.",
+        "search_result_num_info": "Hits fetched per round · default {n}",
         "verification_rounds_label": "Min Search Rounds (verified mode)",
-        "verification_rounds_info": "Only effective in verified mode to enforce minimum search rounds threshold.",
+        "verification_rounds_info": "Verified mode only",
         "output_detail_label": "Output Length",
-        "output_detail_info": "Compact=short / Balanced=core conclusions + necessary details / Detailed=full report (default)",
+        "output_detail_info": "Longer output costs more tokens · default {level}",
+        "settings_hint": "Not sure what these options do? Pick a preset below — Balanced is recommended for everyday use.",
+        "preset_quick": "Quick look",
+        "preset_balanced": "Balanced",
+        "preset_deep": "Deep research",
+        "settings_preset_filled": 'Preset "{preset}" filled in · click Apply to confirm',
+        "references_heading": "References",
+        "btn_settings_reset": "Restore defaults",
+        "btn_settings_apply": "Apply",
+        "settings_applied": "Applied · {summary} — takes effect from the next run",
+        "settings_reset": "Defaults restored · {summary} — takes effect from the next run",
+        "settings_summary_join": " / ",
+        "settings_summary_rounds": "{n} per round",
         "footer_text": "Generated by AI. Please verify key information.",
         "lang_toggle_btn": "中文",
-        "export_format_label": "Export Format",
-        "export_btn": "Export Conclusion",
         "export_file_label": "Download exported conclusion",
-        "export_hint": "Markdown / PDF / Word export is available. Long screenshot and community sharing are planned.",
         "skills_download_fallback": SKILLS_DOWNLOAD_FALLBACK_HINT_EN,
         "skills_download_btn": SKILLS_DOWNLOAD_BUTTON_TEXT_EN,
         "skills_download_copied": SKILLS_DOWNLOAD_COPIED_TEXT_EN,
+        "skills_download_title": "Download Skills",
+        "progress_search": "Search",
+        "progress_found": "Found {n} results",
+        "progress_provider_mode": "Provider mode",
+        "progress_sources_hit": "Sources hit",
+        "progress_code_exec": "Code execution",
+        "progress_output": "Output",
+        "progress_executed": "Executed",
+        "progress_untitled": "Untitled",
+        "progress_process_summary": "Thinking & search process (done — click to expand)",
+        "btn_settings_title": "Settings",
+        "btn_export_title": "Export",
+        "btn_stop_title": "Stop research",
+        "btn_run_title": "Start research",
         "output_detail_labels": {
             "compact": "Compact",
             "balanced": "Balanced",
@@ -367,32 +399,58 @@ I18N = {
         "page_title": "OpenClaw-MiroSearch - 深度研究",
         "nav_brand_text": "OpenClaw-MiroSearch 深度研究",
         "hero_title": "深度研究，洞察未来",
-        "hero_subtitle": "不止于聊天，用可验证的检索与推理完成研究任务。",
+        "hero_subtitle": "用可验证的检索与推理完成研究任务。",
         "input_placeholder": "请输入你的研究问题...",
-        "btn_stop": "⏹ 停止",
-        "btn_run": "开始研究 ➤",
+        "btn_stop": "停止",
+        "btn_run": "开始研究",
+        "btn_settings": "设置",
+        "settings_modal_title": "设置",
+        "btn_close": "关闭",
         "output_label": "研究进度",
-        "output_waiting": "*等待开始研究...*",
+        "output_waiting": "### 准备就绪\n\n在上方输入问题，点击 **开始研究**。\n\n进度、来源与最终报告会显示在这里。",
         "options_title": "Options / 高级配置",
         "mode_label": "检索模式",
-        "mode_info": "verified=多轮校验(高质量源) / research=质量优先 / balanced=推荐默认 / quota=额度优先 / thinking=纯思考 / production-web=生产风格",
+        "mode_info": "日常用「均衡」；要多源交叉验证用「交叉验证」。带「高级」的一般不用。",
         "search_profile_label": "检索源策略",
-        "search_profile_info": "searxng-first=默认 / serp-first=Serp优先 / multi-route=串行聚合 / parallel=并发聚合 / parallel-trusted=并发+置信不足串行高信源补检 / searxng-only=仅SearXNG",
+        "search_profile_info": "当前生效的默认值：{profile}。仅在对应检索源已配置时才建议更换。",
         "search_result_num_label": "单轮检索条数",
-        "search_result_num_info": "每次 google_search 聚合返回的结果上限，建议 20 或 30 用于交叉验证。",
+        "search_result_num_info": "每轮检索返回条数 · 默认 {n}",
         "verification_rounds_label": "最少检索轮次（verified 生效）",
-        "verification_rounds_info": "仅在 verified 模式下用于强制多轮检索门槛。",
+        "verification_rounds_info": "仅 verified 模式生效",
         "output_detail_label": "输出篇幅",
-        "output_detail_info": "精简=当前短篇幅 / 适中=核心结论+必要非核心信息 / 详细=超长报告（默认）",
+        "output_detail_info": "篇幅越长越耗 token · 默认 {level}",
+        "settings_hint": "不知道这些参数怎么选？点下方预设即可，日常使用推荐「均衡推荐」。",
+        "preset_quick": "快速了解",
+        "preset_balanced": "均衡推荐",
+        "preset_deep": "深度研究",
+        "settings_preset_filled": "已填入「{preset}」配置 · 点击「应用」生效",
+        "references_heading": "参考来源",
+        "btn_settings_reset": "恢复默认",
+        "btn_settings_apply": "应用",
+        "settings_applied": "已应用 · {summary} · 下一次运行生效",
+        "settings_reset": "已恢复默认 · {summary} · 下一次运行生效",
+        "settings_summary_join": " · ",
+        "settings_summary_rounds": "每轮 {n} 条",
         "footer_text": "由 AI 生成，请对关键信息进行复核。",
         "lang_toggle_btn": "English",
-        "export_format_label": "导出格式",
-        "export_btn": "导出结论",
         "export_file_label": "下载导出文件",
-        "export_hint": "已支持 Markdown / PDF / Word 导出；长截图与社区分享已纳入规划。",
         "skills_download_fallback": SKILLS_DOWNLOAD_FALLBACK_HINT_CN,
         "skills_download_btn": SKILLS_DOWNLOAD_BUTTON_TEXT_CN,
         "skills_download_copied": SKILLS_DOWNLOAD_COPIED_TEXT_CN,
+        "skills_download_title": "下载 Skills",
+        "progress_search": "检索",
+        "progress_found": "找到 {n} 条结果",
+        "progress_provider_mode": "检索模式",
+        "progress_sources_hit": "命中搜索源",
+        "progress_code_exec": "代码执行",
+        "progress_output": "输出",
+        "progress_executed": "已执行",
+        "progress_untitled": "无标题",
+        "progress_process_summary": "思考与检索过程（已完成，点击展开）",
+        "btn_settings_title": "设置",
+        "btn_export_title": "导出",
+        "btn_stop_title": "停止研究",
+        "btn_run_title": "开始研究",
         "output_detail_labels": {
             "compact": "精简",
             "balanced": "适中",
@@ -514,23 +572,152 @@ DETAIL_DETAILED_MAIN_AGENT_MAX_TURNS = max(
     1, _env_int("DETAIL_DETAILED_MAIN_AGENT_MAX_TURNS", 20)
 )
 
-RESEARCH_MODE_CHOICES = [
-    "production-web",
-    "verified",
-    "research",
-    "balanced",
-    "quota",
-    "thinking",
-]
+# (chinese, english) per option key — the settings modal is the only consumer,
+# so labels travel with the language toggle instead of staying Chinese-only.
+RESEARCH_MODE_LABELS = {
+    "balanced": ("均衡（推荐）", "Balanced (recommended)"),
+    "verified": ("交叉验证", "Cross-verified"),
+    "research": ("深挖研究", "Deep research"),
+    "production-web": ("生产网页（高级）", "Web producer (advanced)"),
+    "quota": ("配额优先（高级）", "Quota-saver (advanced)"),
+    "thinking": ("强推理（高级）", "Heavy reasoning (advanced)"),
+}
 
-SEARCH_PROFILE_CHOICES = [
-    "searxng-first",
-    "serp-first",
-    "multi-route",
-    "parallel",
-    "parallel-trusted",
-    "searxng-only",
-]
+SEARCH_PROFILE_LABELS = {
+    "searxng-first": ("优先 SearXNG", "Prefer SearXNG"),
+    "serp-first": ("优先 SERP", "Prefer SERP API"),
+    "multi-route": ("多路融合", "Multi-route merge"),
+    "parallel": ("并行更广", "Parallel broad"),
+    "parallel-trusted": ("并行可信源", "Parallel trusted sources"),
+    "searxng-only": ("仅 SearXNG", "SearXNG only"),
+}
+
+# 每个选项擅长什么——设置弹窗里跟随选中项展示（中/英与 LABELS 同序）
+RESEARCH_MODE_DESCRIPTIONS = {
+    "balanced": (
+        "质量、速度与额度最均衡，日常问题首选。",
+        "Balanced quality, speed and quota; best for everyday questions.",
+    ),
+    "verified": (
+        "多轮交叉验证后才下结论，适合事实核查与重要决策。",
+        "Cross-verifies across rounds before concluding; best for fact-checking.",
+    ),
+    "research": (
+        "质量优先、允许跑得更久更深，适合复杂调研。",
+        "Quality-first and willing to run longer; best for complex topics.",
+    ),
+    "production-web": (
+        "生产稳态预设：不压缩上下文，输出更完整。",
+        "Production preset: no context compression, fuller output.",
+    ),
+    "quota": (
+        "全部切快速模型并压缩上下文，最省额度但深度下降。",
+        "Forces fast models and compression; cheapest but less depth.",
+    ),
+    "thinking": (
+        "纯思考问答，不联网检索。",
+        "Reasoning only, no web search.",
+    ),
+}
+
+SEARCH_PROFILE_DESCRIPTIONS = {
+    "searxng-first": (
+        "免费源优先，失败自动回退付费源。",
+        "Free engines first, automatic fallback to paid APIs.",
+    ),
+    "serp-first": (
+        "付费 API 优先，结果更稳定。",
+        "Paid APIs first for maximum stability.",
+    ),
+    "multi-route": (
+        "多路串行聚合去重，覆盖更全。",
+        "Serial multi-route merge with dedup; broader coverage.",
+    ),
+    "parallel": (
+        "多路并发取最快结果，速度优先。",
+        "Parallel routes, fastest response wins.",
+    ),
+    "parallel-trusted": (
+        "并发检索 + 高可信度信源补检，敏感问题最稳。",
+        "Parallel plus trusted-source recheck; most reliable for sensitive topics.",
+    ),
+    "searxng-only": (
+        "只用 SearXNG，零付费成本。",
+        "SearXNG only; zero paid-API cost.",
+    ),
+}
+
+
+def _localized_labels(labels: dict, lang: str) -> list:
+    idx = 1 if lang == LANG_EN else 0
+    return [(value[idx], key) for key, value in labels.items()]
+
+
+def _option_hint_html(descriptions: dict, key: str, lang: str) -> str:
+    idx = 1 if lang == LANG_EN else 0
+    entry = descriptions.get(key) or ("", "")
+    desc = str(entry[idx]).strip()
+    if not desc:
+        return ""
+    return f'<div class="option-hint">{html.escape(desc, quote=False)}</div>'
+
+
+def _label_for(labels: dict, key: str, lang: str) -> str:
+    entry = labels.get(key)
+    if not entry:
+        return key
+    return entry[1] if lang == LANG_EN else entry[0]
+
+
+def _build_setting_infos(lang: str) -> dict:
+    """Field hints that quote the values actually in effect, not literals."""
+    i18n = I18N[lang]
+    return {
+        "mode_info": i18n["mode_info"],
+        "search_profile_info": i18n["search_profile_info"].format(
+            profile=_label_for(
+                SEARCH_PROFILE_LABELS,
+                _normalize_search_profile(DEFAULT_SEARCH_PROFILE),
+                lang,
+            )
+        ),
+        "search_result_num_info": i18n["search_result_num_info"].format(
+            n=_normalize_search_result_num(DEFAULT_SEARCH_RESULT_NUM)
+        ),
+        "verification_rounds_info": i18n["verification_rounds_info"],
+        "output_detail_info": i18n["output_detail_info"].format(
+            level=i18n["output_detail_labels"][
+                _normalize_output_detail_level(DEFAULT_OUTPUT_DETAIL_LEVEL)
+            ]
+        ),
+    }
+
+
+def _build_settings_summary(
+    lang: str,
+    mode: str,
+    output_detail_level: str,
+    search_profile: str,
+    search_result_num: int,
+) -> str:
+    i18n = I18N[lang]
+    return i18n["settings_summary_join"].join(
+        [
+            _label_for(RESEARCH_MODE_LABELS, _normalize_research_mode(mode), lang),
+            i18n["output_detail_labels"][
+                _normalize_output_detail_level(output_detail_level)
+            ],
+            _label_for(
+                SEARCH_PROFILE_LABELS,
+                _normalize_search_profile(search_profile),
+                lang,
+            ),
+            i18n["settings_summary_rounds"].format(
+                n=_normalize_search_result_num(search_result_num)
+            ),
+        ]
+    )
+
 
 SEARCH_STAGE_TOOL_NAMES = {
     "google_search",
@@ -555,6 +742,24 @@ TOOL_DISPLAY_NAMES: dict[str, str] = {
 
 def _tool_display_name(raw_name: str) -> str:
     return TOOL_DISPLAY_NAMES.get(raw_name, raw_name)
+
+
+def _progress_copy(key: str, *, lang: Optional[str] = None, **fmt) -> str:
+    """UI progress strings; follow explicit lang, else current UI lang ContextVar."""
+    try:
+        current = _UI_LANG.get()
+    except LookupError:
+        current = DEFAULT_LANG
+    resolved = lang if lang in I18N else (current if current in I18N else DEFAULT_LANG)
+    template = (
+        I18N.get(resolved, I18N[DEFAULT_LANG]).get(key)
+        or I18N[DEFAULT_LANG].get(key)
+        or key
+    )
+    try:
+        return str(template).format(**fmt)
+    except Exception:
+        return str(template)
 
 
 RENDER_MODE_CHOICES = {"full", "summary_with_details", "summary_only"}
@@ -602,6 +807,7 @@ SEARCH_PROFILE_ENV_MAP: Dict[str, Dict[str, str]] = {
     "searxng-only": {
         "SEARCH_PROVIDER_ORDER": "searxng",
         "SEARCH_PROVIDER_MODE": "fallback",
+        "SEARCH_PROVIDER_ORDER_STRICT": "1",
     },
 }
 
@@ -822,7 +1028,26 @@ def _normalize_output_detail_level(level: Optional[str]) -> str:
         resolved_default = "detailed"
     if level is None:
         return resolved_default
-    normalized_level = str(level).strip().lower()
+    raw = str(level).strip()
+    alias = {
+        "compact": "compact",
+        "balanced": "balanced",
+        "detailed": "detailed",
+        "精简": "compact",
+        "适中": "balanced",
+        "详细": "detailed",
+        "详细（默认）": "detailed",
+    }
+    for key, label in (OUTPUT_DETAIL_LEVEL_LABELS or {}).items():
+        alias[str(label).strip()] = key
+        alias[str(label).strip().lower()] = key
+    # i18n dropdown may pass localized labels too
+    for lang_map in (I18N or {}).values():
+        labels = (lang_map or {}).get("output_detail_labels") or {}
+        for key, label in labels.items():
+            alias[str(label).strip()] = key
+            alias[str(label).strip().lower()] = key
+    normalized_level = alias.get(raw) or alias.get(raw.lower())
     if normalized_level in OUTPUT_DETAIL_LEVEL_CHOICES:
         return normalized_level
     logger.warning("未知输出篇幅档位 %s，回退到 %s", level, resolved_default)
@@ -1065,6 +1290,8 @@ def load_miroflow_config(config_overrides: Optional[object] = None) -> DictConfi
                 else:
                     overrides.append(f"{key}={value}")
 
+    overrides = apply_explicit_budget_overrides(overrides)
+
     try:
         cfg = compose(config_name="config", overrides=overrides)
         return cfg
@@ -1089,7 +1316,7 @@ def _build_search_environment(
     search_result_num: int,
 ) -> Dict[str, str]:
     """构建创建检索 MCP 参数时使用的临时环境。"""
-    search_env = dict(
+    search_env = apply_user_search_env_precedence(
         SEARCH_PROFILE_ENV_MAP.get(
             search_profile,
             SEARCH_PROFILE_ENV_MAP["searxng-first"],
@@ -1843,26 +2070,75 @@ def _init_render_state():
     }
 
 
+_RUNTIME_PHASE_LABELS = {
+    "初始化": "准备中",
+    "推理": "分析推理",
+    "检索": "检索资料",
+    "总结": "生成报告",
+    "校验": "交叉校验",
+    "工具调用": "调用工具",
+    "异常": "执行出现问题",
+    "已取消": "任务已取消",
+    "完成": "任务已完成",
+}
+
+# agent 心跳里的内部措辞 → 用户可读文案；返回 "" 表示与阶段重复、不展示
+_RUNTIME_DETAIL_DROP = {
+    "模型推理中",
+    "主模型推理中",
+    "交叉校验中（无工具）",
+    "进入最终总结阶段",
+    "执行出现错误",
+    "任务已取消",
+    "任务已完成",
+}
+
+
+def _clean_runtime_detail(detail: str) -> str:
+    text = str(detail or "").strip()
+    if not text:
+        return ""
+    retry_match = re.match(r"^最终总结生成中（第 (\d+)/(\d+) 次）$", text)
+    if retry_match:
+        if retry_match.group(1) == "1":
+            return "生成最终总结中"
+        return f"第 {retry_match.group(1)} 次重试生成总结"
+    if text in _RUNTIME_DETAIL_DROP:
+        return ""
+    if text == "交叉校验降级重试":
+        return "校验重试中"
+    if text == "输出前交叉校验汇总中":
+        return "输出前校验中"
+    if text == "命中交叉校验门槛，追加检索指令":
+        return "校验未通过，补充检索"
+    tool_running = re.match(r"^(.+?) 执行中$", text)
+    if tool_running:
+        return f"正在{tool_running.group(1)}"
+    return text
+
+
 def _format_runtime_status_label(
     state: dict, heartbeat_ts: Optional[float] = None
 ) -> str:
+    # heartbeat_ts 保留在签名中（调用方传心跳时间戳），但不再展示给用户
+    del heartbeat_ts
     runtime_stage = state.get("runtime_stage") or {}
     phase = str(runtime_stage.get("phase") or "执行中")
     turn = int(runtime_stage.get("turn") or 0)
     search_round = int(runtime_stage.get("search_round") or 0)
-    detail = str(runtime_stage.get("detail") or "").strip()
-    parts = [f"生成中 · 阶段:{phase}"]
+    detail = _clean_runtime_detail(str(runtime_stage.get("detail") or ""))
+    phase_label = _RUNTIME_PHASE_LABELS.get(phase, phase)
+    if phase in ("异常", "已取消", "完成"):
+        parts = [phase_label]
+    else:
+        parts = ["研究进行中", phase_label]
     if turn > 0:
-        parts.append(f"回合:{turn}")
+        parts.append(f"第 {turn} 回合")
     if search_round > 0:
-        parts.append(f"检索轮次:{search_round}")
-    if heartbeat_ts:
-        parts.append(
-            f"最近心跳 {time.strftime('%H:%M:%S', time.localtime(float(heartbeat_ts)))}"
-        )
-    label = " | ".join(parts)
+        parts.append(f"第 {search_round} 轮检索")
+    label = " · ".join(parts)
     if detail:
-        label = f"{label} | {detail}"
+        label = f"{label} · {detail}"
     return label
 
 
@@ -1986,20 +2262,24 @@ def _format_search_results(
     if query:
         lines.append('<div class="search-header">')
         lines.append('<span class="search-icon">🔍</span>')
-        lines.append(f'<span class="search-query">Search: "{query}"</span>')
+        lines.append(
+            f'<span class="search-query">{_progress_copy("progress_search")}: "{query}"</span>'
+        )
         lines.append("</div>")
 
     # Results count
     if results:
-        lines.append(f'<div class="search-count">≡ Found {len(results)} results</div>')
+        lines.append(
+            f'<div class="search-count">≡ {_progress_copy("progress_found", n=len(results))}</div>'
+        )
         if provider_mode:
             lines.append(
-                f'<div class="search-count">检索模式: <strong>{provider_mode}</strong></div>'
+                f'<div class="search-count">{_progress_copy("progress_provider_mode")}: <strong>{provider_mode}</strong></div>'
             )
         if providers_with_results:
             providers_text = ", ".join(providers_with_results)
             lines.append(
-                f'<div class="search-count">命中搜索源: <strong>{providers_text}</strong></div>'
+                f'<div class="search-count">{_progress_copy("progress_sources_hit")}: <strong>{providers_text}</strong></div>'
             )
         if confidence_info:
             score = confidence_info.get("score")
@@ -2035,7 +2315,7 @@ def _format_search_results(
             )
         visible_count = min(len(results), safe_display_limit)
         for item in results[:visible_count]:
-            title = item.get("title", "Untitled")
+            title = item.get("title") or _progress_copy("progress_untitled")
             link = item.get("link", "#")
 
             lines.append(f"""<a href="{link}" target="_blank" class="search-result-item">
@@ -2133,11 +2413,15 @@ def _extract_google_search_step_summary(tool_input: dict, tool_output: dict) -> 
     line_parts: List[str] = []
     if query:
         truncated_query = _truncate_single_line(query, SEARCH_STEP_QUERY_PREVIEW_CHARS)
-        line_parts.append(f'Search: "{html.escape(truncated_query)}"')
+        line_parts.append(
+            f'{_progress_copy("progress_search")}: "{html.escape(truncated_query)}"'
+        )
     if result_count is not None:
-        line_parts.append(f"Found {result_count} results")
+        line_parts.append(_progress_copy("progress_found", n=result_count))
     if provider_mode:
-        line_parts.append(f"检索模式: {html.escape(provider_mode)}")
+        line_parts.append(
+            f'{_progress_copy("progress_provider_mode")}: {html.escape(provider_mode)}'
+        )
     if providers_with_results:
         provider_text = ",".join(providers_with_results)
         provider_text = _truncate_single_line(
@@ -2185,17 +2469,21 @@ def _format_sogou_search_results(tool_input: dict, tool_output: dict) -> str:
     if query:
         lines.append('<div class="search-header">')
         lines.append('<span class="search-icon">🔍</span>')
-        lines.append(f'<span class="search-query">Search: "{query}"</span>')
+        lines.append(
+            f'<span class="search-query">{_progress_copy("progress_search")}: "{query}"</span>'
+        )
         lines.append("</div>")
 
     # Results count
     if results:
-        lines.append(f'<div class="search-count">≡ Found {len(results)} results</div>')
+        lines.append(
+            f'<div class="search-count">≡ {_progress_copy("progress_found", n=len(results))}</div>'
+        )
 
         # Results list
         lines.append('<div class="search-results">')
         for item in results[:10]:  # Limit to 10 results
-            title = item.get("title", "Untitled")
+            title = item.get("title") or _progress_copy("progress_untitled")
             link = item.get("url", item.get("link", "#"))
 
             lines.append(f"""<a href="{link}" target="_blank" class="search-result-item">
@@ -2238,9 +2526,11 @@ def _extract_sogou_search_step_summary(tool_input: dict, tool_output: dict) -> s
     line_parts: List[str] = []
     if query:
         truncated_query = _truncate_single_line(query, SEARCH_STEP_QUERY_PREVIEW_CHARS)
-        line_parts.append(f'Search: "{html.escape(truncated_query)}"')
+        line_parts.append(
+            f'{_progress_copy("progress_search")}: "{html.escape(truncated_query)}"'
+        )
     if result_count is not None:
-        line_parts.append(f"Found {result_count} results")
+        line_parts.append(_progress_copy("progress_found", n=result_count))
     return f"🔍 {' | '.join(line_parts)}" if line_parts else ""
 
 
@@ -2355,7 +2645,7 @@ def _merge_final_summary_blocks(
 
 _REFERENCES_HEADING_RE = re.compile(
     r"(?im)^[ \t]*(?:#{1,6}[ \t]+)?(?:\*+[ \t]*)?"
-    r"(?:参考文献|参考资料|引用|references?|sources?)"
+    r"(?:参考文献|参考资料|参考来源|引用|references?|sources?)"
     r"(?:[ \t]*\*+)?[ \t]*$"
 )
 _REFERENCE_ENTRY_RE = re.compile(r"\[(\d{1,4})\][^\n]*?(https?://\S+)")
@@ -2642,37 +2932,391 @@ _DIAGNOSTIC_FINAL_ANSWER_HEADER_RE = re.compile(
 
 
 def _strip_diagnostic_markers(text: str) -> str:
-    """剥离最终总结里来自 OutputFormatter 的调试分段（Final Answer / Extracted / Token Usage）。"""
+    """剥离最终总结里来自 OutputFormatter 的调试分段（Final Answer / Extracted / Token Usage）。
+
+    Also drops truncated ``https://www`` stub reference lines so Web export
+    does not look mid-cut.
+    """
     if not text:
         return text
     cleaned = _DIAGNOSTIC_FINAL_ANSWER_HEADER_RE.sub("", text, count=1)
     cleaned = _DIAGNOSTIC_TRUNCATE_RE.sub("", cleaned)
+    # Pricing / token dump variants that lack the exact header
+    cleaned = re.sub(
+        r"(?ms)\n?-{5,}.*?\b(?:Pricing is disabled|Total Input Tokens)\b.*",
+        "",
+        cleaned,
+    )
+    # Drop dangling incomplete URL stubs in References
+    kept = []
+    for line in cleaned.splitlines():
+        s = line.strip()
+        if re.fullmatch(r"(?:\d+\.\s*)?https?://(?:www\.)?", s):
+            continue
+        if re.search(r"https?://[\w\-]+$", s) and s.rstrip("/").count(".") == 0:
+            # e.g. https://www with no TLD
+            continue
+        kept.append(line)
+    cleaned = "\n".join(kept)
     return cleaned.rstrip()
 
 
-def _build_summary_section(final_summary_blocks: List[str]) -> List[str]:
+def _prepare_user_facing_report_safe(
+    text: str, detail_level: Optional[str] = None
+) -> str:
+    """Prefer agent presentation pipeline; never fail the Gradio stream.
+
+    Threads the stream's output_detail_level into prepare_user_facing_report so
+    compact mode stays compact (no auto 内容分析 / Mermaid topology). The
+    pipeline is a no-op for reports the orchestrator already prepared.
+    """
+    raw = str(text or "")
+    resolved_detail = _normalize_output_detail_level(detail_level)
+    try:
+        return prepare_user_facing_report(raw, detail_level=resolved_detail)
+    except Exception:
+        return _strip_diagnostic_markers(raw)
+
+
+def _decorate_report_for_web(
+    markdown_text: str, detail_level: Optional[str] = None
+) -> str:
+    """Add lightweight HTML wrappers so Gradio renders clearer report chrome.
+
+    Keeps Markdown headings intact (avoid replacing ``##`` with raw ``<h2>``)
+    so Gradio's Markdown renderer does not drop subsequent body formatting.
+    Citation chip class is applied after linkify (caller order).
+    """
+    text = str(markdown_text or "")
+    if not text.strip():
+        return text
+
+    resolved_detail = _normalize_output_detail_level(detail_level)
+    if resolved_detail == "compact":
+        # Hard guard: never show deep-dive folds on compact even if upstream leaked them.
+        text = re.sub(
+            r"(?ms)^##\s*[^\n]*(?:深入了解|深入分析)[^\n]*\n+.*?(?=^##\s|\Z)",
+            "",
+            text,
+        )
+
+    # 1) Glance card for consumer ## 结论
+    def _wrap_glance(match: "re.Match[str]") -> str:
+        body = (match.group(1) or "").strip()
+        conf_m = re.search(r"<!--\s*confidence:(high|mid|low)\s*-->", body)
+        level = conf_m.group(1) if conf_m else "mid"
+        body = re.sub(r"<!--\s*confidence:(?:high|mid|low)\s*-->\s*", "", body)
+        label_m = re.search(r"\*\*?置信度：([高中低])\*\*?", body)
+        if label_m:
+            label = f"置信度：{label_m.group(1)}"
+        else:
+            label = {
+                "high": "置信度：高",
+                "mid": "置信度：中",
+                "low": "置信度：低",
+            }.get(level, "置信度：中")
+        conf = (
+            f'<span class="confidence-badge confidence-{level}">'
+            f"{html.escape(label, quote=False)}</span>"
+        )
+        # Strip every leftover confidence label (bold/plain, whole line or inline),
+        # then keep the answer in ONE escaped <div>: Gradio Markdown drops bare
+        # text / <p> siblings inside HTML blocks.
+        body = re.sub(
+            r"(?m)^[ \t]*\*{0,2}置信度：[高中低]\*{0,2}[ \t]*$"
+            r"|\*{0,2}置信度：[高中低]\*{0,2}",
+            "",
+            body,
+        ).strip()
+        answer = body.strip() if body.strip() else "（结论正文缺失，请展开过程或重试）"
+        # Collapse excessive blank lines but keep readable line breaks as <br>.
+        answer_html = html.escape(answer, quote=False).replace("\n", "<br>")
+        return (
+            f'<div class="report-glance">'
+            f'<div class="report-glance-meta">'
+            f'<span class="report-glance-kicker">结论</span>'
+            f"{conf}"
+            f"</div>"
+            f'<p class="report-glance-body">{answer_html}</p>'
+            f"</div>\n\n"
+        )
+
+    text = re.sub(
+        r"(?ms)^##\s*结论\s*\n+(.*?)(?=^##\s|\Z)",
+        _wrap_glance,
+        text,
+        count=1,
+    )
+
+    # 2) Legacy TL;DR callout (skip if already glance-wrapped; exclude bare 结论)
+    def _wrap_tldr(match: "re.Match[str]") -> str:
+        title = html.escape(match.group(1).strip(), quote=False)
+        body = (match.group(2) or "").strip()
+        conf = ""
+        conf_m = re.search(
+            r"(高|中|低)\s*置信|confidence\s*[:=]?\s*(high|medium|low|\d+%?)",
+            match.group(1) + "\n" + body,
+            re.I,
+        )
+        if conf_m:
+            label = html.escape(conf_m.group(0), quote=False)
+            level = "mid"
+            if re.search(r"高|high", label, re.I):
+                level = "high"
+            elif re.search(r"低|low", label, re.I):
+                level = "low"
+            conf = f'<span class="confidence-badge confidence-{level}">{label}</span>'
+        return (
+            f'<div class="report-tldr">\n\n'
+            f'<div class="report-tldr-head"><strong>{title}</strong>{conf}</div>\n\n'
+            f"{body}\n\n"
+            f"</div>\n\n"
+        )
+
+    if 'class="report-glance"' not in text:
+        text = re.sub(
+            r"(?ms)^##\s*([^\n]*(?:TL;?DR|总览|Executive Summary)[^\n]*)\n+(.*?)(?=^##\s|\Z)",
+            _wrap_tldr,
+            text,
+            count=1,
+        )
+
+    # 3) Conflict tag on heading (keep open, short)
+    text = re.sub(
+        r"(?m)^(##\s*[^\n]*(?:争议与不确定|冲突|不确定|Conflicts?|Uncertainties?)[^\n]*)$",
+        r'\1 <span class="conflict-tag">冲突/不确定</span>',
+        text,
+        count=1,
+    )
+
+    # 4) Fold heavy sections (evidence / deep dive). Nested headings are ###.
+    def _fold_section(match: "re.Match[str]") -> str:
+        heading = match.group(1).strip()
+        body = (match.group(2) or "").strip()
+        if not body:
+            return ""  # never show an empty fold
+        n_links = len(re.findall(r"https?://", body))
+        n_items = len(re.findall(r"(?m)^\s*(?:\d+\.|[-*•])\s+", body))
+        n = n_links or n_items
+        count_hint = f"（{n}）" if n else ""
+        title = html.escape(re.sub(r"^##\s*", "", heading), quote=False)
+        # Mermaid card inside fold body
+        body = re.sub(
+            r"(?ms)(###\s*[^\n]*(?:关系拓扑|Relationship Map|拓扑)[^\n]*\n+)(```mermaid\n.*?```)",
+            r'<div class="mermaid-card">\n\n\1\2\n\n</div>\n\n',
+            body,
+            count=1,
+        )
+        return (
+            f'<details class="report-fold">\n'
+            f"<summary>{title}{count_hint}</summary>\n\n"
+            f"{body}\n\n"
+            f"</details>\n\n"
+        )
+
+    text = re.sub(
+        r"(?ms)^(##\s*[^\n]*(?:证据与来源|证据和来源|深入了解|深入分析)[^\n]*)\n+(.*?)(?=^##\s|\Z)",
+        _fold_section,
+        text,
+    )
+
+    text = text.replace('class="ref-citation"', 'class="ref-citation ref-chip"')
+    return text
+
+
+def _keep_last_report_glance(decorated_blocks: List[str]) -> List[str]:
+    """Keep a single consumer glance card when streamed summaries differ only by confidence.
+
+    Balanced/detailed merge uses ``all_unique``, so an early mid-confidence reshape and a
+    later high-confidence reshape can both survive. Rendering both produces duplicate
+    「结论 / 置信度」 chrome in the a11y tree. Prefer the latest glance-bearing block.
+    """
+    if len(decorated_blocks) <= 1:
+        return decorated_blocks
+    glance_indexes = [
+        idx
+        for idx, block in enumerate(decorated_blocks)
+        if 'class="report-glance"' in str(block or "")
+    ]
+    if len(glance_indexes) <= 1:
+        return decorated_blocks
+    drop = set(glance_indexes[:-1])
+    return [block for idx, block in enumerate(decorated_blocks) if idx not in drop]
+
+
+_REPORT_SOURCE_TOOL_NAMES = {"google_search", "sogou_search"}
+_REPORT_SCRAPE_TOOL_NAMES = {
+    "scrape",
+    "scrape_website",
+    "scrape_webpage",
+    "scrape_and_extract_info",
+}
+# 参考来源上限：论文式文末列表，太多反而淹没阅读
+MAX_REPORT_SOURCES = 30
+
+
+def _normalize_source_url(url: Any) -> str:
+    candidate = str(url or "").strip()
+    if not candidate:
+        return ""
+    if not candidate.lower().startswith(("http://", "https://")):
+        return ""
+    return candidate
+
+
+def _source_display_title(title: Any, url: str) -> str:
+    # 搜索结果标题常带 <b> 等高亮标签，剥掉避免破坏 Markdown 链接文本
+    text = re.sub(r"<[^>]+>", "", str(title or ""))
+    text = re.sub(r"\s+", " ", text).strip()
+    if text:
+        return text[:120]
+    host = urlparse(url).netloc or url
+    return host
+
+
+def _collect_report_sources(state: dict) -> List[Dict[str, str]]:
+    """汇总本轮研究实际命中/访问过的来源，按首次出现顺序去重。"""
+    sources: List[Dict[str, str]] = []
+    seen_urls = set()
+
+    def _add(url: Any, title: Any = "") -> None:
+        normalized = _normalize_source_url(url)
+        if not normalized or normalized in seen_urls:
+            return
+        seen_urls.add(normalized)
+        sources.append(
+            {"url": normalized, "title": _source_display_title(title, normalized)}
+        )
+
+    for agent_id in (state or {}).get("agent_order", []):
+        agent = (state or {}).get("agents", {}).get(agent_id, {})
+        for call_id in agent.get("tool_call_order", []):
+            call = agent.get("tools", {}).get(call_id, {})
+            tool_name = call.get("tool_name", "")
+            tool_input = call.get("input", {})
+            tool_output = call.get("output", {})
+            if tool_name in _REPORT_SOURCE_TOOL_NAMES:
+                result_data: Dict[str, Any] = {}
+                result_payload = (
+                    tool_output.get("result", "")
+                    if isinstance(tool_output, dict)
+                    else ""
+                )
+                if isinstance(result_payload, str) and result_payload.strip():
+                    try:
+                        parsed = json.loads(result_payload)
+                        if isinstance(parsed, dict):
+                            result_data = parsed
+                    except json.JSONDecodeError:
+                        result_data = {}
+                elif isinstance(result_payload, dict):
+                    result_data = result_payload
+                if not result_data and isinstance(tool_output, dict):
+                    result_data = tool_output
+                organic = result_data.get("organic")
+                if not isinstance(organic, list):
+                    organic = result_data.get("Pages")
+                if isinstance(organic, list):
+                    for item in organic:
+                        if not isinstance(item, dict):
+                            continue
+                        _add(
+                            item.get("link") or item.get("url"),
+                            item.get("title") or item.get("siteName"),
+                        )
+            elif tool_name in _REPORT_SCRAPE_TOOL_NAMES and isinstance(
+                tool_input, dict
+            ):
+                _add(tool_input.get("url") or tool_input.get("link"))
+            if len(sources) >= MAX_REPORT_SOURCES:
+                return sources
+    return sources
+
+
+def _build_references_section(sources: List[Dict[str, str]]) -> List[str]:
+    if not sources:
+        return []
+    heading = _progress_copy("references_heading")
+    lines = ["", "\n---\n", f"### {heading}\n"]
+    for idx, src in enumerate(sources, 1):
+        title = str(src.get("title") or src["url"]).replace("[", "(").replace("]", ")")
+        lines.append(f"[{idx}] [{title}]({src['url']})")
+    return lines
+
+
+def _build_summary_section(
+    final_summary_blocks: List[str],
+    output_detail_level: Optional[str] = None,
+) -> List[str]:
     if not final_summary_blocks:
         return []
     # 前置空字符串项：确保和上一个 HTML block（如 search-step-board 的 </div>）之间
     # 有一个空行，否则 CommonMark 会把 `## 📋 研究总结` 视为 HTML block 的延续，
     # 导致 `## ` 字面显示而非作为标题渲染。
-    lines = ["", "## 📋 研究总结\n\n"]
+    # Glance card already leads with 结论; keep a quieter label.
+    lines = ["", "### 研究报告\n\n"]
+    resolved_detail = _normalize_output_detail_level(output_detail_level)
     # 先剥离 OutputFormatter 注入的调试分段标记，再做 LaTeX → Markdown 规范化
-    sanitized = (_strip_diagnostic_markers(block) for block in final_summary_blocks)
+    sanitized = (
+        _prepare_user_facing_report_safe(block, detail_level=resolved_detail)
+        for block in final_summary_blocks
+    )
     normalized = (_normalize_latex_like_markup(block) for block in sanitized)
     rewritten = (_humanize_pipeline_fallback(block) for block in normalized)
-    lines.extend(_linkify_reference_citations(block) for block in rewritten)
+    # linkify first, then decorate so ref-chip class lands on citation anchors
+    linkified = [_linkify_reference_citations(block) for block in rewritten]
+    decorated = [
+        _decorate_report_for_web(block, detail_level=resolved_detail)
+        for block in linkified
+    ]
+    lines.extend(_keep_last_report_glance(decorated))
     return lines
 
 
-def _build_process_details_section(process_lines: List[str]) -> List[str]:
+def _set_thought_cards_expanded(
+    process_lines: List[str], *, expanded: bool
+) -> List[str]:
+    """Streaming: keep thoughts open. Finished: fold them shut inside process panel."""
+    out: List[str] = []
+    for line in process_lines:
+        text = str(line or "")
+        if expanded:
+            text = text.replace(
+                '<details class="thought-card">',
+                '<details class="thought-card" open>',
+            )
+        else:
+            text = text.replace(
+                '<details class="thought-card" open>',
+                '<details class="thought-card">',
+            )
+        out.append(text)
+    return out
+
+
+def _build_process_details_section(
+    process_lines: List[str],
+    *,
+    step_count: Optional[int] = None,
+) -> List[str]:
     if not process_lines:
         return []
+    label = _progress_copy("progress_process_summary")
+    if step_count and step_count > 0:
+        label = f"{label} · {step_count}"
+    # data-collapsed + fingerprint: Gradio markdown morph can preserve a stale
+    # [open] from an earlier stream tick; fingerprint remounts and JS force-closes once.
+    fingerprint = (
+        abs(hash((label, len(process_lines), step_count or 0))) % 1_000_000_007
+    )
     lines = [
-        "\n\n---\n\n",
-        '<details class="process-details">\n<summary>🧭 查看检索过程（中间步骤）</summary>\n\n',
+        "\n\n",
+        (
+            f'<details class="process-details" data-collapsed="1" data-fp="{fingerprint}">\n'
+            f"<summary>🧭 {html.escape(label, quote=False)}</summary>\n\n"
+        ),
     ]
-    lines.extend(process_lines)
+    lines.extend(_set_thought_cards_expanded(process_lines, expanded=False))
     lines.append("\n</details>\n")
     return lines
 
@@ -2685,6 +3329,12 @@ def _build_search_steps_section(search_step_lines: List[str]) -> List[str]:
         normalized_line = str(step_line or "").strip()
         if not normalized_line:
             continue
+        # Builders already html.escape query/provider fragments; still neutralize
+        # any raw angle brackets that slipped through without double-escaping entities.
+        if "<" in normalized_line or ">" in normalized_line:
+            # Only escape if it looks like raw tags (not already entity-encoded)
+            if "&lt;" not in normalized_line and "&gt;" not in normalized_line:
+                normalized_line = html.escape(normalized_line, quote=False)
         lines.append(f'<div class="search-step-item">{normalized_line}</div>')
     lines.append("</div>")
     return lines
@@ -2711,8 +3361,125 @@ def _build_export_filename(export_format: str, task_id: Optional[str] = None) ->
     return f"{EXPORT_FILENAME_PREFIX}{suffix}-{timestamp}-{unique_suffix}{extension}"
 
 
+def _find_details_block_end(text: str, block_start: int) -> int:
+    open_tag_len = len("<details")
+    close_tag = "</details>"
+    depth = 1
+    cursor = block_start + open_tag_len
+    while depth > 0:
+        next_open = text.find("<details", cursor)
+        next_close = text.find(close_tag, cursor)
+        if next_close == -1:
+            return len(text)
+        if next_open != -1 and next_open < next_close:
+            depth += 1
+            cursor = next_open + open_tag_len
+            continue
+        depth -= 1
+        cursor = next_close + len(close_tag)
+    return cursor
+
+
+def _split_details_block(
+    text: str, class_name: str
+) -> Optional[Tuple[str, str, str, str]]:
+    """Return (before, summary, inner, after) for the first details block of a class."""
+    opening = f'<details class="{class_name}"'
+    block_start = text.find(opening)
+    if block_start == -1:
+        return None
+    tag_end = text.find(">", block_start)
+    body_start = (
+        text.find("\n", tag_end) + 1 if tag_end != -1 else block_start + len(opening)
+    )
+    summary_match = re.match(
+        r"\s*<summary>(.*?)</summary>\s*", text[body_start:], re.DOTALL
+    )
+    summary = summary_match.group(1) if summary_match else ""
+    inner_start = body_start + (summary_match.end() if summary_match else 0)
+    block_end = _find_details_block_end(text, block_start)
+    inner = text[inner_start : block_end - len("</details>")].strip()
+    return text[:block_start], summary.strip(), inner, text[block_end:]
+
+
+def _strip_details_blocks(text: str, class_name: str) -> str:
+    while True:
+        parts = _split_details_block(text, class_name)
+        if parts is None:
+            return text
+        before, _summary, _inner, after = parts
+        text = f"{before.rstrip()}\n\n{after.lstrip()}"
+
+
+def _unwrap_report_folds(text: str) -> str:
+    while True:
+        parts = _split_details_block(text, "report-fold")
+        if parts is None:
+            return text
+        before, summary, inner, after = parts
+        title = html.unescape(re.sub(r"（\d+）\s*$", "", summary)).strip()
+        text = f"{before.rstrip()}\n\n## {title}\n\n{inner}\n\n{after.lstrip()}"
+
+
+def _plainify_report_html(text: str) -> str:
+    """Turn web-only report chrome back into plain Markdown for exported files."""
+
+    # Glance card body is HTML-escaped for the browser; restore it as the 结论 section.
+    def _restore_glance(glance_match: "re.Match[str]") -> str:
+        block = glance_match.group(0)
+        body = html.unescape(glance_match.group(1) or "")
+        body = re.sub(r"(?i)<br\s*/?>", "\n", body).strip()
+        confidence_match = re.search(
+            r'class="confidence-badge[^"]*">([^<]*)</span>', block
+        )
+        confidence = confidence_match.group(1).strip() if confidence_match else ""
+        head = f"## 结论\n\n**{confidence}**\n\n" if confidence else "## 结论\n\n"
+        return f"{head}{body}\n\n"
+
+    text = re.sub(
+        r'(?ms)<div class="report-glance">.*?'
+        r'<p class="report-glance-body">(.*?)</p>\s*</div>',
+        _restore_glance,
+        text,
+    )
+    text = re.sub(
+        r'(?ms)<div class="report-tldr">\s*'
+        r'<div class="report-tldr-head"><strong>(.*?)</strong>(.*?)</div>\s*(.*?)\n</div>',
+        lambda m: (
+            f"## {html.unescape(m.group(1).strip())}\n\n"
+            f"{html.unescape(re.sub(r'(?s)<[^>]*>', '', m.group(2)).strip())}\n\n"
+            f"{m.group(3).strip()}\n\n"
+        ),
+        text,
+    )
+    text = _unwrap_report_folds(text)
+    text = re.sub(
+        r'(?ms)<div class="mermaid-card">(.*?)</div>',
+        lambda m: f"{m.group(1).strip()}\n\n",
+        text,
+    )
+    text = re.sub(r'(?ms)\s*<span class="conflict-tag">.*?</span>', "", text)
+    text = re.sub(
+        r'(?ms)<a href="([^"]*)"[^>]*class="ref-citation[^"]*"[^>]*>(.*?)</a>',
+        lambda m: f"{m.group(2)}({html.unescape(m.group(1))})",
+        text,
+    )
+    return re.sub(r"(?m)</?(?:div|span|p)[^>]*>\s*", "", text)
+
+
+def _extract_conclusion_markdown(rendered_markdown: str) -> str:
+    """Keep only the research report: the process panel and live progress are UI-only."""
+    text = str(rendered_markdown or "")
+    heading_match = re.search(r"(?m)^###\s*研究报告[^\n]*\n", text)
+    if heading_match:
+        text = text[heading_match.start() :]
+    text = _strip_details_blocks(text, "process-details")
+    return _plainify_report_html(text)
+
+
 def _prepare_export_markdown(markdown_text: str) -> str:
-    normalized_markdown = _strip_diagnostic_markers(str(markdown_text or "")).strip()
+    conclusion = _extract_conclusion_markdown(markdown_text)
+    normalized_markdown = _strip_diagnostic_markers(conclusion).strip()
     if not normalized_markdown:
         normalized_markdown = "当前没有可导出的研究结论。"
     return normalized_markdown + "\n"
@@ -2894,8 +3661,40 @@ def _render_markdown(
     state: dict,
     render_mode: Optional[str] = None,
     final_summary_merge_strategy: Optional[str] = None,
+    output_detail_level: Optional[str] = None,
+    ui_lang: Optional[str] = None,
+) -> str:
+    resolved_lang = (
+        ui_lang
+        if ui_lang in I18N
+        else (
+            (state or {}).get("ui_lang")
+            if (state or {}).get("ui_lang") in I18N
+            else DEFAULT_LANG
+        )
+    )
+    _lang_token = _UI_LANG.set(resolved_lang)
+    try:
+        return _render_markdown_inner(
+            state,
+            render_mode=render_mode,
+            final_summary_merge_strategy=final_summary_merge_strategy,
+            output_detail_level=output_detail_level,
+            ui_lang=resolved_lang,
+        )
+    finally:
+        _UI_LANG.reset(_lang_token)
+
+
+def _render_markdown_inner(
+    state: dict,
+    render_mode: Optional[str] = None,
+    final_summary_merge_strategy: Optional[str] = None,
+    output_detail_level: Optional[str] = None,
+    ui_lang: Optional[str] = None,
 ) -> str:
     resolved_render_mode = _normalize_render_mode(render_mode, DEFAULT_UI_RENDER_MODE)
+    resolved_output_detail_level = _normalize_output_detail_level(output_detail_level)
     if resolved_render_mode == "full":
         search_display_limit = SEARCH_RESULT_DISPLAY_MAX
         scrape_preview_chars = 2200
@@ -2913,7 +3712,9 @@ def _render_markdown(
     # Render errors first if any
     if state.get("errors"):
         for err in state["errors"]:
-            error_lines.append(f'<div class="error-block">❌ {err}</div>')
+            error_lines.append(
+                f'<div class="error-block">❌ {html.escape(str(err), quote=False)}</div>'
+            )
 
     # Render all agents' content
     for agent_id in state.get("agent_order", []):
@@ -2940,10 +3741,14 @@ def _render_markdown(
                         elif "Search" in display_name:
                             display_name = "检索智能体 (Search Agent)"
 
+                        safe_name = html.escape(str(display_name), quote=False)
+                        # Escape HTML so agent text cannot break the card shell;
+                        # Markdown emphasis/links still render after entity decode.
+                        safe_content = html.escape(str(content), quote=False)
                         formatted_thought = (
-                            f'<details class="thought-card" open>\n'
-                            f"  <summary>💭 {display_name} 思考与规划</summary>\n"
-                            f'  <div class="thought-content">\n\n{content}\n\n</div>\n'
+                            f'<details class="thought-card">\n'
+                            f"  <summary>💭 {safe_name} 思考与规划</summary>\n"
+                            f'  <div class="thought-content">\n\n{safe_content}\n\n</div>\n'
                             f"</details>\n"
                         )
                         process_lines.append(formatted_thought)
@@ -3002,7 +3807,9 @@ def _render_markdown(
             if tool_name in ("python", "run_python_code") and (has_input or has_output):
                 # Use pure Markdown to avoid HTML wrapper blocking Markdown rendering
                 process_lines.append("\n---\n")
-                process_lines.append("#### 💻 Code Execution\n")
+                process_lines.append(
+                    f"#### 💻 {_progress_copy('progress_code_exec')}\n"
+                )
                 # Show code input - try multiple possible keys
                 code = ""
                 if isinstance(tool_input, dict):
@@ -3024,25 +3831,30 @@ def _render_markdown(
                     elif isinstance(tool_output, str):
                         output = tool_output
                     if isinstance(output, str) and output.strip():
-                        process_lines.append("\n**Output:**\n")
+                        process_lines.append(
+                            f"\n**{_progress_copy('progress_output')}:**\n"
+                        )
                         process_lines.append(
                             f'\n```text\n{output[:1000]}{"..." if len(output) > 1000 else ""}\n```\n'
                         )
-                process_lines.append("\n✅ Executed\n")
+                process_lines.append(f"\n✅ {_progress_copy('progress_executed')}\n")
                 continue
 
             # Other tools - show as compact card
             if has_input or has_output:
+                safe_tool = html.escape(_tool_display_name(str(tool_name)), quote=False)
                 process_lines.append('<div class="tool-card">')
-                process_lines.append(f'<div class="tool-header">🔧 {tool_name}</div>')
+                process_lines.append(f'<div class="tool-header">🔧 {safe_tool}</div>')
                 if has_input and isinstance(tool_input, dict):
                     brief = ", ".join(
                         f"{k}: {str(v)[:30]}..." if len(str(v)) > 30 else f"{k}: {v}"
                         for k, v in list(tool_input.items())[:2]
                     )
-                    process_lines.append(f'<div class="tool-brief">{brief}</div>')
+                    process_lines.append(
+                        f'<div class="tool-brief">{html.escape(brief, quote=False)}</div>'
+                    )
                 if has_output:
-                    process_lines.append('<div class="tool-status">✓ Done</div>')
+                    process_lines.append('<div class="tool-status">✓ 完成</div>')
                 process_lines.append("</div>")
 
     merged_final_summary_blocks = _merge_final_summary_blocks(
@@ -3053,26 +3865,75 @@ def _render_markdown(
     has_final_summary = bool(merged_final_summary_blocks)
 
     if has_final_summary and COLLAPSE_PROCESS_AFTER_SUMMARY:
-        lines.extend(_build_search_steps_section(search_step_lines))
-        lines.extend(_build_summary_section(merged_final_summary_blocks))
-        lines.extend(_build_process_details_section(process_lines))
+        # Answer-first (ChatGPT/Claude style): final report on top, process folded below.
+        lines.extend(
+            _build_summary_section(
+                merged_final_summary_blocks,
+                output_detail_level=resolved_output_detail_level,
+            )
+        )
+        folded_process: List[str] = []
+        folded_process.extend(_build_search_steps_section(search_step_lines))
+        folded_process.extend(process_lines)
+        lines.extend(
+            _build_process_details_section(
+                folded_process,
+                step_count=len(search_step_lines) or None,
+            )
+        )
     elif resolved_render_mode == "full":
-        lines.extend(process_lines)
+        # Live / no-collapse: expand thoughts while work is streaming.
+        live_process = (
+            _set_thought_cards_expanded(process_lines, expanded=True)
+            if not has_final_summary
+            else process_lines
+        )
+        lines.extend(live_process)
         if has_final_summary:
             lines.append("\n\n---\n\n")
-            lines.extend(_build_summary_section(merged_final_summary_blocks))
+            lines.extend(
+                _build_summary_section(
+                    merged_final_summary_blocks,
+                    output_detail_level=resolved_output_detail_level,
+                )
+            )
     elif resolved_render_mode == "summary_only":
         if has_final_summary:
-            lines.extend(_build_summary_section(merged_final_summary_blocks))
+            lines.extend(
+                _build_summary_section(
+                    merged_final_summary_blocks,
+                    output_detail_level=resolved_output_detail_level,
+                )
+            )
         else:
-            lines.extend(process_lines)
+            lines.extend(_set_thought_cards_expanded(process_lines, expanded=True))
     else:
         if has_final_summary:
-            lines.extend(_build_search_steps_section(search_step_lines))
-            lines.extend(_build_summary_section(merged_final_summary_blocks))
-            lines.extend(_build_process_details_section(process_lines))
+            lines.extend(
+                _build_summary_section(
+                    merged_final_summary_blocks,
+                    output_detail_level=resolved_output_detail_level,
+                )
+            )
+            folded_process = []
+            folded_process.extend(_build_search_steps_section(search_step_lines))
+            folded_process.extend(process_lines)
+            lines.extend(
+                _build_process_details_section(
+                    folded_process,
+                    step_count=len(search_step_lines) or None,
+                )
+            )
         else:
-            lines.extend(process_lines)
+            lines.extend(_set_thought_cards_expanded(process_lines, expanded=True))
+
+    if has_final_summary:
+        # 论文式文末来源：LLM 没自己给出参考文献时，用实际命中/访问的来源补一节
+        joined_summary = "\n".join(merged_final_summary_blocks)
+        if not _REFERENCES_HEADING_RE.search(joined_summary):
+            sources = _collect_report_sources(state)
+            if sources:
+                lines.extend(_build_references_section(sources))
 
     if lines:
         return "\n".join(lines)
@@ -3354,14 +4215,15 @@ async def _disconnect_check_for_task(task_id: str):
         return _CANCEL_FLAGS.get(task_id, False)
 
 
-def _spinner_markup(running: bool, status_text: str = "生成中...") -> str:
+def _spinner_markup(running: bool, status_text: str = "研究进行中…") -> str:
     if not running:
         return ""
+    safe = html.escape(str(status_text or "研究进行中…"), quote=False)
     return (
-        '\n\n<div class="runtime-status" style="display:flex;align-items:center;gap:8px;color:#555;margin-top:8px;">'
-        '<div style="width:16px;height:16px;border:2px solid #ddd;border-top-color:#3b82f6;border-radius:50%;animation:spin 0.8s linear infinite;"></div>'
-        f"<span>{status_text}</span>"
-        "</div>\n<style>@keyframes spin{to{transform:rotate(360deg)}}</style>\n"
+        '\n\n<div class="runtime-status">'
+        '<div class="runtime-spinner" aria-hidden="true"></div>'
+        f'<span class="runtime-status-text">{safe}</span>'
+        "</div>\n"
     )
 
 
@@ -3386,9 +4248,11 @@ def _build_initial_ui_state(
     output_detail_level: str,
     render_mode: str,
     summary_merge_strategy: str,
+    ui_lang: str = DEFAULT_LANG,
 ) -> dict:
     return {
         "task_id": task_id,
+        "ui_lang": ui_lang if ui_lang in I18N else DEFAULT_LANG,
         "mode": mode,
         "search_profile": search_profile,
         "search_result_num": search_result_num,
@@ -3415,6 +4279,15 @@ def _build_launch_kwargs(host: str, port: int) -> dict:
     allowed_paths = _collect_gradio_allowed_paths()
     if allowed_paths:
         launch_kwargs["allowed_paths"] = allowed_paths
+    # Optional temporary public share (set GRADIO_SHARE=1). Prefer pairing with auth.
+    if _read_env_bool("GRADIO_SHARE", False):
+        launch_kwargs["share"] = True
+    auth_user = (os.getenv("GRADIO_AUTH_USER") or "").strip()
+    auth_pass = (os.getenv("GRADIO_AUTH_PASS") or "").strip()
+    if auth_user and auth_pass:
+        launch_kwargs["auth"] = (auth_user, auth_pass)
+        # Keep the share link from being casually browsed without credentials.
+        launch_kwargs["auth_message"] = "Private demo — sign in required."
     return launch_kwargs
 
 
@@ -3467,6 +4340,48 @@ def _build_reconnect_initial_render_state(snapshot: dict) -> dict:
     return state
 
 
+def _is_waiting_output_markdown(markdown: Optional[str]) -> bool:
+    """True when markdown is the idle waiting placeholder (EN/CN)."""
+    text = str(markdown or "").strip()
+    if not text:
+        return True
+    for lang_pack in I18N.values():
+        waiting = str(lang_pack.get("output_waiting") or "").strip()
+        if waiting and text == waiting:
+            return True
+    return False
+
+
+def _pack_ui_stream(
+    markdown,
+    run_btn_update,
+    stop_btn_update,
+    ui_state,
+    *,
+    show_output: Optional[bool] = None,
+):
+    """Pack Gradio stream outputs including output-section visibility.
+
+    Returns:
+        (markdown, run_btn, stop_btn, ui_state, task_id_bridge,
+         output_section_update, export_bar_update)
+    """
+    if show_output is None:
+        show_output = not _is_waiting_output_markdown(markdown)
+    # 导出条只在「有正文且无运行中 spinner」时可见：流式过程中隐藏，
+    # 终态（完成/失败/重连快照）出现。
+    export_visible = show_output and 'class="runtime-spinner"' not in str(markdown)
+    return (
+        markdown,
+        run_btn_update,
+        stop_btn_update,
+        ui_state,
+        _task_id_bridge_value(ui_state),
+        gr.update(visible=bool(show_output)),
+        gr.update(visible=export_visible),
+    )
+
+
 async def _render_stream_via_api(
     task_id: str,
     *,
@@ -3478,20 +4393,23 @@ async def _render_stream_via_api(
     """订阅 api-server SSE 流并按既有渲染管线产出 Gradio 输出元组。
 
     Yields:
-        (markdown, run_btn_update, stop_btn_update, ui_state)
+        (markdown, run_btn_update, stop_btn_update, ui_state, task_id_bridge,
+         output_section, export_bar)
     """
     state = initial_state or _init_render_state()
     initial_markdown = _render_markdown(
         state,
         render_mode=resolved_ui_render_mode,
         final_summary_merge_strategy=resolved_summary_merge_strategy,
+        output_detail_level=(ui_state or {}).get("output_detail_level"),
+        ui_lang=(ui_state or {}).get("ui_lang"),
     )
-    yield (
+    yield _pack_ui_stream(
         initial_markdown + _spinner_markup(True, _format_runtime_status_label(state)),
         gr.update(interactive=False),
         gr.update(interactive=True),
         ui_state,
-        _task_id_bridge_value(ui_state),
+        show_output=True,
     )
 
     # 取消检查复用本地 _CANCEL_FLAGS：stop 按钮按下后会 set 标志
@@ -3517,13 +4435,15 @@ async def _render_stream_via_api(
                     state,
                     render_mode=resolved_ui_render_mode,
                     final_summary_merge_strategy=resolved_summary_merge_strategy,
+                    output_detail_level=(ui_state or {}).get("output_detail_level"),
+                    ui_lang=(ui_state or {}).get("ui_lang"),
                 )
-                yield (
+                yield _pack_ui_stream(
                     heartbeat_md + _spinner_markup(True, heartbeat_label),
                     gr.update(interactive=False),
                     gr.update(interactive=True),
                     ui_state,
-                    _task_id_bridge_value(ui_state),
+                    show_output=True,
                 )
                 continue
             state = _update_state_with_event(state, message)
@@ -3531,43 +4451,45 @@ async def _render_stream_via_api(
                 state,
                 render_mode=resolved_ui_render_mode,
                 final_summary_merge_strategy=resolved_summary_merge_strategy,
+                output_detail_level=(ui_state or {}).get("output_detail_level"),
+                ui_lang=(ui_state or {}).get("ui_lang"),
             )
-            yield (
+            yield _pack_ui_stream(
                 md + _spinner_markup(True, _format_runtime_status_label(state)),
                 gr.update(interactive=False),
                 gr.update(interactive=True),
                 ui_state,
-                _task_id_bridge_value(ui_state),
+                show_output=True,
             )
             await asyncio.sleep(0.01)
     except api_client.TaskNotFoundError:
         cleared_ui_state = {**ui_state, "task_id": None}
-        yield (
+        yield _pack_ui_stream(
             f"任务 `{task_id}` 不存在或已过期，请重新发起检索。",
             gr.update(interactive=True),
             gr.update(interactive=False),
             cleared_ui_state,
-            _task_id_bridge_value(cleared_ui_state),
+            show_output=True,
         )
         return
     except api_client.ApiClientError as exc:
         logger.error("API SSE 订阅失败: %s", exc)
-        yield (
+        yield _pack_ui_stream(
             f"连接 api-server 失败：{exc}",
             gr.update(interactive=True),
             gr.update(interactive=False),
             ui_state,
-            _task_id_bridge_value(ui_state),
+            show_output=True,
         )
         return
     except Exception as exc:
         logger.exception("API 流处理异常")
-        yield (
+        yield _pack_ui_stream(
             f"流处理异常：{exc}",
             gr.update(interactive=True),
             gr.update(interactive=False),
             ui_state,
-            _task_id_bridge_value(ui_state),
+            show_output=True,
         )
         return
 
@@ -3575,13 +4497,15 @@ async def _render_stream_via_api(
         state,
         render_mode=resolved_ui_render_mode,
         final_summary_merge_strategy=resolved_summary_merge_strategy,
+        output_detail_level=(ui_state or {}).get("output_detail_level"),
+        ui_lang=(ui_state or {}).get("ui_lang"),
     )
-    yield (
+    yield _pack_ui_stream(
         final_md,
         gr.update(interactive=True),
         gr.update(interactive=False),
         ui_state,
-        _task_id_bridge_value(ui_state),
+        show_output=True,
     )
 
 
@@ -3608,23 +4532,23 @@ async def _gradio_run_via_api(
         )
     except api_client.ApiClientError as exc:
         logger.error("api-server 创建任务失败: %s", exc)
-        yield (
+        yield _pack_ui_stream(
             f"提交任务到 api-server 失败：{exc}",
             gr.update(interactive=True),
             gr.update(interactive=False),
             ui_state,
-            _task_id_bridge_value(ui_state),
+            show_output=True,
         )
         return
 
     task_id = created.get("task_id")
     if not task_id:
-        yield (
+        yield _pack_ui_stream(
             "api-server 未返回 task_id，请检查后端日志。",
             gr.update(interactive=True),
             gr.update(interactive=False),
             ui_state,
-            _task_id_bridge_value(ui_state),
+            show_output=True,
         )
         return
 
@@ -3651,6 +4575,7 @@ async def gradio_run(
     search_result_num: int = DEFAULT_SEARCH_RESULT_NUM,
     verification_min_search_rounds: int = DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS,
     output_detail_level: str = DEFAULT_OUTPUT_DETAIL_LEVEL,
+    lang: str = DEFAULT_LANG,
     ui_state: Optional[dict] = None,
 ):
     query = replace_chinese_punctuation(query or "")
@@ -3671,6 +4596,7 @@ async def gradio_run(
     resolved_summary_merge_strategy = _normalize_final_summary_merge_strategy(
         _get_summary_merge_for_output_detail(resolved_output_detail_level)
     )
+    resolved_ui_lang = lang if lang in I18N else DEFAULT_LANG
 
     # ===== API 后端模式：把任务交给 api-server，刷新页面可由 task_id 重连 =====
     if api_client.is_api_mode_enabled():
@@ -3684,6 +4610,7 @@ async def gradio_run(
             output_detail_level=resolved_output_detail_level,
             render_mode=resolved_ui_render_mode,
             summary_merge_strategy=resolved_summary_merge_strategy,
+            ui_lang=resolved_ui_lang,
         )
         merged_state = {**base_state, **new_ui_state}
         async for tup in _gradio_run_via_api(
@@ -3712,6 +4639,7 @@ async def gradio_run(
             "verification_min_search_rounds": resolved_verification_min_rounds,
             "render_mode": resolved_ui_render_mode,
             "output_detail_level": resolved_output_detail_level,
+            "ui_lang": resolved_ui_lang,
             "final_summary_merge_strategy": resolved_summary_merge_strategy,
         }
     else:
@@ -3724,6 +4652,7 @@ async def gradio_run(
             "verification_min_search_rounds": resolved_verification_min_rounds,
             "render_mode": resolved_ui_render_mode,
             "output_detail_level": resolved_output_detail_level,
+            "ui_lang": resolved_ui_lang,
             "final_summary_merge_strategy": resolved_summary_merge_strategy,
         }
     state = _init_render_state()
@@ -3732,15 +4661,16 @@ async def gradio_run(
             state,
             render_mode=resolved_ui_render_mode,
             final_summary_merge_strategy=resolved_summary_merge_strategy,
+            output_detail_level=resolved_output_detail_level,
         )
         # Initial: disable Run, enable Stop, and show spinner at bottom of text
-        yield (
+        yield _pack_ui_stream(
             initial_markdown
             + _spinner_markup(True, _format_runtime_status_label(state)),
             gr.update(interactive=False),
             gr.update(interactive=True),
             ui_state,
-            _task_id_bridge_value(ui_state),
+            show_output=True,
         )
         async for message in stream_events_optimized(
             task_id,
@@ -3761,13 +4691,14 @@ async def gradio_run(
                     state,
                     render_mode=resolved_ui_render_mode,
                     final_summary_merge_strategy=resolved_summary_merge_strategy,
+                    output_detail_level=resolved_output_detail_level,
                 )
-                yield (
+                yield _pack_ui_stream(
                     heartbeat_markdown + _spinner_markup(True, heartbeat_label),
                     gr.update(interactive=False),
                     gr.update(interactive=True),
                     ui_state,
-                    _task_id_bridge_value(ui_state),
+                    show_output=True,
                 )
                 continue
 
@@ -3776,27 +4707,29 @@ async def gradio_run(
                 state,
                 render_mode=resolved_ui_render_mode,
                 final_summary_merge_strategy=resolved_summary_merge_strategy,
+                output_detail_level=resolved_output_detail_level,
             )
-            yield (
+            yield _pack_ui_stream(
                 md + _spinner_markup(True, _format_runtime_status_label(state)),
                 gr.update(interactive=False),
                 gr.update(interactive=True),
                 ui_state,
-                _task_id_bridge_value(ui_state),
+                show_output=True,
             )
             # Small delay to allow Gradio to process the update
             await asyncio.sleep(0.01)
         # End: enable Run, disable Stop, remove spinner
-        yield (
+        yield _pack_ui_stream(
             _render_markdown(
                 state,
                 render_mode=resolved_ui_render_mode,
                 final_summary_merge_strategy=resolved_summary_merge_strategy,
+                output_detail_level=resolved_output_detail_level,
             ),
             gr.update(interactive=True),
             gr.update(interactive=False),
             ui_state,
-            _task_id_bridge_value(ui_state),
+            show_output=True,
         )
     finally:
         _unregister_active_task(task_id)
@@ -3891,6 +4824,7 @@ async def run_research_once(
             state,
             render_mode=resolved_api_render_mode,
             final_summary_merge_strategy=resolved_summary_merge_strategy,
+            output_detail_level=resolved_output_detail_level,
         )
         # 只有明确成功且收到最终总结时才写缓存；失败、取消或流异常不能污染后续请求。
         if (
@@ -4001,6 +4935,7 @@ async def _run_research_once_via_api(
         state,
         render_mode=resolved_api_render_mode,
         final_summary_merge_strategy=resolved_summary_merge_strategy,
+        output_detail_level=resolved_output_detail_level,
     )
     if done_status in {"completed", "cached"} and "final-output" not in state["agents"]:
         return "api-server 已完成任务，但未返回可展示的最终结果。"
@@ -4074,20 +5009,21 @@ async def reconnect_or_init(
 ):
     """页面加载时根据 URL `?task_id=...` 决定是否重连任务。
 
-    Yields 与 gradio_run 相同的 4 元组：
-        (markdown, run_btn_update, stop_btn_update, ui_state)
+    Yields 与 gradio_run 相同的 7 元组：
+        (markdown, run_btn_update, stop_btn_update, ui_state, task_id_bridge,
+         output_section, export_bar)
 
     当 URL 没有 task_id，或不在 API 模式时，仅恢复初始空闲态。
     """
     base_state = ui_state or {}
 
     # 首屏空闲态：等待用户输入
-    idle_tuple = (
+    idle_tuple = _pack_ui_stream(
         I18N[DEFAULT_LANG]["output_waiting"],
         gr.update(interactive=True),
         gr.update(interactive=False),
         base_state,
-        _task_id_bridge_value(base_state),
+        show_output=False,
     )
 
     if not api_client.is_api_mode_enabled():
@@ -4116,23 +5052,23 @@ async def reconnect_or_init(
     except api_client.ApiClientError as exc:
         cleared_ui_state = {**base_state, "task_id": None}
         logger.warning("get_task 失败 task_id=%s err=%s", task_id, exc)
-        yield (
+        yield _pack_ui_stream(
             f"无法连接 api-server：{exc}",
             gr.update(interactive=True),
             gr.update(interactive=False),
             cleared_ui_state,
-            _task_id_bridge_value(cleared_ui_state),
+            show_output=True,
         )
         return
 
     if snapshot is None:
         cleared_ui_state = {**base_state, "task_id": None}
-        yield (
+        yield _pack_ui_stream(
             f"任务 `{task_id}` 不存在或已过期，请重新发起检索。",
             gr.update(interactive=True),
             gr.update(interactive=False),
             cleared_ui_state,
-            _task_id_bridge_value(cleared_ui_state),
+            show_output=True,
         )
         return
 
@@ -4164,6 +5100,7 @@ async def reconnect_or_init(
         output_detail_level=resolved_output_detail_level,
         render_mode=resolved_ui_render_mode,
         summary_merge_strategy=resolved_summary_merge_strategy,
+        ui_lang=(base_state or {}).get("ui_lang") or DEFAULT_LANG,
     )
     new_ui_state = {**base_state, **new_ui_state}
 
@@ -4377,32 +5314,105 @@ def _update_verification_rounds_visibility(mode: str):
     return gr.update(visible=_is_verified_mode(mode))
 
 
+# Unified outline icon set (24x24, stroke 1.75, round caps/joins).
+# Used by top-right Skills button (inline SVG) and action buttons (CSS masks).
+_ICON_SVG_ATTRS = (
+    'xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" '
+    'fill="none" stroke="currentColor" stroke-width="1.75" '
+    'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"'
+)
+_ICON_PATHS = {
+    "download": '<path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/>',
+    "settings": (
+        '<circle cx="12" cy="12" r="3"/>'
+        '<path d="M12 2v2"/><path d="M12 20v2"/>'
+        '<path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/>'
+        '<path d="M2 12h2"/><path d="M20 12h2"/>'
+        '<path d="m4.93 19.07 1.41-1.41"/><path d="m17.66 6.34 1.41-1.41"/>'
+    ),
+    "export": ('<path d="M12 21V9"/><path d="m7 14 5-5 5 5"/>' '<path d="M5 3h14"/>'),
+    "stop": '<rect x="6" y="6" width="12" height="12" rx="1.5"/>',
+    "run": '<path d="M8 5.5v13l11-6.5-11-6.5z"/>',
+    "close": '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+}
+
+
+def _icon_svg(name: str) -> str:
+    paths = _ICON_PATHS[name]
+    return f"<svg {_ICON_SVG_ATTRS}>{paths}</svg>"
+
+
+def _icon_mask_data_uri(name: str) -> str:
+    """CSS mask-friendly SVG data URI (black strokes for mask luminance)."""
+    paths = _ICON_PATHS[name]
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" '
+        'stroke="black" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">'
+        f"{paths}</svg>"
+    )
+    # compact encode for CSS url()
+    encoded = (
+        svg.replace("%", "%25")
+        .replace("#", "%23")
+        .replace('"', "%22")
+        .replace("<", "%3C")
+        .replace(">", "%3E")
+        .replace(" ", "%20")
+    )
+    return f"url(%22data:image/svg+xml,{encoded}%22)"
+
+
 def build_demo():
     api_client.get_backend_mode()
     logo_data_uri = _load_logo_data_uri()
     fallback_favicon_data_uri = _build_fallback_favicon_data_uri()
 
     custom_css = """
-    /* ========== MiroThinker - Clean Emerald Design ========== */
+    /* ========== MiroThinker - Tech / Sci-Fi Dark ========== */
     
-    /* Base */
-    .gradio-container {
-        --app-bg: #f9fafb;
-        --panel-bg: #ffffff;
-        --panel-border: rgba(0, 0, 0, 0.06);
-        --panel-shadow: 0 1px 3px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.03);
-        --ink-strong: #111827;
-        --ink-body: #374151;
-        --ink-soft: #6b7280;
-        --accent: #10b981;
-        --accent-strong: #059669;
-        --accent-soft: #d1fae5;
+    /* Base tokens — also on :root so html/body wash can resolve vars */
+    :root, .gradio-container {
+        --app-bg: #1a2332;
+        --app-bg-elevated: #1e293b;
+        --panel-bg: rgba(30, 41, 59, 0.88);
+        --panel-bg-solid: #243044;
+        --panel-border: rgba(100, 180, 200, 0.18);
+        --panel-shadow: 0 8px 28px rgba(15, 23, 42, 0.28);
+        --glass-bg: rgba(30, 41, 59, 0.72);
+        --glass-border: rgba(148, 163, 184, 0.22);
+        --ink-strong: #e2e8f0;
+        --ink-body: #cbd5e1;
+        --ink-soft: #94a3b8;
+        --accent: #38bdf8;
+        --accent-strong: #0ea5e9;
+        --accent-soft: rgba(56, 189, 248, 0.12);
+        --accent-green: #34d399;
+        --accent-emerald: #34d399;
+        --btn-gray: rgba(36, 48, 68, 0.92);
+        --btn-gray-hover: rgba(51, 65, 85, 0.95);
+        --icon-muted: #94a3b8;
+        --icon-accent: #38bdf8;
+        --focus-ring: 0 0 0 2px rgba(56, 189, 248, 0.32);
+        /* Soft theme still ships light checkbox-label fills — pin dark tokens */
+        --checkbox-label-background-fill: rgba(15, 23, 42, 0.88);
+        --checkbox-label-background-fill-hover: rgba(30, 41, 59, 0.95);
+        --checkbox-label-background-fill-selected: rgba(14, 165, 233, 0.78);
+        --checkbox-label-text-color: #cbd5e1;
+        --checkbox-label-text-color-selected: #f8fafc;
+        --checkbox-label-border-color: rgba(148, 163, 184, 0.22);
+        --checkbox-label-border-color-hover: rgba(148, 163, 184, 0.35);
+        --checkbox-label-border-color-selected: rgba(56, 189, 248, 0.55);
+        --block-info-text-color: #e2e8f0;
+        --block-label-text-color: #e2e8f0;
         max-width: 100% !important;
         margin: 0 !important;
         padding: 0 !important;
         font-family: __LOCAL_FONT_FAMILY_STACK__ !important;
-        background: #ffffff !important;
-        color: var(--ink-strong);
+        background:
+            radial-gradient(1200px 600px at 50% -10%, rgba(56, 189, 248, 0.07), transparent 55%),
+            radial-gradient(900px 500px at 90% 10%, rgba(52, 211, 153, 0.05), transparent 50%),
+            var(--app-bg) !important;
+        color: var(--ink-body);
         min-height: 100vh;
         position: relative;
     }
@@ -4411,13 +5421,34 @@ def build_demo():
         display: none;
     }
 
+    /* Force full-page soft dark wash — never transparent (avoids white canvas) */
+    html, body {
+        background: #1a2332 !important;
+        color: #cbd5e1 !important;
+    }
+    html, body, .gradio-container, .main, .wrap, .app,
+    #layout-shell, .hero-section-parent, .hero-wrap,
+    #main-content-column, #top-utility-bar {
+        background: var(--app-bg, #1a2332) !important;
+        color: var(--ink-body, #cbd5e1) !important;
+    }
+    .gradio-container {
+        background:
+            radial-gradient(1200px 600px at 50% -10%, rgba(56, 189, 248, 0.07), transparent 55%),
+            radial-gradient(900px 500px at 90% 10%, rgba(52, 211, 153, 0.05), transparent 50%),
+            var(--app-bg) !important;
+    }
+
     /* 强力清除 Gradio 默认包装盒的丑陋背景与边框 */
     .gradio-container .form,
     .gradio-container fieldset,
     #main-content-column .form,
     #right-options-column .form,
+    #settings-modal .form,
     #input-section .block,
     #input-section .solid,
+    #settings-modal .block,
+    #settings-modal .solid,
     #options-panel .block,
     #options-panel .solid {
         background: transparent !important;
@@ -4425,7 +5456,681 @@ def build_demo():
         box-shadow: none !important;
     }
 
+    /* ===== Google-like Search Home (visual polish) ===== */
+    #input-section {
+        background: transparent !important;
+        border: none !important;
+        border-radius: 0 !important;
+        box-shadow: none !important;
+        padding: 0 !important;
+        margin: 0 auto 12px !important;
+        max-width: 584px !important;
+        width: 100% !important;
+        gap: 0 !important;
+    }
 
+    #input-section #question-input,
+    #input-section #question-input .block,
+    #input-section #question-input .solid {
+        background: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
+    }
+
+    #input-section #question-input textarea,
+    #input-section textarea {
+        background: rgba(30, 42, 61, 0.88) !important;
+        border: 1px solid rgba(148, 163, 184, 0.26) !important;
+        border-radius: 16px !important;
+        min-height: 56px !important;
+        max-height: 140px !important;
+        padding: 15px 20px !important;
+        font-size: 16px !important;
+        line-height: 1.5 !important;
+        color: var(--ink-strong) !important;
+        box-shadow: 0 10px 28px rgba(2, 6, 23, 0.35), inset 0 1px 0 rgba(255,255,255,0.05) !important;
+        backdrop-filter: blur(12px);
+        resize: none !important;
+        text-align: left !important;
+        transition: box-shadow 0.18s ease, border-color 0.18s ease, background 0.18s ease !important;
+    }
+
+    #input-section #question-input textarea::placeholder,
+    #input-section textarea::placeholder {
+        color: #64748b !important;
+        opacity: 1 !important;
+    }
+
+    #input-section #question-input textarea:hover,
+    #input-section textarea:hover {
+        border-color: rgba(56, 189, 248, 0.35) !important;
+        background: rgba(36, 50, 72, 0.94) !important;
+        box-shadow: 0 12px 30px rgba(2, 6, 23, 0.4) !important;
+    }
+
+    #input-section #question-input textarea:focus,
+    #input-section textarea:focus {
+        border-color: rgba(56, 189, 248, 0.55) !important;
+        box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.16), 0 12px 32px rgba(2, 6, 23, 0.42) !important;
+        background: rgba(36, 50, 72, 0.98) !important;
+        outline: none !important;
+    }
+
+    #btn-row {
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        flex-wrap: wrap !important;
+        gap: 10px !important;
+        padding: 18px 4px 6px !important;
+        border-top: none !important;
+        background: transparent !important;
+    }
+
+    #btn-row > * {
+        flex: 0 0 auto !important;
+    }
+
+    #btn-row button,
+    #settings-open-btn,
+    #stop-btn,
+    #run-btn {
+        height: 38px !important;
+        min-height: 38px !important;
+        padding: 0 18px !important;
+        font-size: 14px !important;
+        font-weight: 500 !important;
+        letter-spacing: 0.01em !important;
+        border-radius: 12px !important;
+        line-height: 38px !important;
+        box-shadow: none !important;
+        transform: none !important;
+    }
+
+    #settings-open-btn,
+    #stop-btn {
+        min-width: auto !important;
+        max-width: none !important;
+        border: 1px solid rgba(148, 163, 184, 0.2) !important;
+        background: rgba(36, 48, 68, 0.85) !important;
+        color: var(--ink-soft) !important;
+    }
+
+    #settings-open-btn:hover,
+    #stop-btn:hover {
+        background: rgba(51, 65, 85, 0.9) !important;
+        border-color: rgba(148, 163, 184, 0.32) !important;
+        color: var(--ink-body) !important;
+        box-shadow: 0 2px 8px rgba(15, 23, 42, 0.2) !important;
+    }
+
+    #run-btn {
+        min-width: auto !important;
+        max-width: none !important;
+        border: 1px solid rgba(45, 180, 170, 0.35) !important;
+        background: linear-gradient(135deg, rgba(14, 165, 180, 0.88), rgba(45, 180, 140, 0.82)) !important;
+        color: #0b1a1c !important;
+        font-weight: 600 !important;
+        box-shadow: 0 4px 14px rgba(14, 165, 180, 0.18) !important;
+    }
+
+    #run-btn:hover {
+        background: linear-gradient(135deg, rgba(20, 180, 190, 0.95), rgba(52, 190, 150, 0.9)) !important;
+        box-shadow: 0 6px 18px rgba(14, 165, 180, 0.22) !important;
+        transform: none !important;
+    }
+
+    #stop-btn[disabled],
+    #stop-btn:disabled {
+        opacity: 0.82 !important;
+        filter: none !important;
+        color: #94a3b8 !important;
+        background: rgba(30, 41, 59, 0.55) !important;
+        border-color: rgba(148, 163, 184, 0.28) !important;
+    }
+
+    /* Hide legacy right options column if present */
+    #right-options-column {
+        display: none !important;
+    }
+
+    /* ===== Modals: settings + export ======================================
+       Single source of truth for both overlays. Gradio's Column already
+       renders display:flex and hides itself with display:none for
+       visible=False, so never override `display` on the overlay itself. */
+    #settings-modal{
+        position: fixed !important;
+        inset: 0 !important;
+        z-index: 1000 !important;
+        flex-direction: column !important;
+        align-items: flex-start !important;
+        justify-content: flex-start !important;
+        gap: 0 !important;
+        padding: 24px !important;
+        box-sizing: border-box !important;
+        overflow: auto !important;
+        cursor: pointer !important;
+        background: rgba(15, 23, 42, 0.62) !important;
+    }
+
+    /* Set by the dialog script while a modal is mounted. */
+    html.miro-modal-open,
+    html.miro-modal-open body {
+        overflow: hidden !important;
+    }
+    /* The card is the dialog's focus target; it has no visible edge to ring. */
+    #settings-modal .modal-card:focus{
+        outline: none !important;
+    }
+
+    #settings-modal .modal-card{
+        /* Gradio gives every Column flex:1 1 auto. In a full-viewport overlay
+           that stretched the card to its max-height and left a blank bottom. */
+        flex: 0 0 auto !important;
+        display: flex !important;
+        flex-direction: column !important;
+        gap: 10px !important;
+        /* Auto margins centre the card, yet collapse to 0 when the card is
+           taller than the overlay — so the top stays reachable while scrolling. */
+        margin: auto !important;
+        width: min(420px, 100%) !important;
+        max-width: 420px !important;
+        min-width: 0 !important;
+        padding: 18px 22px 20px !important;
+        box-sizing: border-box !important;
+        position: relative !important;
+        z-index: 1 !important;
+        cursor: default !important;
+        color: var(--ink-strong) !important;
+        background: rgba(30, 41, 59, 0.97) !important;
+        border: 1px solid var(--panel-border) !important;
+        border-radius: 16px !important;
+        box-shadow: 0 16px 40px rgba(15, 23, 42, 0.35), 0 0 0 1px rgba(148, 163, 184, 0.12) !important;
+        /* Option lists are absolutely positioned inside their own block, so no
+           ancestor may clip. The overlay scrolls instead of the card. */
+        overflow: visible !important;
+    }
+
+    /* Keep fields in one column and never wider than the card. */
+    #settings-modal .modal-card > *,
+    #settings-modal .modal-card .form,
+    #settings-modal .modal-card .block,
+    #settings-modal .modal-card .wrap,
+    #settings-modal .modal-card .container,
+    #settings-modal .modal-card label{
+        min-width: 0 !important;
+        max-width: 100% !important;
+        box-sizing: border-box !important;
+    }
+    #settings-modal .modal-card .form{
+        display: flex !important;
+        flex-direction: column !important;
+        flex-wrap: nowrap !important;
+        align-items: stretch !important;
+        width: 100% !important;
+        overflow: visible !important;
+    }
+    #settings-modal .modal-card .form > *{
+        flex: 0 0 auto !important;
+        width: 100% !important;
+    }
+    #settings-modal .modal-card .svelte-select,
+    #settings-modal .modal-card [data-testid="dropdown"]{
+        width: 100% !important;
+        max-width: 100% !important;
+    }
+
+    /* Gradio writes overflow:hidden inline on blocks; the option list must
+       be able to escape the trigger it is anchored to. */
+    #mode-selector,
+    #search-profile-selector,
+    #search-result-num-selector,
+    #verification-rounds-selector,
+    #output-detail-level-selector {
+        overflow: visible !important;
+    }
+
+    /* Option lists keep Gradio's absolute anchoring so their width and offset
+       follow the trigger; only the palette is overridden here. */
+    #settings-modal ul[role="listbox"]{
+        z-index: 5000 !important;
+        max-height: 240px !important;
+        overflow-y: auto !important;
+        background: #1e293b !important;
+        border: 1px solid rgba(100, 180, 200, 0.25) !important;
+        border-radius: 10px !important;
+        box-shadow: 0 12px 32px rgba(15, 23, 42, 0.45) !important;
+        color: #e2e8f0 !important;
+    }
+    #settings-modal ul[role="listbox"] li{
+        color: #e2e8f0 !important;
+        background: transparent !important;
+        padding: 8px 12px !important;
+        white-space: normal !important;
+    }
+    #settings-modal ul[role="listbox"] li:hover,
+    #settings-modal ul[role="listbox"] li[aria-selected="true"]{
+        background: rgba(34, 211, 238, 0.15) !important;
+        color: #a5f3fc !important;
+    }
+
+    /* Dark form controls inside modals */
+    #settings-modal label,
+    #settings-modal .wrap{
+        color: var(--ink-strong) !important;
+    }
+    #settings-modal input,
+    #settings-modal select,
+    #settings-modal textarea,
+    #settings-modal .secondary-wrap{
+        background: rgba(15, 23, 42, 0.85) !important;
+        border-color: var(--glass-border) !important;
+        color: var(--ink-strong) !important;
+    }
+
+    /* Footer: status line + restore/apply actions */
+    #settings-modal .modal-footer{
+        display: flex !important;
+        flex-direction: row !important;
+        flex-wrap: wrap !important;
+        align-items: center !important;
+        justify-content: flex-end !important;
+        gap: 8px !important;
+        width: 100% !important;
+        margin-top: 4px !important;
+    }
+    /* Status sits on its own full-width row above the action buttons. The
+       direct flex child is Gradio's block wrapper (#settings-status), not
+       the inner .modal-status div. */
+    #settings-modal .modal-footer > #settings-status{
+        flex: 1 1 100% !important;
+        min-width: 0 !important;
+    }
+    #settings-modal .modal-footer .modal-status{
+        margin: 0 !important;
+        color: #7dd3fc;
+        font-size: 0.76em;
+        line-height: 1.4;
+        text-align: left;
+    }
+    .modal-status:empty {
+        display: none;
+    }
+    #settings-reset-btn,
+    #settings-apply-btn {
+        flex: 0 0 auto !important;
+        width: auto !important;
+        height: 34px !important;
+        min-height: 34px !important;
+        padding: 0 12px !important;
+        border-radius: 10px !important;
+        font-size: 13px !important;
+    }
+    #settings-reset-btn {
+        background: rgba(15, 23, 42, 0.72) !important;
+        border: 1px solid rgba(148, 163, 184, 0.22) !important;
+        color: #cbd5e1 !important;
+    }
+    #settings-reset-btn:hover {
+        border-color: rgba(34, 211, 238, 0.45) !important;
+        color: #22d3ee !important;
+    }
+    #settings-apply-btn {
+        padding: 0 14px !important;
+        font-weight: 600 !important;
+    }
+
+    .modal-title {
+        font-size: 18px;
+        font-weight: 600;
+        color: var(--ink-strong);
+        margin: 0 44px 2px 0;
+        letter-spacing: 0.02em;
+        line-height: 36px;
+        min-height: 36px;
+    }
+
+    /* ===== Settings modal polish ====================================== */
+    #settings-modal {
+        background: rgba(2, 6, 23, 0.66) !important;
+        backdrop-filter: blur(6px) !important;
+        -webkit-backdrop-filter: blur(6px) !important;
+    }
+    #settings-modal .modal-card {
+        width: min(460px, 100%) !important;
+        max-width: 460px !important;
+        gap: 16px !important;
+        padding: 28px 30px 26px !important;
+        background: linear-gradient(180deg, rgba(32, 44, 64, 0.98), rgba(22, 31, 47, 0.98)) !important;
+        border-color: rgba(148, 163, 184, 0.16) !important;
+        box-shadow: 0 24px 64px rgba(2, 6, 23, 0.55), 0 0 0 1px rgba(148, 163, 184, 0.10) !important;
+        animation: miro-modal-pop 0.16s ease-out !important;
+    }
+    #settings-modal .modal-card::before {
+        content: "" !important;
+        position: absolute !important;
+        top: 0 !important;
+        left: 30px !important;
+        right: 30px !important;
+        height: 3px !important;
+        border-radius: 0 0 4px 4px !important;
+        background: linear-gradient(90deg, #22d3ee, #818cf8) !important;
+    }
+    @keyframes miro-modal-pop {
+        from { opacity: 0; transform: translateY(10px) scale(0.985); }
+        to { opacity: 1; transform: none; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+        #settings-modal .modal-card {
+            animation: none !important;
+        }
+    }
+    #settings-modal .modal-title {
+        font-size: 20px !important;
+        font-weight: 700 !important;
+    }
+    #settings-modal .modal-title::after {
+        content: "" !important;
+        display: block !important;
+        width: 30px !important;
+        height: 3px !important;
+        margin-top: 6px !important;
+        border-radius: 2px !important;
+        background: linear-gradient(90deg, #22d3ee, #818cf8) !important;
+    }
+    #settings-close-btn {
+        top: 16px !important;
+        right: 16px !important;
+        width: 32px !important;
+        min-width: 32px !important;
+        max-width: 32px !important;
+        height: 32px !important;
+        min-height: 32px !important;
+        border-radius: 50% !important;
+        transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease !important;
+    }
+    /* Divider rhythm: one faint line above each field after the title.
+       Option hints hug the selector they describe — no divider, pulled up. */
+    #settings-modal .modal-card .form {
+        gap: 16px !important;
+    }
+    #settings-modal .modal-card .form > *:not(:first-child) {
+        border-top: 1px solid rgba(148, 163, 184, 0.08) !important;
+        padding-top: 14px !important;
+    }
+    #settings-modal .modal-card .form > #mode-option-hint,
+    #settings-modal .modal-card .form > #search-profile-option-hint {
+        border-top: none !important;
+        padding-top: 0 !important;
+        margin-top: -10px !important;
+    }
+    /* Gradio 默认给每个表单块较大内边距，与分隔线叠加后会显得松散 */
+    #settings-modal .modal-card .form > .block.padded {
+        padding: 4px 0 !important;
+    }
+    #settings-modal input[type="range"],
+    #settings-modal input[type="radio"] {
+        accent-color: #22d3ee !important;
+    }
+    #settings-apply-btn {
+        background: linear-gradient(135deg, #0ea5e9, #22d3ee) !important;
+        border: none !important;
+        color: #06222c !important;
+        box-shadow: 0 4px 14px rgba(34, 211, 238, 0.28) !important;
+        transition: filter 0.15s ease, box-shadow 0.15s ease !important;
+    }
+    #settings-apply-btn:hover {
+        filter: brightness(1.08) !important;
+        box-shadow: 0 6px 18px rgba(34, 211, 238, 0.38) !important;
+    }
+    #settings-modal button:focus-visible,
+    #settings-modal [role="listbox"]:focus-visible {
+        outline: 2px solid rgba(34, 211, 238, 0.6) !important;
+        outline-offset: 2px !important;
+    }
+    #settings-modal .settings-hint {
+        margin: -4px 0 0 !important;
+        font-size: 12px !important;
+        line-height: 1.55 !important;
+        color: #94a3b8 !important;
+    }
+    #settings-modal .option-hint {
+        margin: 0 !important;
+        padding: 6px 10px !important;
+        border-left: 2px solid rgba(56, 189, 248, 0.45) !important;
+        border-radius: 0 6px 6px 0 !important;
+        background: rgba(56, 189, 248, 0.07) !important;
+        font-size: 12px !important;
+        line-height: 1.55 !important;
+        color: #a5c3d9 !important;
+    }
+    #settings-modal .preset-row {
+        display: flex !important;
+        gap: 8px !important;
+        width: 100% !important;
+    }
+    #settings-modal .preset-row > * {
+        flex: 1 1 0 !important;
+        min-width: 0 !important;
+    }
+    #settings-modal .preset-btn {
+        height: 32px !important;
+        min-height: 32px !important;
+        padding: 0 6px !important;
+        font-size: 12.5px !important;
+        font-weight: 500 !important;
+        border-radius: 999px !important;
+        background: rgba(15, 23, 42, 0.55) !important;
+        border: 1px solid rgba(148, 163, 184, 0.26) !important;
+        color: var(--ink-body) !important;
+        box-shadow: none !important;
+        transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease !important;
+    }
+    #settings-modal .preset-btn:hover {
+        border-color: rgba(34, 211, 238, 0.5) !important;
+        color: #22d3ee !important;
+        background: rgba(34, 211, 238, 0.08) !important;
+    }
+    #settings-modal .preset-btn-primary {
+        border-color: rgba(34, 211, 238, 0.4) !important;
+        color: #22d3ee !important;
+        background: rgba(34, 211, 238, 0.1) !important;
+    }
+
+    /* ===== Export icon bar (result footer) ============================ */
+    #export-bar {
+        display: flex !important;
+        flex-direction: row !important;
+        align-items: center !important;
+        flex-wrap: wrap !important;
+        justify-content: flex-start !important;
+        gap: 8px !important;
+        margin-top: 14px !important;
+        padding: 0 !important;
+        border: none !important;
+        border-radius: 0 !important;
+        background: transparent !important;
+    }
+    #export-bar > * {
+        min-width: 0 !important;
+    }
+    #export-bar .block {
+        flex: 0 0 auto !important;
+    }
+    .export-icon-btn {
+        /* scale=0 pins Gradio's flex-basis to 0% — restore content sizing or
+           the label text overflows and overlaps the neighbouring buttons. */
+        flex: 0 0 auto !important;
+        display: inline-flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        gap: 6px !important;
+        height: 30px !important;
+        min-height: 30px !important;
+        padding: 0 12px !important;
+        border-radius: 8px !important;
+        font-size: 12.5px !important;
+        font-weight: 500 !important;
+        letter-spacing: 0.01em !important;
+        background: transparent !important;
+        border: 1px solid rgba(148, 163, 184, 0.22) !important;
+        color: var(--ink-soft) !important;
+        box-shadow: none !important;
+        transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease !important;
+    }
+    .export-icon-btn::before {
+        content: "" !important;
+        display: inline-block !important;
+        font-weight: 700 !important;
+        font-size: 11px !important;
+        line-height: 1 !important;
+        letter-spacing: 0.02em !important;
+    }
+    /* 每格式语义化徽标：Markdown 通用 M↓，PDF/Word 用格式缩写 */
+    .export-md-btn::before {
+        content: "M\\2193" !important;
+        font-size: 12px !important;
+    }
+    .export-pdf-btn::before {
+        content: "PDF" !important;
+        font-size: 9px !important;
+        letter-spacing: 0.06em !important;
+    }
+    .export-docx-btn::before {
+        content: "W" !important;
+        font-size: 12px !important;
+    }
+    .export-icon-btn:hover {
+        color: #22d3ee !important;
+        border-color: rgba(34, 211, 238, 0.5) !important;
+        background: rgba(34, 211, 238, 0.06) !important;
+    }
+    #export-file {
+        flex: 1 1 220px !important;
+        max-width: 420px !important;
+    }
+
+    #lang-toggle-btn {
+        height: 36px !important;
+        min-height: 36px !important;
+        font-size: 14px !important;
+        font-weight: 500 !important;
+        border-radius: 10px !important;
+    }
+
+    /* Corner icon close — full-width footer "关闭" was the wrong pattern */
+    #settings-close-btn,
+    #export-close-btn {
+        position: absolute !important;
+        top: 12px !important;
+        right: 12px !important;
+        z-index: 3 !important;
+        width: 36px !important;
+        min-width: 36px !important;
+        max-width: 36px !important;
+        height: 36px !important;
+        min-height: 36px !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        border-radius: 10px !important;
+        border: 1px solid rgba(34, 211, 238, 0.18) !important;
+        background: rgba(15, 23, 42, 0.85) !important;
+        color: #94a3b8 !important;
+        box-shadow: none !important;
+        font-size: 0 !important;
+        line-height: 0 !important;
+        overflow: hidden !important;
+        display: inline-flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+    }
+    #settings-close-btn:hover,
+    #export-close-btn:hover {
+        color: #22d3ee !important;
+        border-color: rgba(34, 211, 238, 0.45) !important;
+        background: rgba(34, 211, 238, 0.08) !important;
+    }
+    #settings-close-btn::before,
+    #export-close-btn::before {
+        content: "" !important;
+        display: block !important;
+        width: 18px !important;
+        height: 18px !important;
+        background-color: currentColor !important;
+        -webkit-mask-repeat: no-repeat !important;
+        mask-repeat: no-repeat !important;
+        -webkit-mask-position: center !important;
+        mask-position: center !important;
+        -webkit-mask-size: contain !important;
+        mask-size: contain !important;
+        -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M18 6 6 18'/%3E%3Cpath d='m6 6 12 12'/%3E%3C/svg%3E") !important;
+        mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M18 6 6 18'/%3E%3Cpath d='m6 6 12 12'/%3E%3C/svg%3E") !important;
+    }
+    #settings-close-btn *,
+    #export-close-btn * {
+        font-size: 0 !important;
+        opacity: 0 !important;
+        pointer-events: none !important;
+    }
+
+    /* Options helper text under each field (block-info is the TITLE). */
+    #settings-modal .md p{
+        color: #94a3b8 !important;
+        font-size: 0.72em !important;
+        line-height: 1.4 !important;
+        margin: 2px 0 6px !important;
+    }
+
+    #options-accordion,
+    #options-panel .gr-accordion,
+    #options-panel details {
+        border: none !important;
+        background: transparent !important;
+    }
+
+    #options-accordion > summary,
+    #options-panel .label-wrap {
+        font-size: 0.78em !important;
+        font-weight: 700 !important;
+        letter-spacing: 0.08em !important;
+        text-transform: uppercase !important;
+        color: #64748b !important;
+    }
+
+    /* Empty progress state */
+    #log-view.progress-empty,
+    #log-view:has(h3),
+    #output-section #log-view {
+        display: flex;
+        flex-direction: column;
+    }
+
+    #log-view h3 {
+        color: #e2e8f0 !important;
+        font-size: 1.15em !important;
+        border-bottom: none !important;
+        margin: 8px 0 8px !important;
+        padding-bottom: 0 !important;
+    }
+
+    #log-view p {
+        color: #94a3b8 !important;
+        font-size: 0.95em !important;
+        max-width: 36em;
+    }
+
+    .progress-empty-wrap {
+        min-height: 220px;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        justify-content: center;
+        padding: 12px 8px 24px;
+        background:
+            radial-gradient(1200px 240px at 10% 0%, rgba(56,189,248,0.06), transparent 60%),
+            var(--panel-bg-solid);
+        border-radius: 16px;
+    }
 
     /* ===== Options Panel ===== */
     #right-options-column {
@@ -4434,7 +6139,7 @@ def build_demo():
 
     #options-panel {
         width: 100% !important;
-        background: #ffffff !important;
+        background: var(--panel-bg) !important;
         border: 1px solid rgba(0, 0, 0, 0.03) !important;
         border-radius: 16px !important;
         box-shadow: 0 4px 12px rgba(0, 0, 0, 0.02) !important;
@@ -4509,7 +6214,7 @@ def build_demo():
     #search-result-num-selector .wrap,
     #verification-rounds-selector .wrap,
     #output-detail-level-selector .wrap {
-        background: #ffffff !important;
+        background: var(--panel-bg) !important;
         border: 1px solid rgba(0, 0, 0, 0.1) !important;
         border-radius: 10px !important;
         box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02) !important;
@@ -4541,55 +6246,37 @@ def build_demo():
         fill: #475569 !important;
     }
     
+    /* btn-row layout owned by P0 search-card rules above */
     #btn-row {
-        padding: 12px 24px 16px !important;
-        border-top: 1px solid rgba(0, 0, 0, 0.04);
-        gap: 12px !important;
-        background: #ffffff;
+        padding: 14px 4px 4px !important;
+        border-top: none !important;
+        gap: 10px !important;
+        background: transparent !important;
     }
     
+    /* Primary CTA styles owned by Google polish block above */
     #run-btn {
-        background: #10b981 !important;
-        color: #ffffff !important;
-        border: none !important;
-        border-radius: 12px !important;
-        padding: 12px 20px !important;
-        font-size: 0.92em !important;
-        font-weight: 600 !important;
-        letter-spacing: 0.05em !important;
         cursor: pointer !important;
-        transition: all 0.2s ease !important;
-        box-shadow: 0 2px 4px rgba(16, 185, 129, 0.15) !important;
+        transition: background 0.15s ease, box-shadow 0.15s ease !important;
     }
     
     #run-btn:hover {
-        background: #059669 !important;
-        transform: translateY(-1px) !important;
-        box-shadow: 0 4px 8px rgba(16, 185, 129, 0.25) !important;
+        /* keep Google blue hover from polish block */
     }
     
     #stop-btn {
-        background: #ffffff !important;
-        color: #64748b !important;
-        border: 1px solid rgba(0, 0, 0, 0.06) !important;
-        border-radius: 12px !important;
-        padding: 12px 20px !important;
-        font-size: 0.92em !important;
-        font-weight: 500 !important;
         cursor: pointer !important;
-        transition: all 0.2s ease !important;
+        transition: background 0.15s ease, color 0.15s ease !important;
     }
     
     #stop-btn:hover {
-        color: #dc2626 !important;
-        border-color: rgba(220, 38, 38, 0.2) !important;
-        background: #fef2f2 !important;
+        /* gray hover from polish block */
     }
     
     /* ===== Output Section ===== */
     #output-section {
         width: 100% !important;
-        max-width: 980px !important;
+        max-width: 800px !important;
         margin: 0 auto !important;
         padding: 0 0 60px !important;
     }
@@ -4605,14 +6292,14 @@ def build_demo():
     }
     
     #log-view {
-        padding: 40px 48px !important;
-        min-height: 420px;
+        padding: 8px 4px 28px !important;
+        min-height: 120px;
         height: auto !important;
         overflow: visible !important;
-        background: #ffffff !important;
+        background: transparent !important;
         border: none !important;
-        border-radius: 28px !important;
-        box-shadow: 0 4px 20px -4px rgba(0, 0, 0, 0.04), 0 0 0 1px rgba(0, 0, 0, 0.03) !important;
+        border-radius: 0 !important;
+        box-shadow: none !important;
     }
 
     #export-row {
@@ -4621,21 +6308,6 @@ def build_demo():
         align-items: flex-end !important;
     }
 
-    #export-btn {
-        border-radius: 12px !important;
-        border: 1px solid rgba(16, 185, 129, 0.18) !important;
-        color: #047857 !important;
-        background: #ecfdf5 !important;
-        font-weight: 700 !important;
-    }
-
-    .export-hint {
-        margin: 8px 6px 0;
-        color: #64748b;
-        font-size: 0.82em;
-        line-height: 1.6;
-    }
-    
     #log-view h3 {
         font-size: 1.02em;
         font-weight: 700;
@@ -4662,13 +6334,13 @@ def build_demo():
     
     /* Thought details card */
     .thought-card {
-        background: linear-gradient(180deg, rgba(248, 250, 252, 0.94), rgba(255, 255, 255, 0.98));
-        border: 1px solid rgba(15, 23, 42, 0.06);
-        border-left: 3px solid #10b981;
-        border-radius: 14px;
-        padding: 12px 16px;
-        margin: 12px 0;
-        box-shadow: 0 4px 12px rgba(15, 23, 42, 0.015);
+        background: transparent;
+        border: none;
+        border-left: 2px solid rgba(52, 211, 153, 0.45);
+        border-radius: 0;
+        padding: 4px 0 4px 12px;
+        margin: 10px 0;
+        box-shadow: none;
     }
     
     .thought-card > summary {
@@ -4694,12 +6366,13 @@ def build_demo():
     
     /* Tool card */
     .tool-card {
-        background: linear-gradient(180deg, rgba(246, 248, 250, 0.94), rgba(255, 255, 255, 0.98));
-        border: 1px solid rgba(15, 23, 42, 0.07);
-        border-radius: 18px;
-        padding: 14px 16px;
-        margin: 14px 0;
-        box-shadow: 0 8px 20px rgba(15, 23, 42, 0.04);
+        background: transparent;
+        border: none;
+        border-left: 2px solid rgba(148, 163, 184, 0.28);
+        border-radius: 0;
+        padding: 4px 0 4px 12px;
+        margin: 10px 0;
+        box-shadow: none;
     }
     
     .tool-header {
@@ -4771,6 +6444,33 @@ def build_demo():
         margin: 0 0 14px;
     }
 
+    /* Finished-run process bar: quiet, clickable, answer stays above */
+    #log-view .process-details {
+        margin: 14px 0 8px !important;
+        border-radius: 12px !important;
+        border: 1px solid rgba(148, 163, 184, 0.22) !important;
+        background: rgba(15, 23, 42, 0.55) !important;
+        padding: 0 !important;
+    }
+    #log-view .process-details > summary {
+        cursor: pointer !important;
+        list-style: none !important;
+        padding: 10px 14px !important;
+        color: #94a3b8 !important;
+        font-size: 13px !important;
+        font-weight: 500 !important;
+        user-select: none !important;
+    }
+    #log-view .process-details > summary::-webkit-details-marker { display: none !important; }
+    #log-view .process-details[open] > summary {
+        color: #e2e8f0 !important;
+        border-bottom: 1px solid rgba(148, 163, 184, 0.14) !important;
+    }
+    #log-view .process-details .search-step-board,
+    #log-view .process-details .thought-card,
+    #log-view .process-details .tool-card {
+        margin: 8px 12px !important;
+    }
     #log-view .process-details {
         margin-top: 14px;
         border: 1px solid rgba(15, 23, 42, 0.08);
@@ -4795,20 +6495,29 @@ def build_demo():
         border: 1px solid #e5e7eb;
         border-radius: 14px;
         overflow: hidden;
-        background: #ffffff;
+        background: var(--panel-bg-solid);
     }
 
     #log-view .search-step-item {
         padding: 12px 16px;
         font-size: 0.88em;
         line-height: 1.6;
-        color: #334155;
-        border-bottom: 1px solid #eef2f7;
-        background: #f9fafb;
+        color: #e2e8f0;
+        border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+        background: rgba(15, 23, 42, 0.55);
     }
 
     #log-view .search-step-item:last-child {
         border-bottom: none;
+    }
+
+    #log-view .search-step-item a,
+    #log-view .tool-card a,
+    #log-view .thought-card a {
+        color: #67e8f9 !important;
+        text-decoration: underline !important;
+        text-underline-offset: 2px;
+        word-break: break-all;
     }
     
     #log-view::-webkit-scrollbar {
@@ -4828,13 +6537,60 @@ def build_demo():
         background: #d4d4d8;
     }
     
+
+    /* Force readable search-step text on dark board (overrides earlier light theme) */
+    #log-view .search-step-board .search-step-item {
+        color: #e2e8f0 !important;
+        background: transparent !important;
+        border-bottom-color: rgba(148, 163, 184, 0.14) !important;
+    }
+    #log-view .search-step-board .search-step-item a {
+        color: #67e8f9 !important;
+    }
+    #log-view .tool-card, #log-view .thought-card {
+        color: #e2e8f0 !important;
+    }
+    #log-view .tool-card a, #log-view .thought-card a {
+        color: #67e8f9 !important;
+    }
+
+    /* Search result cards nested in dark #log-view — force high contrast */
+    #log-view .search-card {
+        background: rgba(15, 23, 42, 0.92) !important;
+        border: 1px solid rgba(34, 211, 238, 0.2) !important;
+        color: #e2e8f0 !important;
+    }
+    #log-view .search-header,
+    #log-view .search-count {
+        background: rgba(8, 47, 73, 0.45) !important;
+        border-bottom-color: rgba(34, 211, 238, 0.12) !important;
+        color: #cbd5e1 !important;
+    }
+    #log-view .search-query {
+        color: #f1f5f9 !important;
+    }
+    #log-view .search-result-item,
+    #log-view a.search-result-item {
+        color: #e2e8f0 !important;
+        background: transparent !important;
+    }
+    #log-view .search-result-item:hover,
+    #log-view a.search-result-item:hover {
+        background: rgba(34, 211, 238, 0.08) !important;
+        border-left-color: #22d3ee !important;
+        color: #f8fafc !important;
+    }
+    #log-view .result-title,
+    #log-view .search-result-item .result-title {
+        color: #f1f5f9 !important;
+    }
+    #log-view .search-result-item .result-icon {
+        opacity: 0.9 !important;
+    }
+
     /* ===== Footer ===== */
     .app-footer {
-        text-align: center;
-        padding: 24px;
-        color: #a1a1aa;
-        font-size: 0.85em;
-        border-top: 1px solid #f0f0f0;
+        display: none !important;
     }
     
     /* ===== Loading Spinner ===== */
@@ -4863,8 +6619,8 @@ def build_demo():
     
     /* ===== Search Results Card ===== */
     .search-card {
-        background: #ffffff;
-        border: 1px solid #e5e5e5;
+        background: var(--panel-bg-solid);
+        border: 1px solid var(--glass-border);
         border-radius: 12px;
         margin: 16px 0;
         overflow: hidden;
@@ -4934,8 +6690,8 @@ def build_demo():
     
     /* ===== Scrape Card ===== */
     .scrape-card {
-        background: #ffffff;
-        border: 1px solid #e5e5e5;
+        background: var(--panel-bg-solid);
+        border: 1px solid var(--glass-border);
         border-radius: 10px;
         margin: 12px 0;
         padding: 12px 16px;
@@ -5202,7 +6958,6 @@ def build_demo():
         border-color: rgba(16, 185, 129, 0.3) !important;
         color: #10b981 !important;
     }
-    }
 
     .nav-brand {
         display: flex;
@@ -5235,12 +6990,23 @@ def build_demo():
         gap: 12px;
     }
 
-    /* ===== Hero Section ===== */
+    /* ===== Hero Section (Google-like typography) ===== */
+    .hero-section {
+        position: relative !important;
+        isolation: isolate;
+    }
+    /* Gradio HTML wrappers must not stack old+new text during updates */
+    #top-utility-bar,
+    #main-content-column > .html-container,
+    .hero-wrap {
+        overflow: visible;
+    }
+
     .hero-section {
         text-align: center;
-        padding: 16px 16px 32px;
-        max-width: 1040px;
-        margin: 0 auto 8px;
+        padding: 56px 16px 22px;
+        max-width: 584px;
+        margin: 0 auto 0;
         position: relative;
     }
 
@@ -5248,61 +7014,138 @@ def build_demo():
         display: flex;
         align-items: center;
         justify-content: center;
-        gap: 10px;
-        margin-bottom: 16px;
+        gap: 8px;
+        margin-bottom: 8px;
     }
 
     .hero-logo {
-        width: min(160px, 36vw);
-        max-height: 64px;
+        width: min(180px, 42vw);
+        max-height: 72px;
         height: auto;
         object-fit: contain;
         box-shadow: none;
         border-radius: 0;
         flex-shrink: 0;
-        opacity: 0.9;
+        opacity: 1;
     }
 
     .hero-brand-name {
-        font-size: 0.96em;
-        font-weight: 700;
-        color: #0f172a;
-        letter-spacing: 0.01em;
+        display: none;
     }
 
     .hero-title {
-        font-size: clamp(1.8rem, 3.2vw, 3rem);
-        font-weight: 900;
-        background: linear-gradient(135deg, #065f46 0%, #10b981 40%, #059669 100%);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        background-clip: text;
-        margin: 0 0 10px 0;
-        letter-spacing: -0.04em;
-        line-height: 1.15;
+        font-size: 22px;
+        font-weight: 500;
+        color: #e2e8f0;
+        background: none;
+        -webkit-text-fill-color: #e2e8f0;
+        margin: 4px 0 6px 0;
+        letter-spacing: 0.01em;
+        line-height: 1.3;
     }
 
     .hero-subtitle {
         display: flex;
         align-items: center;
         justify-content: center;
-        gap: 16px;
-        color: #94a3b8;
-        font-size: 0.92em;
-        font-weight: 500;
+        gap: 8px;
+        color: #b8c5d6;
+        font-size: 13px;
+        font-weight: 400;
         letter-spacing: 0.02em;
     }
 
     .hero-line {
-        width: 40px;
-        height: 1px;
-        background: linear-gradient(90deg, transparent, rgba(16, 185, 129, 0.3), transparent);
+        display: none;
+    }
+
+    #layout-shell {
+        width: 100% !important;
+        max-width: 680px !important;
+        margin: 0 auto !important;
+        padding: 0 16px 48px !important;
+        gap: 0 !important;
+    }
+
+    #output-section {
+        max-width: 680px !important;
+        margin: 36px auto 0 !important;
+        padding-bottom: 48px !important;
+    }
+
+    .output-label {
+        font-size: 11px !important;
+        font-weight: 500 !important;
+        color: #94a3b8 !important;
+        letter-spacing: 0.06em !important;
+    }
+
+    #log-view {
+        padding: 8px 4px 24px !important;
+        min-height: 120px !important;
+        border-radius: 0 !important;
+        border: none !important;
+        background: transparent !important;
+        box-shadow: none !important;
+        backdrop-filter: none;
+        font-size: 15px !important;
+        color: var(--ink-body) !important;
+        line-height: 1.7 !important;
+    }
+
+    #log-view h3 {
+        font-size: 16px !important;
+        font-weight: 600 !important;
+        color: var(--accent) !important;
+        margin: 0 0 6px !important;
+        border-bottom: none !important;
+        padding-bottom: 0 !important;
+    }
+
+    #log-view p {
+        font-size: 14px !important;
+        color: var(--ink-soft) !important;
+        line-height: 1.55 !important;
+    }
+
+    .top-nav {
+        max-width: 980px !important;
+        width: calc(100% - 32px) !important;
+        margin: 8px auto 0 !important;
+        padding: 8px 4px !important;
+    }
+
+    .nav-brand-text {
+        font-size: 14px !important;
+        font-weight: 500 !important;
+        color: #94a3b8 !important;
+    }
+
+    .skills-top-link {
+        font-size: 13px !important;
+        color: #1a73e8 !important;
+        font-weight: 500 !important;
+    }
+
+    .app-footer {
+        font-size: 12px !important;
+        color: #94a3b8 !important;
+    }
+
+    #main-content-column {
+        width: 100% !important;
+        padding: 0 !important;
+        gap: 0 !important;
     }
 
     /* ===== Responsive ===== */
     @media (max-width: 768px) {
         .hero-title {
-            font-size: 2.2em;
+            font-size: 18px;
+        }
+
+        .hero-section {
+            padding-top: 28px;
         }
 
         .brand-logo {
@@ -5382,6 +7225,883 @@ def build_demo():
     /* task_id <-> URL 同步桥的隐藏样式：
        Gradio 5 中 visible=False 的组件不进入 DOM，JS 无法找到，
        因此用 CSS 隐藏一个 visible=True 的 textbox。 */
+
+    /* ===== Unified icon system (outline, 20px in 36px hit target) ===== */
+    .ui-icon-btn,
+    .skills-icon-btn {
+        display: inline-flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        width: 36px !important;
+        height: 36px !important;
+        min-width: 36px !important;
+        padding: 0 !important;
+        border-radius: 10px !important;
+        border: 1px solid var(--glass-border) !important;
+        background: var(--glass-bg) !important;
+        color: var(--icon-muted) !important;
+        text-decoration: none !important;
+        box-sizing: border-box !important;
+        transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease !important;
+        backdrop-filter: blur(10px);
+        cursor: pointer;
+    }
+
+    .ui-icon-btn svg,
+    .skills-icon-btn svg {
+        width: 20px !important;
+        height: 20px !important;
+        stroke-width: 1.75 !important;
+        display: block !important;
+    }
+
+    .ui-icon-btn:hover,
+    .skills-icon-btn:hover {
+        color: var(--icon-accent) !important;
+        border-color: rgba(34, 211, 238, 0.4) !important;
+        background: rgba(34, 211, 238, 0.08) !important;
+        box-shadow: 0 0 0 1px rgba(34, 211, 238, 0.12) !important;
+    }
+
+    .skills-icon-btn.is-copied {
+        color: var(--accent-emerald) !important;
+        border-color: rgba(52, 211, 153, 0.45) !important;
+    }
+
+    .skills-icon-btn-disabled {
+        opacity: 0.45 !important;
+        cursor: not-allowed !important;
+        pointer-events: none !important;
+    }
+
+
+    /* hide-gradio-textbox-label
+       NOTE: In Gradio 5 the <label> wraps the textarea — never display:none the label itself. */
+    #question-input span[data-testid="block-info"],
+    #question-input .sr-only,
+    #gr-task-id-bridge span[data-testid="block-info"],
+    #gr-task-id-bridge .sr-only,
+    #gr-task-id-bridge .label-wrap {
+        position: absolute !important;
+        width: 1px !important;
+        height: 1px !important;
+        padding: 0 !important;
+        margin: -1px !important;
+        overflow: hidden !important;
+        clip: rect(0, 0, 0, 0) !important;
+        white-space: nowrap !important;
+        border: 0 !important;
+    }
+    #question-input label,
+    #question-input .input-container,
+    #question-input textarea {
+        display: block !important;
+        visibility: visible !important;
+        opacity: 1 !important;
+        width: 100% !important;
+        max-width: 100% !important;
+    }
+    #question-input textarea {
+        min-height: 48px !important;
+        height: auto !important;
+    }
+
+
+
+
+
+    /* idle-output-collapse */
+    #output-section.hidden,
+    #output-section[style*="display: none"],
+    #output-section:not([style*="display: block"]):not([style*="display:flex"]) {
+        min-height: 0 !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        border: none !important;
+    }
+
+
+    /* ===== Dark progress + report presentation ===== */
+    .runtime-status {
+        display: flex !important;
+        align-items: center !important;
+        gap: 10px !important;
+        margin: 16px 0 10px !important;
+        padding: 12px 14px !important;
+        border-radius: 12px !important;
+        border: 1px solid rgba(100, 180, 200, 0.2) !important;
+        background: rgba(36, 52, 72, 0.7) !important;
+        color: #bae6fd !important;
+        font-size: 13px !important;
+    }
+    .runtime-spinner {
+        width: 16px !important;
+        height: 16px !important;
+        border: 2px solid rgba(165, 243, 252, 0.25) !important;
+        border-top-color: #22d3ee !important;
+        border-radius: 50% !important;
+        animation: miro-spin 0.8s linear infinite !important;
+        flex: 0 0 16px !important;
+    }
+    @keyframes miro-spin { to { transform: rotate(360deg); } }
+
+    #log-view .thought-card,
+    #log-view .tool-card,
+    #log-view .process-details,
+    #log-view .search-step-board {
+        background: transparent !important;
+        border: none !important;
+        border-left: 2px solid rgba(148, 163, 184, 0.22) !important;
+        border-radius: 0 !important;
+        color: #cbd5e1 !important;
+        box-shadow: none !important;
+        padding: 6px 0 6px 12px !important;
+        margin: 10px 0 !important;
+    }
+    #log-view .thought-card > summary,
+    #log-view .process-details > summary,
+    #log-view .tool-header {
+        color: #e2e8f0 !important;
+    }
+    #log-view .thought-content,
+    #log-view .tool-brief,
+    #log-view p,
+    #log-view li {
+        color: #cbd5e1 !important;
+    }
+    #log-view .search-step-item {
+        border-bottom: 1px solid rgba(148, 163, 184, 0.12) !important;
+        color: #e2e8f0 !important;
+        padding: 8px 4px !important;
+        font-size: 13px !important;
+    }
+    #log-view h1, #log-view h2, #log-view h3 {
+        color: #e2e8f0 !important;
+        border-color: rgba(100, 180, 200, 0.2) !important;
+    }
+    #log-view blockquote {
+        background: rgba(34, 211, 238, 0.08) !important;
+        border-left-color: #22d3ee !important;
+        color: #e2e8f0 !important;
+    }
+    #log-view pre {
+        background: #1e293b !important;
+        color: #e2e8f0 !important;
+        border: 1px solid rgba(34, 211, 238, 0.15) !important;
+    }
+    #log-view code {
+        background: rgba(34, 211, 238, 0.12) !important;
+        color: #a5f3fc !important;
+    }
+
+    /* ===== Document-style report (compact, not card wall) ===== */
+    /* Document typography in report body */
+    #log-view h1 {
+        font-size: 1.45rem !important;
+        font-weight: 700 !important;
+        color: #e2e8f0 !important;
+        margin: 1.4em 0 0.55em !important;
+        letter-spacing: -0.01em !important;
+        border: none !important;
+        padding: 0 !important;
+    }
+    #log-view h2 {
+        font-size: 1.15rem !important;
+        font-weight: 650 !important;
+        color: #e2e8f0 !important;
+        margin: 1.35em 0 0.45em !important;
+        border: none !important;
+        padding: 0 !important;
+        border-bottom: none !important;
+    }
+    #log-view h3 {
+        font-size: 1.02rem !important;
+        font-weight: 600 !important;
+        color: #cbd5e1 !important;
+        margin: 1.15em 0 0.4em !important;
+        border: none !important;
+        padding: 0 !important;
+    }
+    #log-view p {
+        margin: 0 0 0.85em !important;
+        line-height: 1.75 !important;
+        color: #cbd5e1 !important;
+        max-width: none !important;
+    }
+    #log-view li {
+        margin: 0.25em 0 !important;
+        line-height: 1.65 !important;
+        color: #cbd5e1 !important;
+    }
+    #log-view strong, #log-view b {
+        color: #e2e8f0 !important;
+        font-weight: 650 !important;
+    }
+    #log-view a {
+        color: #7dd3fc !important;
+        text-decoration: underline !important;
+        text-underline-offset: 2px !important;
+        text-decoration-color: rgba(125, 211, 252, 0.35) !important;
+    }
+    #log-view blockquote {
+        background: transparent !important;
+        border: none !important;
+        border-left: 3px solid rgba(56, 189, 248, 0.4) !important;
+        padding: 2px 0 2px 14px !important;
+        margin: 0.9em 0 !important;
+        border-radius: 0 !important;
+        color: #94a3b8 !important;
+        font-style: normal !important;
+    }
+
+    .report-glance {
+        margin: 4px 0 20px !important;
+        padding: 0 0 14px !important;
+        border: none !important;
+        border-bottom: 1px solid rgba(148, 163, 184, 0.16) !important;
+        border-radius: 0 !important;
+        background: transparent !important;
+        box-shadow: none !important;
+    }
+    .report-glance-meta {
+        display: flex !important;
+        align-items: center !important;
+        justify-content: flex-start !important;
+        flex-wrap: wrap !important;
+        gap: 10px !important;
+        margin: 0 0 8px !important;
+    }
+    .report-glance-kicker {
+        font-size: 12px !important;
+        letter-spacing: 0.08em !important;
+        text-transform: uppercase !important;
+        color: #94a3b8 !important;
+        margin: 0 !important;
+        font-weight: 600 !important;
+    }
+    .report-glance-head {
+        display: none !important; /* legacy */
+    }
+    .report-glance-body {
+        display: block !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        color: #e2e8f0 !important;
+        font-size: 1.15rem !important;
+        font-weight: 650 !important;
+        line-height: 1.65 !important;
+        white-space: pre-wrap !important;
+        word-break: break-word !important;
+    }
+    .report-fold {
+        margin: 10px 0 12px !important;
+        padding: 0 !important;
+        border-radius: 0 !important;
+        border: none !important;
+        border-top: 1px solid rgba(148, 163, 184, 0.12) !important;
+        background: transparent !important;
+        box-shadow: none !important;
+        overflow: visible !important;
+    }
+    .report-fold > summary {
+        cursor: pointer !important;
+        list-style: none !important;
+        padding: 10px 0 !important;
+        color: #94a3b8 !important;
+        font-weight: 550 !important;
+        font-size: 0.92rem !important;
+        user-select: none !important;
+    }
+    .report-fold > summary::-webkit-details-marker { display: none !important; }
+    .report-fold > summary::before {
+        content: "▸" !important;
+        display: inline-block !important;
+        margin-right: 6px !important;
+        color: #64748b !important;
+        opacity: 0.9 !important;
+        transition: transform 0.15s ease !important;
+    }
+    .report-fold[open] > summary::before {
+        transform: rotate(90deg) !important;
+    }
+    .report-fold[open] > summary {
+        border-bottom: none !important;
+        color: #cbd5e1 !important;
+    }
+    .report-fold > *:not(summary) {
+        padding: 0 0 8px 14px !important;
+        color: #cbd5e1 !important;
+        border-left: 2px solid rgba(148, 163, 184, 0.18) !important;
+        margin-left: 4px !important;
+    }
+    .report-tldr {
+        margin: 4px 0 18px !important;
+        padding: 0 0 12px !important;
+        border-radius: 0 !important;
+        border: none !important;
+        border-left: 3px solid rgba(56, 189, 248, 0.45) !important;
+        padding-left: 14px !important;
+        background: transparent !important;
+        box-shadow: none !important;
+    }
+    .report-tldr-head {
+        display: flex !important;
+        align-items: center !important;
+        justify-content: space-between !important;
+        gap: 10px !important;
+        margin-bottom: 6px !important;
+        color: #e2e8f0 !important;
+        font-size: 0.95rem !important;
+    }
+    .confidence-badge {
+        display: inline-flex !important;
+        align-items: center !important;
+        padding: 1px 8px !important;
+        border-radius: 6px !important;
+        font-size: 11px !important;
+        font-weight: 600 !important;
+        border: 1px solid transparent !important;
+        white-space: nowrap !important;
+        letter-spacing: 0.02em !important;
+    }
+    .confidence-high { background: rgba(16,185,129,0.18) !important; color: #6ee7b7 !important; border-color: rgba(16,185,129,0.35) !important; }
+    .confidence-mid { background: rgba(234,179,8,0.16) !important; color: #fde68a !important; border-color: rgba(234,179,8,0.35) !important; }
+    .confidence-low { background: rgba(248,113,113,0.16) !important; color: #fecaca !important; border-color: rgba(248,113,113,0.35) !important; }
+
+    .conflict-heading { display: flex !important; align-items: center !important; gap: 8px !important; flex-wrap: wrap !important; }
+    .conflict-tag {
+        display: inline-flex !important;
+        padding: 1px 8px !important;
+        border-radius: 999px !important;
+        font-size: 11px !important;
+        font-weight: 600 !important;
+        background: rgba(251, 146, 60, 0.16) !important;
+        color: #fdba74 !important;
+        border: 1px solid rgba(251, 146, 60, 0.35) !important;
+    }
+
+    .mermaid-card {
+        margin: 12px 0 18px !important;
+        padding: 12px 14px !important;
+        border-radius: 14px !important;
+        border: 1px solid rgba(34, 211, 238, 0.2) !important;
+        background: rgba(2, 6, 23, 0.65) !important;
+        overflow-x: auto !important;
+    }
+
+    a.ref-citation, a.ref-chip {
+        display: inline-flex !important;
+        align-items: center !important;
+        padding: 0 6px !important;
+        margin: 0 2px !important;
+        border-radius: 6px !important;
+        background: rgba(34, 211, 238, 0.12) !important;
+        color: #67e8f9 !important;
+        text-decoration: none !important;
+        font-weight: 600 !important;
+        font-size: 0.92em !important;
+        border: 1px solid rgba(34, 211, 238, 0.22) !important;
+    }
+    a.ref-citation:hover { background: rgba(34, 211, 238, 0.22) !important; }
+
+    .output-label {
+        color: #22d3ee !important;
+        letter-spacing: 0.08em !important;
+        text-transform: uppercase !important;
+        font-size: 11px !important;
+        font-weight: 600 !important;
+        margin: 0 0 8px !important;
+    }
+
+    /* e2e-stop-disabled — idle Stop: readable muted, not invisible */
+    #stop-btn[disabled],
+    #stop-btn.disabled,
+    #stop-btn[aria-disabled="true"],
+    #btn-row #stop-btn:disabled,
+    #btn-row #stop-btn[disabled] button,
+    #stop-btn[disabled] button,
+    #stop-btn:disabled button {
+        opacity: 0.82 !important;
+        filter: none !important;
+        cursor: not-allowed !important;
+        pointer-events: none !important;
+        box-shadow: none !important;
+        border-color: rgba(148, 163, 184, 0.28) !important;
+        color: #94a3b8 !important;
+        background: rgba(30, 41, 59, 0.55) !important;
+    }
+
+    /* Primary Start should dominate the row */
+    #run-btn,
+    #btn-row #run-btn {
+        min-width: 132px !important;
+        font-weight: 600 !important;
+        box-shadow: 0 0 0 1px rgba(34, 211, 238, 0.25), 0 8px 24px rgba(34, 211, 238, 0.18) !important;
+    }
+
+    /* Secondary settings: quieter than primary, same chip language as top icons */
+    #settings-open-btn {
+        background: rgba(15, 23, 42, 0.72) !important;
+        border: 1px solid rgba(34, 211, 238, 0.18) !important;
+        color: #cbd5e1 !important;
+    }
+    #settings-open-btn:hover {
+        border-color: rgba(34, 211, 238, 0.45) !important;
+        color: #22d3ee !important;
+        background: rgba(34, 211, 238, 0.08) !important;
+    }
+
+    /* e2e-hide-textbox-word */
+    #question-input label > span:not(.svelte-input),
+    #question-input [data-testid="block-info"],
+    #gr-task-id-bridge [data-testid="block-info"],
+    #gr-task-id-bridge label > span {
+        position: absolute !important;
+        width: 1px !important;
+        height: 1px !important;
+        padding: 0 !important;
+        margin: -1px !important;
+        overflow: hidden !important;
+        clip: rect(0,0,0,0) !important;
+        white-space: nowrap !important;
+        border: 0 !important;
+        font-size: 0 !important;
+        line-height: 0 !important;
+        color: transparent !important;
+    }
+    /* Hide idle output section chrome completely */
+    #output-section.hidden, #output-section[style*="display: none"],
+    #output-section:not(.show) {
+        /* Gradio uses visible=False — ensure no leftover min-height */
+    }
+    #output-section {
+        margin-top: 8px !important;
+    }
+
+    /* Kill visible Gradio default "Textbox" chrome on search + bridge */
+    #question-input span[data-testid="block-info"],
+    #gr-task-id-bridge span[data-testid="block-info"],
+    #question-input .sr-only.hide,
+    #gr-task-id-bridge .sr-only.hide,
+    #layout-shell > .form > label > span[data-testid="block-info"] {
+        position: absolute !important;
+        width: 1px !important;
+        height: 1px !important;
+        margin: -1px !important;
+        padding: 0 !important;
+        overflow: hidden !important;
+        clip: rect(0, 0, 0, 0) !important;
+        border: 0 !important;
+        color: transparent !important;
+        font-size: 0 !important;
+    }
+    #gr-task-id-bridge {
+        position: absolute !important;
+        left: -10000px !important;
+        width: 1px !important;
+        height: 1px !important;
+        opacity: 0 !important;
+        pointer-events: none !important;
+        overflow: hidden !important;
+    }
+
+    /* hide Gradio queue ETA / settings chrome that collides with top-right utilities */
+    .progress-text,
+    .meta-text,
+    .eta-bar,
+    .wrap > .progress-bar,
+    footer,
+    .footer,
+    .icon-button-wrapper {
+        display: none !important;
+    }
+    #top-utility-bar {
+        isolation: isolate !important;
+        z-index: 200 !important;
+    }
+    #top-utility-bar .progress-text,
+    #top-utility-bar .meta-text,
+    #top-utility-bar .eta-bar,
+    #lang-toggle-btn .progress-text,
+    #lang-toggle-btn .meta-text {
+        display: none !important;
+    }
+    #lang-toggle-btn {
+        position: relative !important;
+        overflow: hidden !important;
+        white-space: nowrap !important;
+        line-height: 36px !important;
+    }
+
+    /* anti-lang-switch-stack */
+    /* Gradio can briefly keep previous HTML siblings when value updates */
+    #top-utility-bar > .html-container > .prose:not(:last-child),
+    #top-utility-bar .html-container > div:not(:last-child),
+    .hero-section-parent > .html-container > div:not(:last-child),
+    #layout-shell > .html-container > .hero-section:not(:last-of-type),
+    #layout-shell .html-container .hero-section ~ .hero-section {
+        display: none !important;
+    }
+    /* Never show offscreen bridges / hidden text as page background noise */
+    #gr-task-id-bridge,
+    #gr-task-id-bridge textarea,
+    .gr-task-id-bridge,
+    textarea[data-testid="textbox"]:not([aria-label]):is([style*="-9999"], [style*="opacity: 0"]) {
+        position: absolute !important;
+        left: -10000px !important;
+        width: 1px !important;
+        height: 1px !important;
+        opacity: 0 !important;
+        overflow: hidden !important;
+        pointer-events: none !important;
+    }
+
+    #top-utility-bar {
+        position: fixed !important;
+        top: 12px !important;
+        right: 16px !important;
+        left: auto !important;
+        z-index: 120 !important;
+        display: inline-flex !important;
+        flex-direction: row !important;
+        flex-wrap: nowrap !important;
+        justify-content: flex-end !important;
+        align-items: center !important;
+        gap: 8px !important;
+        width: auto !important;
+        max-width: none !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        background: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
+        min-height: 36px !important;
+    }
+
+    #top-utility-bar > *,
+    #top-utility-bar > .block,
+    #top-utility-bar > .form,
+    #top-utility-bar .svelte-1svsvh2 {
+        flex: 0 0 auto !important;
+        width: auto !important;
+        max-width: none !important;
+        min-width: 0 !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        background: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
+    }
+
+    #lang-toggle-btn.ui-lang-chip,
+    #lang-toggle-btn {
+        height: 36px !important;
+        min-height: 36px !important;
+        min-width: 72px !important;
+        padding: 0 12px !important;
+        border-radius: 10px !important;
+        border: 1px solid var(--panel-border, rgba(34, 211, 238, 0.18)) !important;
+        background: var(--glass-bg, rgba(15, 23, 42, 0.72)) !important;
+        color: var(--ink-body, #cbd5e1) !important;
+        font-size: 13px !important;
+        font-weight: 500 !important;
+        letter-spacing: 0.02em !important;
+        box-shadow: none !important;
+        width: auto !important;
+    }
+
+    #lang-toggle-btn:hover {
+        border-color: rgba(34, 211, 238, 0.45) !important;
+        color: var(--accent, #22d3ee) !important;
+        background: rgba(34, 211, 238, 0.08) !important;
+    }
+
+    .top-nav-minimal {
+        display: inline-flex !important;
+        justify-content: flex-end !important;
+        align-items: center !important;
+        width: auto !important;
+        max-width: none !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        border: none !important;
+        background: transparent !important;
+        box-shadow: none !important;
+    }
+
+    .top-nav-minimal .nav-left {
+        display: none !important;
+    }
+
+    .top-nav-minimal .nav-right {
+        margin: 0 !important;
+        display: inline-flex !important;
+        align-items: center !important;
+    }
+
+    /* Hide Gradio stock footer strip */
+    footer,
+    .footer,
+    .gradio-container > footer {
+        display: none !important;
+    }
+
+    /* Hide app disclaimer footer + divider */
+    .app-footer,
+    #app-footer-slot {
+        display: none !important;
+        height: 0 !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        border: none !important;
+    }
+
+    .nav-brand,
+    .nav-brand-text,
+    .brand-logo {
+        display: none !important;
+    }
+
+    .output-label {
+        color: var(--accent) !important;
+        letter-spacing: 0.08em !important;
+        text-transform: uppercase !important;
+        font-size: 11px !important;
+        font-weight: 600 !important;
+    }
+
+    .app-footer {
+        display: none !important;
+    }
+
+    /* Action buttons: shared outline icons via CSS masks */
+    .ui-action-btn {
+        display: inline-flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        gap: 8px !important;
+        height: 36px !important;
+        min-height: 36px !important;
+        padding: 0 14px !important;
+        border-radius: 10px !important;
+        font-size: 13px !important;
+        font-weight: 500 !important;
+        letter-spacing: 0.01em !important;
+    }
+
+    .ui-action-btn::before {
+        content: "" !important;
+        display: inline-block !important;
+        width: 20px !important;
+        height: 20px !important;
+        flex: 0 0 20px !important;
+        background-color: currentColor !important;
+        -webkit-mask-repeat: no-repeat !important;
+        mask-repeat: no-repeat !important;
+        -webkit-mask-position: center !important;
+        mask-position: center !important;
+        -webkit-mask-size: contain !important;
+        mask-size: contain !important;
+    }
+
+    .ui-icon-settings::before {
+        -webkit-mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%271.75%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Ccircle%20cx%3D%2212%22%20cy%3D%2212%22%20r%3D%223%22%2F%3E%3Cpath%20d%3D%22M12%202v2%22%2F%3E%3Cpath%20d%3D%22M12%2020v2%22%2F%3E%3Cpath%20d%3D%22m4.93%204.93%201.41%201.41%22%2F%3E%3Cpath%20d%3D%22m17.66%2017.66%201.41%201.41%22%2F%3E%3Cpath%20d%3D%22M2%2012h2%22%2F%3E%3Cpath%20d%3D%22M20%2012h2%22%2F%3E%3Cpath%20d%3D%22m4.93%2019.07%201.41-1.41%22%2F%3E%3Cpath%20d%3D%22m17.66%206.34%201.41-1.41%22%2F%3E%3C%2Fsvg%3E") !important;
+        mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%271.75%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Ccircle%20cx%3D%2212%22%20cy%3D%2212%22%20r%3D%223%22%2F%3E%3Cpath%20d%3D%22M12%202v2%22%2F%3E%3Cpath%20d%3D%22M12%2020v2%22%2F%3E%3Cpath%20d%3D%22m4.93%204.93%201.41%201.41%22%2F%3E%3Cpath%20d%3D%22m17.66%2017.66%201.41%201.41%22%2F%3E%3Cpath%20d%3D%22M2%2012h2%22%2F%3E%3Cpath%20d%3D%22M20%2012h2%22%2F%3E%3Cpath%20d%3D%22m4.93%2019.07%201.41-1.41%22%2F%3E%3Cpath%20d%3D%22m17.66%206.34%201.41-1.41%22%2F%3E%3C%2Fsvg%3E") !important;
+    }
+    .ui-icon-stop::before {
+        -webkit-mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%271.75%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Crect%20x%3D%226%22%20y%3D%226%22%20width%3D%2212%22%20height%3D%2212%22%20rx%3D%221.5%22%2F%3E%3C%2Fsvg%3E") !important;
+        mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%271.75%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Crect%20x%3D%226%22%20y%3D%226%22%20width%3D%2212%22%20height%3D%2212%22%20rx%3D%221.5%22%2F%3E%3C%2Fsvg%3E") !important;
+    }
+    .ui-icon-run::before {
+        -webkit-mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%271.75%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Cpath%20d%3D%22M8%205.5v13l11-6.5-11-6.5z%22%2F%3E%3C%2Fsvg%3E") !important;
+        mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%271.75%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Cpath%20d%3D%22M8%205.5v13l11-6.5-11-6.5z%22%2F%3E%3C%2Fsvg%3E") !important;
+    }
+
+
+    #lang-toggle-btn {
+        background: var(--btn-gray) !important;
+        color: var(--ink-body) !important;
+        border: 1px solid var(--glass-border) !important;
+    }
+
+    #lang-toggle-btn:hover {
+        color: var(--accent) !important;
+        border-color: rgba(34, 211, 238, 0.35) !important;
+    }
+
+    /* Progress cards on dark */
+    .thought-card,
+    .tool-card {
+        background: transparent !important;
+        border-color: transparent !important;
+        color: var(--ink-body) !important;
+    }
+
+    #log-view pre {
+        background: #1e293b !important;
+        color: #e2e8f0 !important;
+        border: 1px solid var(--glass-border) !important;
+    }
+
+    #log-view code {
+        background: rgba(34, 211, 238, 0.1) !important;
+        color: #a5f3fc !important;
+    }
+
+    #log-view p,
+    #log-view li {
+        color: var(--ink-body) !important;
+    }
+
+    /* ===== Aesthetic polish: document + compact emphasis ===== */
+    #layout-shell {
+        gap: 4px !important;
+    }
+    #btn-row {
+        padding: 20px 4px 8px !important;
+        gap: 12px !important;
+    }
+    .report-glance-body p,
+    .report-glance-body {
+        color: #e2e8f0 !important;
+    }
+    #log-view hr,
+    #log-view .prose hr {
+        border: none !important;
+        border-top: 1px solid rgba(148, 163, 184, 0.12) !important;
+        margin: 1.25em 0 !important;
+    }
+    #top-utility-bar {
+        padding: 10px 16px 0 !important;
+    }
+    .skills-top-link {
+        color: #7dd3fc !important;
+        font-weight: 500 !important;
+    }
+    .skills-top-link:hover {
+        color: #bae6fd !important;
+    }
+    #output-section {
+        max-width: 680px !important;
+        margin: 28px auto 0 !important;
+    }
+    .output-label {
+        margin-bottom: 6px !important;
+        opacity: 0.85 !important;
+    }
+    /* Kill leftover hard boxes on progress empty state */
+    .progress-empty-wrap {
+        background: transparent !important;
+        min-height: 100px !important;
+        padding: 8px 0 16px !important;
+    }
+
+
+    /* ===== Soft leftovers: pin dark — do not fight Soft light rules ===== */
+    :root, .dark, .gradio-container, .gradio-container.dark {
+        --checkbox-label-background-fill: rgba(15, 23, 42, 0.88) !important;
+        --checkbox-label-background-fill-hover: rgba(30, 41, 59, 0.95) !important;
+        --checkbox-label-background-fill-selected: rgba(14, 165, 233, 0.78) !important;
+        --checkbox-label-text-color: #cbd5e1 !important;
+        --checkbox-label-text-color-selected: #f8fafc !important;
+        --checkbox-label-border-color: rgba(148, 163, 184, 0.22) !important;
+        --checkbox-label-border-color-hover: rgba(148, 163, 184, 0.35) !important;
+        --checkbox-label-border-color-selected: rgba(56, 189, 248, 0.55) !important;
+        --block-info-text-color: #e2e8f0 !important;
+        --block-label-text-color: #e2e8f0 !important;
+    }
+
+    #settings-modal [data-testid="block-info"]{
+        background: transparent !important;
+        color: #e2e8f0 !important;
+        font-weight: 650 !important;
+        font-size: 0.92em !important;
+        letter-spacing: 0.01em !important;
+        padding: 0 0 4px !important;
+        margin: 0 !important;
+        border: none !important;
+        border-radius: 0 !important;
+        box-shadow: none !important;
+        display: block !important;
+        -webkit-line-clamp: unset !important;
+        overflow: visible !important;
+    }
+
+    /* Radios: unselected chips must stay visible on the dark card; the
+       gradient pill alone communicates selection, so the native radio dot
+       is visually hidden but kept focusable for keyboard users. */
+    #output-detail-level-selector label {
+        background: rgba(51, 65, 85, 0.55) !important;
+        color: #cbd5e1 !important;
+        border: 1px solid rgba(148, 163, 184, 0.3) !important;
+        border-radius: 10px !important;
+        box-shadow: none !important;
+        transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease !important;
+    }
+    #output-detail-level-selector label:hover {
+        background: rgba(65, 82, 110, 0.65) !important;
+        border-color: rgba(56, 189, 248, 0.5) !important;
+        color: #e2e8f0 !important;
+    }
+    #output-detail-level-selector label.selected {
+        background: linear-gradient(135deg, rgba(14, 165, 233, 0.9), rgba(34, 211, 238, 0.8)) !important;
+        color: #06222c !important;
+        border-color: transparent !important;
+        font-weight: 600 !important;
+    }
+    #output-detail-level-selector .wrap {
+        background: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
+        display: flex !important;
+        flex-wrap: wrap !important;
+        gap: 8px !important;
+    }
+    #output-detail-level-selector input[type="radio"] {
+        position: absolute !important;
+        width: 1px !important;
+        height: 1px !important;
+        padding: 0 !important;
+        margin: 0 !important;
+        opacity: 0 !important;
+        pointer-events: none !important;
+    }
+    #output-detail-level-selector label:has(input[type="radio"]:focus-visible) {
+        outline: 2px solid rgba(34, 211, 238, 0.6) !important;
+        outline-offset: 2px !important;
+    }
+
+    /* Document-style process fold / log-view: never light Gradio leftover wash */
+    #log-view,
+    #log-view .block,
+    #log-view .solid,
+    #log-view .prose,
+    #log-view .md,
+    #log-view .process-details,
+    #log-view .thought-card,
+    #log-view .tool-card,
+    #log-view .search-step-board {
+        background: transparent !important;
+        background-color: transparent !important;
+        box-shadow: none !important;
+    }
+    #log-view .process-details {
+        border: 1px solid rgba(148, 163, 184, 0.16) !important;
+        border-radius: 10px !important;
+        padding: 0 !important;
+    }
+    #log-view .process-details > summary,
+    #log-view .thought-card > summary,
+    #log-view .tool-header {
+        color: #94a3b8 !important;
+        background: transparent !important;
+    }
+    #log-view .report-glance-body,
+    #log-view .report-glance-body p {
+        color: #e2e8f0 !important;
+        font-weight: 650 !important;
+    }
+
     #gr-task-id-bridge { position: absolute !important; left: -9999px !important; top: -9999px !important; width: 1px !important; height: 1px !important; opacity: 0 !important; pointer-events: none !important; }
     """
     custom_css = custom_css.replace(
@@ -5391,13 +8111,8 @@ def build_demo():
     # 统一使用本地 logo，避免外部资源依赖。
     if logo_data_uri:
         favicon_head = f'<link rel="icon" href="{logo_data_uri}">'
-        nav_logo_html = (
-            f'<img src="{logo_data_uri}" class="brand-logo" '
-            'alt="OpenClaw-MiroSearch logo" />'
-        )
     else:
         favicon_head = f'<link rel="icon" href="{fallback_favicon_data_uri}">'
-        nav_logo_html = ""
     hero_logo_src = logo_data_uri or fallback_favicon_data_uri
     hero_brand_name_html = (
         ""
@@ -5444,11 +8159,15 @@ def build_demo():
                 let absoluteUrl = '';
                 try { absoluteUrl = new URL(rawUrl, window.location.origin).toString(); } catch (e) { return; }
                 const copiedText = linkEl.dataset.copiedText || 'Link Copied';
-                const originalText = linkEl.dataset.originalText || 'Download Skills';
                 copyTextToClipboard(absoluteUrl).then((copied) => {
                     if (!copied) { return; }
-                    linkEl.textContent = copiedText;
-                    window.setTimeout(() => { linkEl.textContent = originalText; }, 1200);
+                    const prevTitle = linkEl.getAttribute('title') || linkEl.dataset.title || '';
+                    linkEl.setAttribute('title', copiedText);
+                    linkEl.classList.add('is-copied');
+                    window.setTimeout(() => {
+                        linkEl.setAttribute('title', prevTitle || (linkEl.dataset.title || ''));
+                        linkEl.classList.remove('is-copied');
+                    }, 1200);
                 });
             });
         };
@@ -5457,6 +8176,46 @@ def build_demo():
             document.addEventListener('DOMContentLoaded', bindSkillsDownloadAction, { once: true });
         } else {
             bindSkillsDownloadAction();
+        }
+    })();
+    </script>
+    """
+    process_details_force_close_script = """
+    <script>
+    (() => {
+        const closeFinishedProcessPanels = (root) => {
+            const scope = root && root.querySelectorAll ? root : document;
+            scope.querySelectorAll('details.process-details[data-collapsed="1"]').forEach((el) => {
+                if (el.dataset.userToggled === '1') { return; }
+                if (el.open) { el.open = false; }
+                if (el.dataset.boundToggle === '1') { return; }
+                el.dataset.boundToggle = '1';
+                el.addEventListener('toggle', () => {
+                    if (el.open) { el.dataset.userToggled = '1'; }
+                });
+            });
+        };
+        const mo = new MutationObserver((mutations) => {
+            for (const m of mutations) {
+                if (m.type === 'childList' || m.type === 'attributes') {
+                    closeFinishedProcessPanels(document);
+                    break;
+                }
+            }
+        });
+        const start = () => {
+            closeFinishedProcessPanels(document);
+            mo.observe(document.body, {
+                childList: true,
+                subtree: true,
+                attributes: true,
+                attributeFilter: ['open', 'data-collapsed', 'data-fp'],
+            });
+        };
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', start, { once: true });
+        } else {
+            start();
         }
     })();
     </script>
@@ -5518,37 +8277,223 @@ def build_demo():
     })();
     </script>
     """
-    demo_head = f"{favicon_head}{skills_bind_script}{task_id_url_bridge_script}"
+
+    miro_modal_js = """
+<script id="miro-modal-dialog">
+(function () {
+  // Gradio re-creates the overlay subtree whenever `visible` flips, so node
+  // identity is unstable: presence in the DOM *is* the open state, and every
+  // handler has to be delegated from document.
+  var MODALS = [
+    { id: "settings-modal", open: "settings-open-btn", close: "settings-close-btn" }
+  ];
+  var FOCUSABLE = "a[href],button:not([disabled]),input:not([disabled])," +
+    "select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex='-1'])";
+  var openCards = {};
+  var restoreFocusTo = null;
+
+  function topOpenId() {
+    var last = null;
+    for (var i = 0; i < MODALS.length; i++) {
+      if (openCards[MODALS[i].id]) last = MODALS[i].id;
+    }
+    return last;
+  }
+
+  function markOpen(modal, card) {
+    openCards[modal.id] = card;
+    var overlay = card.parentElement;
+    overlay.setAttribute("role", "dialog");
+    overlay.setAttribute("aria-modal", "true");
+    var title = card.querySelector(".modal-title");
+    if (title) {
+      title.id = modal.id + "-title";
+      overlay.setAttribute("aria-labelledby", title.id);
+    }
+    document.documentElement.classList.add("miro-modal-open");
+    // Focus the card, not a field: Gradio hydrates the modal's children in
+    // passes, so "first focusable" is a race and lands on the footer buttons.
+    card.setAttribute("tabindex", "-1");
+    card.focus();
+  }
+
+  function markClosed(modal) {
+    delete openCards[modal.id];
+    if (topOpenId()) return;
+    document.documentElement.classList.remove("miro-modal-open");
+    if (restoreFocusTo && document.contains(restoreFocusTo)) restoreFocusTo.focus();
+    restoreFocusTo = null;
+  }
+
+  function sync() {
+    for (var i = 0; i < MODALS.length; i++) {
+      var modal = MODALS[i];
+      var overlay = document.getElementById(modal.id);
+      var card = overlay && overlay.querySelector(".modal-card");
+      if (card && !openCards[modal.id]) markOpen(modal, card);
+      else if (!card && openCards[modal.id]) markClosed(modal);
+    }
+  }
+
+  document.addEventListener("click", function (ev) {
+    var trigger = ev.target && ev.target.closest ? ev.target.closest(".modal-open-trigger") : null;
+    if (trigger) restoreFocusTo = trigger;
+    var topId = topOpenId();
+    if (topId) {
+      var card = openCards[topId];
+      if (!card.contains(ev.target)) {
+        var btn = card.querySelector("[id$='-close-btn']");
+        if (btn) btn.click();
+      }
+    }
+    // Gradio swaps the DOM after its own handler runs; observe() usually beats
+    // this, but a follow-up pass keeps the two paths consistent.
+    setTimeout(sync, 0);
+  }, true);
+
+  document.addEventListener("keydown", function (ev) {
+    var topId = topOpenId();
+    if (!topId) return;
+    var card = openCards[topId];
+    if (ev.key === "Escape") {
+      var btn = card.querySelector("[id$='-close-btn']");
+      if (btn) btn.click();
+      return;
+    }
+    if (ev.key !== "Tab") return;
+    var items = [].slice.call(card.querySelectorAll(FOCUSABLE)).filter(function (el) {
+      return el.getClientRects().length > 0;
+    });
+    if (!items.length) return;
+    var first = items[0];
+    var last = items[items.length - 1];
+    var active = document.activeElement;
+    if (!card.contains(active)) { ev.preventDefault(); first.focus(); return; }
+    if (active === card) {
+      ev.preventDefault();
+      (ev.shiftKey ? last : first).focus();
+      return;
+    }
+    if (ev.shiftKey && active === first) { ev.preventDefault(); last.focus(); }
+    else if (!ev.shiftKey && active === last) { ev.preventDefault(); first.focus(); }
+  }, true);
+
+  var observer = new MutationObserver(function (records) {
+    for (var i = 0; i < records.length; i++) {
+      if (records[i].addedNodes.length || records[i].removedNodes.length) {
+        sync();
+        return;
+      }
+    }
+  });
+
+  function start() {
+    observer.observe(document.body, { childList: true, subtree: true });
+    sync();
+  }
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", start);
+  } else {
+    start();
+  }
+})();
+</script>
+"""
+    enter_submit_script = """
+<script>
+// Gradio renders the question input as a <textarea> (max_lines=3), where Enter
+// inserts a newline instead of firing the component's submit event. Intercept
+// Enter here so it behaves like clicking "开始研究"; Shift+Enter keeps newline.
+(function () {
+  function onKeydown(ev) {
+    if (ev.key !== "Enter" || ev.shiftKey || ev.ctrlKey || ev.altKey || ev.metaKey) return;
+    if (ev.isComposing) return;
+    var target = ev.target;
+    if (!target || !target.closest) return;
+    if (!target.closest("#question-input")) return;
+    ev.preventDefault();
+    var runBtn = document.getElementById("run-btn");
+    if (runBtn && !runBtn.disabled) runBtn.click();
+  }
+  document.addEventListener("keydown", onKeydown, true);
+})();
+</script>
+"""
+    # Icon-only 导出按钮无文字标签，挂载后补 title 提示（导出栏首次出现才进 DOM）；
+    # 导出文件组件出现后自动点击下载，实现「点按钮直接导出」
+    export_titles_script = """
+<script>
+(function () {
+  var TITLES = {
+    "export-md-btn": "Markdown",
+    "export-pdf-btn": "PDF",
+    "export-docx-btn": "Word"
+  };
+  var lastAutoDownload = "";
+  function apply() {
+    Object.keys(TITLES).forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el && !el.title) el.title = TITLES[id];
+    });
+  }
+  function autoDownload() {
+    var box = document.getElementById("export-file");
+    if (!box) return;
+    var link = box.querySelector("a[href*='/file=']");
+    if (!link) return;
+    var href = link.getAttribute("href");
+    if (!href || href === lastAutoDownload) return;
+    lastAutoDownload = href;
+    var a = document.createElement("a");
+    a.href = href;
+    a.download = link.getAttribute("download") || "";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
+  var observer = new MutationObserver(function () { apply(); autoDownload(); });
+  function start() {
+    observer.observe(document.body, { childList: true, subtree: true });
+    apply();
+  }
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", start);
+  } else {
+    start();
+  }
+})();
+</script>
+"""
+    demo_head = f"{favicon_head}{skills_bind_script}{process_details_force_close_script}{task_id_url_bridge_script}{miro_modal_js}{enter_submit_script}{export_titles_script}"
 
     def _get_i18n(lang: str):
         return I18N.get(lang, I18N[DEFAULT_LANG])
 
     def _build_skills_link_html(lang: str):
         i18n = _get_i18n(lang)
+        title = html.escape(i18n["skills_download_title"], quote=True)
+        icon = _icon_svg("download")
         if skills_download_url:
             escaped_url = html.escape(skills_download_url, quote=True)
+            copied = html.escape(i18n["skills_download_copied"], quote=True)
             return (
-                f'<a id="skills-download-link" class="skills-top-link" href="{escaped_url}" '
-                f'data-copy-url="{escaped_url}" data-original-text="{i18n["skills_download_btn"]}" '
-                f'data-copied-text="{i18n["skills_download_copied"]}" target="_blank" rel="noopener noreferrer">'
-                f'{i18n["skills_download_btn"]}</a>'
+                f'<a id="skills-download-link" class="ui-icon-btn skills-icon-btn" href="{escaped_url}" '
+                f'title="{title}" aria-label="{title}" '
+                f'data-copy-url="{escaped_url}" data-title="{title}" data-copied-text="{copied}" '
+                f'target="_blank" rel="noopener noreferrer">{icon}</a>'
             )
+        fallback = html.escape(i18n["skills_download_fallback"], quote=True)
         return (
-            f'<span class="skills-top-link skills-top-link-disabled" title="{html.escape(i18n["skills_download_fallback"], quote=True)}">'
-            f'{i18n["skills_download_btn"]}</span>'
+            f'<span class="ui-icon-btn skills-icon-btn skills-icon-btn-disabled" '
+            f'title="{fallback}" aria-label="{fallback}">{icon}</span>'
         )
 
     def _build_nav_html(lang: str):
-        i18n = _get_i18n(lang)
         skills_link = _build_skills_link_html(lang)
+        # Top-left brand removed per UX feedback; keep only a compact top-right utility.
         return f"""
-            <nav class="top-nav">
-                <div class="nav-left">
-                    <div class="nav-brand">
-                        {nav_logo_html}
-                        <span class="nav-brand-text">{i18n["nav_brand_text"]}</span>
-                    </div>
-                </div>
+            <nav class="top-nav top-nav-minimal">
+                <div class="nav-left" aria-hidden="true"></div>
                 <div class="nav-right">
                     {skills_link}
                 </div>
@@ -5581,179 +8526,342 @@ def build_demo():
             (labels["detailed"], "detailed"),
         ]
 
-    def toggle_language(lang: str):
+    def toggle_language(
+        lang: str,
+        current_mode: Optional[str] = None,
+        current_profile: Optional[str] = None,
+    ):
         new_lang = LANG_CN if lang == LANG_EN else LANG_EN
         i18n = _get_i18n(new_lang)
+        infos = _build_setting_infos(new_lang)
+        # Use gr.update only — reconstructing HTML/Button/Markdown leaves
+        # stacked ghost DOM nodes (esp. with position:fixed top bar).
+        # Keep out_md + output_section as-is so switching language does not
+        # wipe a finished report (chrome switches; content stays).
         return (
             new_lang,
-            gr.HTML(_build_nav_html(new_lang)),
-            gr.HTML(_build_hero_html(new_lang)),
-            gr.Textbox(placeholder=i18n["input_placeholder"]),
-            gr.Button(value=i18n["btn_stop"]),
-            gr.Button(value=i18n["btn_run"]),
-            gr.HTML(f'<div class="output-label">{i18n["output_label"]}</div>'),
-            gr.Markdown(i18n["output_waiting"]),
-            gr.HTML(f'<div class="options-title">{i18n["options_title"]}</div>'),
-            gr.update(label=i18n["mode_label"], info=i18n["mode_info"]),
+            gr.update(value=_build_nav_html(new_lang)),
+            gr.update(value=_build_hero_html(new_lang)),
+            gr.update(placeholder=i18n["input_placeholder"]),
+            gr.update(value=i18n["btn_settings"]),
+            gr.update(value=i18n["btn_stop"]),
+            gr.update(value=i18n["btn_run"]),
+            gr.update(value=f'<div class="output-label">{i18n["output_label"]}</div>'),
+            gr.update(),  # preserve report markdown
+            gr.update(),  # preserve output section visibility
             gr.update(
-                label=i18n["search_profile_label"], info=i18n["search_profile_info"]
+                value=f'<div class="modal-title">{i18n["settings_modal_title"]}</div>'
+            ),
+            gr.update(
+                value=f'<div class="settings-hint">{i18n["settings_hint"]}</div>'
+            ),
+            gr.update(value=i18n["preset_quick"]),
+            gr.update(value=i18n["preset_balanced"]),
+            gr.update(value=i18n["preset_deep"]),
+            gr.update(
+                label=i18n["mode_label"],
+                choices=_localized_labels(RESEARCH_MODE_LABELS, new_lang),
+                info=infos["mode_info"],
+            ),
+            gr.update(
+                value=_option_hint_html(
+                    RESEARCH_MODE_DESCRIPTIONS,
+                    _normalize_research_mode(current_mode),
+                    new_lang,
+                )
+            ),
+            gr.update(
+                label=i18n["search_profile_label"],
+                choices=_localized_labels(SEARCH_PROFILE_LABELS, new_lang),
+                info=infos["search_profile_info"],
+            ),
+            gr.update(
+                value=_option_hint_html(
+                    SEARCH_PROFILE_DESCRIPTIONS,
+                    _normalize_search_profile(current_profile),
+                    new_lang,
+                )
             ),
             gr.update(
                 label=i18n["search_result_num_label"],
-                info=i18n["search_result_num_info"],
+                info=infos["search_result_num_info"],
             ),
             gr.update(
                 label=i18n["verification_rounds_label"],
-                info=i18n["verification_rounds_info"],
+                info=infos["verification_rounds_info"],
             ),
             gr.update(
                 label=i18n["output_detail_label"],
                 choices=_build_output_detail_choices(new_lang),
-                info=i18n["output_detail_info"],
+                info=infos["output_detail_info"],
             ),
-            gr.update(label=i18n["export_format_label"]),
-            gr.Button(value=i18n["export_btn"]),
+            gr.update(value=i18n["btn_settings_reset"]),
+            gr.update(value=i18n["btn_settings_apply"]),
+            gr.update(value=""),
+            gr.update(value=i18n["lang_toggle_btn"]),
+            gr.update(value=i18n["btn_close"]),
             gr.update(label=i18n["export_file_label"], visible=False, value=None),
-            gr.HTML(f'<div class="export-hint">{i18n["export_hint"]}</div>'),
-            gr.Button(value=i18n["lang_toggle_btn"]),
-            gr.HTML(f'<div class="app-footer">{i18n["footer_text"]}</div>'),
+            gr.update(value="", visible=False),
         )
 
     with gr.Blocks(
         css=custom_css,
         title=I18N[DEFAULT_LANG]["page_title"],
-        theme=gr.themes.Base(),
+        theme=gr.themes.Soft(
+            primary_hue="sky",
+            neutral_hue="slate",
+            text_size="md",
+        ).set(
+            body_background_fill="#1a2332",
+            body_background_fill_dark="#1a2332",
+            background_fill_primary="#1e293b",
+            background_fill_primary_dark="#1e293b",
+            background_fill_secondary="#243044",
+            background_fill_secondary_dark="#243044",
+            block_background_fill="#1e293b",
+            block_background_fill_dark="#1e293b",
+            border_color_primary="#334155",
+            border_color_primary_dark="#334155",
+            body_text_color="#cbd5e1",
+            body_text_color_dark="#cbd5e1",
+            # Soft defaults to white checkbox-label chips — force dark
+            block_info_text_color="#e2e8f0",
+            block_info_text_color_dark="#e2e8f0",
+            checkbox_label_background_fill="#0f172a",
+            checkbox_label_background_fill_dark="#0f172a",
+            checkbox_label_background_fill_hover="#1e293b",
+            checkbox_label_background_fill_hover_dark="#1e293b",
+            checkbox_label_background_fill_selected="#0284c7",
+            checkbox_label_background_fill_selected_dark="#0284c7",
+            checkbox_label_text_color="#cbd5e1",
+            checkbox_label_text_color_dark="#cbd5e1",
+            checkbox_label_text_color_selected="#f8fafc",
+            checkbox_label_text_color_selected_dark="#f8fafc",
+            checkbox_label_border_color="#334155",
+            checkbox_label_border_color_dark="#334155",
+            checkbox_label_border_color_hover="#475569",
+            checkbox_label_border_color_hover_dark="#475569",
+            checkbox_label_border_color_selected="#38bdf8",
+            checkbox_label_border_color_selected_dark="#38bdf8",
+        ),
         head=demo_head,
     ) as demo:
         lang_state = gr.State(DEFAULT_LANG)
 
-        nav_html = gr.HTML(_build_nav_html(DEFAULT_LANG))
-        hero_html = gr.HTML(_build_hero_html(DEFAULT_LANG))
+        with gr.Row(elem_id="top-utility-bar"):
+            lang_toggle_btn = gr.Button(
+                I18N[DEFAULT_LANG]["lang_toggle_btn"],
+                elem_id="lang-toggle-btn",
+                elem_classes=["ui-lang-chip"],
+                variant="secondary",
+                scale=0,
+                min_width=72,
+            )
+            nav_html = gr.HTML(_build_nav_html(DEFAULT_LANG))
+        hero_html = gr.HTML(
+            _build_hero_html(DEFAULT_LANG), elem_classes=["hero-section-parent"]
+        )
 
-        with gr.Row(elem_id="layout-shell", equal_height=False):
-            with gr.Column(
-                scale=4,
-                min_width=720,
-                elem_id="main-content-column",
-            ):
+        with gr.Column(elem_id="layout-shell"):
+            with gr.Column(elem_id="main-content-column"):
                 with gr.Column(elem_id="input-section"):
                     inp = gr.Textbox(
-                        lines=4,
+                        lines=1,
+                        max_lines=3,
                         placeholder=I18N[DEFAULT_LANG]["input_placeholder"],
                         show_label=False,
                         elem_id="question-input",
+                        container=False,
                     )
                     with gr.Row(elem_id="btn-row"):
+                        settings_btn = gr.Button(
+                            I18N[DEFAULT_LANG]["btn_settings"],
+                            elem_id="settings-open-btn",
+                            elem_classes=[
+                                "ui-action-btn",
+                                "ui-icon-settings",
+                                "modal-open-trigger",
+                            ],
+                            variant="secondary",
+                            scale=0,
+                        )
                         stop_btn = gr.Button(
                             I18N[DEFAULT_LANG]["btn_stop"],
                             elem_id="stop-btn",
+                            elem_classes=["ui-action-btn", "ui-icon-stop"],
                             variant="stop",
                             interactive=False,
-                            scale=1,
+                            scale=0,
                         )
                         run_btn = gr.Button(
                             I18N[DEFAULT_LANG]["btn_run"],
                             elem_id="run-btn",
+                            elem_classes=["ui-action-btn", "ui-icon-run"],
                             variant="primary",
-                            scale=2,
+                            scale=0,
                         )
 
-                with gr.Column(elem_id="output-section"):
+                with gr.Column(
+                    elem_id="output-section", visible=False
+                ) as output_section:
                     output_label_html = gr.HTML(
                         f'<div class="output-label">{I18N[DEFAULT_LANG]["output_label"]}</div>'
                     )
                     out_md = gr.Markdown(
                         I18N[DEFAULT_LANG]["output_waiting"], elem_id="log-view"
                     )
-                    with gr.Row(elem_id="export-row"):
-                        export_format_selector = gr.Dropdown(
-                            label=I18N[DEFAULT_LANG]["export_format_label"],
-                            choices=EXPORT_FORMAT_CHOICES,
-                            value="md",
-                            elem_id="export-format-selector",
-                            scale=1,
-                        )
-                        export_btn = gr.Button(
-                            I18N[DEFAULT_LANG]["export_btn"],
-                            elem_id="export-btn",
+                    # 导出入口放在结果末尾：三个 icon 化格式按钮 + 下载文件。
+                    # 可见性由 _pack_ui_stream 统一控制（终态出现，流式中隐藏）。
+                    with gr.Row(visible=False, elem_id="export-bar") as export_bar:
+                        export_md_btn = gr.Button(
+                            "",
+                            elem_id="export-md-btn",
+                            elem_classes=["export-icon-btn", "export-md-btn"],
                             variant="secondary",
-                            scale=1,
+                            scale=0,
                         )
-                    export_file = gr.File(
-                        label=I18N[DEFAULT_LANG]["export_file_label"],
-                        visible=False,
-                        elem_id="export-file",
-                    )
-                    export_hint_html = gr.HTML(
-                        f'<div class="export-hint">{I18N[DEFAULT_LANG]["export_hint"]}</div>'
-                    )
+                        export_pdf_btn = gr.Button(
+                            "",
+                            elem_id="export-pdf-btn",
+                            elem_classes=["export-icon-btn", "export-pdf-btn"],
+                            variant="secondary",
+                            scale=0,
+                        )
+                        export_docx_btn = gr.Button(
+                            "",
+                            elem_id="export-docx-btn",
+                            elem_classes=["export-icon-btn", "export-docx-btn"],
+                            variant="secondary",
+                            scale=0,
+                        )
+                        export_file = gr.File(
+                            label=I18N[DEFAULT_LANG]["export_file_label"],
+                            visible=False,
+                            elem_id="export-file",
+                        )
 
-            with gr.Column(
-                scale=1,
-                min_width=220,
-                elem_id="right-options-column",
-            ):
-                with gr.Column(elem_id="options-panel"):
-                    options_title_html = gr.HTML(
-                        f'<div class="options-title">{I18N[DEFAULT_LANG]["options_title"]}</div>'
-                    )
-                    mode_selector = gr.Dropdown(
-                        label=I18N[DEFAULT_LANG]["mode_label"],
-                        choices=RESEARCH_MODE_CHOICES,
-                        value=_normalize_research_mode(DEFAULT_RESEARCH_MODE),
-                        info=I18N[DEFAULT_LANG]["mode_info"],
-                        elem_id="mode-selector",
-                    )
-                    search_profile_selector = gr.Dropdown(
-                        label=I18N[DEFAULT_LANG]["search_profile_label"],
-                        choices=SEARCH_PROFILE_CHOICES,
-                        value=_normalize_search_profile(DEFAULT_SEARCH_PROFILE),
-                        info=I18N[DEFAULT_LANG]["search_profile_info"],
-                        elem_id="search-profile-selector",
-                    )
-                    search_result_num_selector = gr.Dropdown(
-                        label=I18N[DEFAULT_LANG]["search_result_num_label"],
-                        choices=SEARCH_RESULT_NUM_CHOICES,
-                        value=_normalize_search_result_num(DEFAULT_SEARCH_RESULT_NUM),
-                        info=I18N[DEFAULT_LANG]["search_result_num_info"],
-                        elem_id="search-result-num-selector",
-                    )
-                    verification_min_rounds_selector = gr.Slider(
-                        minimum=1,
-                        maximum=MAX_VERIFICATION_MIN_SEARCH_ROUNDS,
-                        step=1,
-                        label=I18N[DEFAULT_LANG]["verification_rounds_label"],
-                        value=_normalize_verification_min_search_rounds(
-                            DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS
-                        ),
-                        info=I18N[DEFAULT_LANG]["verification_rounds_info"],
-                        visible=_is_verified_mode(DEFAULT_RESEARCH_MODE),
-                        elem_id="verification-rounds-selector",
-                    )
-                    output_detail_level_selector = gr.Dropdown(
-                        label=I18N[DEFAULT_LANG]["output_detail_label"],
-                        choices=_build_output_detail_choices(DEFAULT_LANG),
-                        value=_normalize_output_detail_level(
-                            DEFAULT_OUTPUT_DETAIL_LEVEL
-                        ),
-                        info=I18N[DEFAULT_LANG]["output_detail_info"],
-                        elem_id="output-detail-level-selector",
-                    )
-                    lang_toggle_btn = gr.Button(
-                        I18N[DEFAULT_LANG]["lang_toggle_btn"],
-                        elem_id="lang-toggle-btn",
+        # Settings modal overlay
+        default_infos = _build_setting_infos(DEFAULT_LANG)
+        with gr.Column(visible=False, elem_id="settings-modal") as settings_modal:
+            with gr.Column(elem_classes=["modal-card"]):
+                settings_modal_title_html = gr.HTML(
+                    f'<div class="modal-title">{I18N[DEFAULT_LANG]["settings_modal_title"]}</div>'
+                )
+                settings_hint_html = gr.HTML(
+                    f'<div class="settings-hint">{I18N[DEFAULT_LANG]["settings_hint"]}</div>'
+                )
+                with gr.Row(elem_classes=["preset-row"]):
+                    preset_quick_btn = gr.Button(
+                        I18N[DEFAULT_LANG]["preset_quick"],
+                        elem_classes=["preset-btn"],
                         variant="secondary",
                         scale=1,
                     )
+                    preset_balanced_btn = gr.Button(
+                        I18N[DEFAULT_LANG]["preset_balanced"],
+                        elem_classes=["preset-btn", "preset-btn-primary"],
+                        variant="secondary",
+                        scale=1,
+                    )
+                    preset_deep_btn = gr.Button(
+                        I18N[DEFAULT_LANG]["preset_deep"],
+                        elem_classes=["preset-btn"],
+                        variant="secondary",
+                        scale=1,
+                    )
+                close_settings_btn = gr.Button(
+                    I18N[DEFAULT_LANG]["btn_close"],
+                    elem_id="settings-close-btn",
+                    variant="secondary",
+                )
+                mode_selector = gr.Dropdown(
+                    label=I18N[DEFAULT_LANG]["mode_label"],
+                    choices=_localized_labels(RESEARCH_MODE_LABELS, DEFAULT_LANG),
+                    value=_normalize_research_mode(DEFAULT_RESEARCH_MODE),
+                    info=default_infos["mode_info"],
+                    elem_id="mode-selector",
+                    filterable=False,
+                )
+                mode_hint_html = gr.HTML(
+                    _option_hint_html(
+                        RESEARCH_MODE_DESCRIPTIONS,
+                        _normalize_research_mode(DEFAULT_RESEARCH_MODE),
+                        DEFAULT_LANG,
+                    ),
+                    elem_id="mode-option-hint",
+                    show_label=False,
+                )
 
+                # Radio is more reliable than Dropdown for 3 fixed tiers
+                # (Dropdown fill/select often left the internal value stuck on detailed).
+                output_detail_level_selector = gr.Radio(
+                    label=I18N[DEFAULT_LANG]["output_detail_label"],
+                    choices=_build_output_detail_choices(DEFAULT_LANG),
+                    value=_normalize_output_detail_level(DEFAULT_OUTPUT_DETAIL_LEVEL),
+                    info=default_infos["output_detail_info"],
+                    elem_id="output-detail-level-selector",
+                )
+                search_profile_selector = gr.Dropdown(
+                    label=I18N[DEFAULT_LANG]["search_profile_label"],
+                    choices=_localized_labels(SEARCH_PROFILE_LABELS, DEFAULT_LANG),
+                    value=_normalize_search_profile(DEFAULT_SEARCH_PROFILE),
+                    info=default_infos["search_profile_info"],
+                    elem_id="search-profile-selector",
+                    filterable=False,
+                )
+                search_profile_hint_html = gr.HTML(
+                    _option_hint_html(
+                        SEARCH_PROFILE_DESCRIPTIONS,
+                        _normalize_search_profile(DEFAULT_SEARCH_PROFILE),
+                        DEFAULT_LANG,
+                    ),
+                    elem_id="search-profile-option-hint",
+                    show_label=False,
+                )
+                search_result_num_selector = gr.Dropdown(
+                    label=I18N[DEFAULT_LANG]["search_result_num_label"],
+                    choices=SEARCH_RESULT_NUM_CHOICES,
+                    value=_normalize_search_result_num(DEFAULT_SEARCH_RESULT_NUM),
+                    info=default_infos["search_result_num_info"],
+                    elem_id="search-result-num-selector",
+                    filterable=False,
+                )
+                verification_min_rounds_selector = gr.Slider(
+                    minimum=1,
+                    maximum=MAX_VERIFICATION_MIN_SEARCH_ROUNDS,
+                    step=1,
+                    label=I18N[DEFAULT_LANG]["verification_rounds_label"],
+                    value=_normalize_verification_min_search_rounds(
+                        DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS
+                    ),
+                    info=default_infos["verification_rounds_info"],
+                    visible=_is_verified_mode(DEFAULT_RESEARCH_MODE),
+                    elem_id="verification-rounds-selector",
+                )
+                with gr.Row(elem_classes=["modal-footer"]):
+                    settings_status_html = gr.HTML("", elem_id="settings-status")
+                    settings_reset_btn = gr.Button(
+                        I18N[DEFAULT_LANG]["btn_settings_reset"],
+                        elem_id="settings-reset-btn",
+                        variant="secondary",
+                        scale=0,
+                    )
+                    settings_apply_btn = gr.Button(
+                        I18N[DEFAULT_LANG]["btn_settings_apply"],
+                        elem_id="settings-apply-btn",
+                        variant="primary",
+                        scale=0,
+                    )
         footer_html = gr.HTML(
-            f'<div class="app-footer">{I18N[DEFAULT_LANG]["footer_text"]}</div>'
+            "",
+            visible=False,
+            elem_id="app-footer-slot",
         )
 
         # 供统一 API 调用的隐藏输出
         api_output = gr.Markdown(visible=False)
         api_btn = gr.Button(value="api-run", visible=False)
-        gr.Textbox(visible=False, value="")
+        gr.Textbox(visible=False, value="", show_label=False, container=False)
         api_caller_id = gr.Textbox(
             visible=False,
             value="",
@@ -5779,6 +8887,7 @@ def build_demo():
         ui_state = gr.State(
             {
                 "task_id": None,
+                "ui_lang": DEFAULT_LANG,
                 "mode": _normalize_research_mode(DEFAULT_RESEARCH_MODE),
                 "search_profile": _normalize_search_profile(DEFAULT_SEARCH_PROFILE),
                 "search_result_num": _normalize_search_result_num(
@@ -5800,19 +8909,37 @@ def build_demo():
         )
 
         # Event handlers
+        run_inputs = [
+            inp,
+            mode_selector,
+            search_profile_selector,
+            search_result_num_selector,
+            verification_min_rounds_selector,
+            output_detail_level_selector,
+            lang_state,
+            ui_state,
+        ]
+        run_outputs = [
+            out_md,
+            run_btn,
+            stop_btn,
+            ui_state,
+            task_id_box,
+            output_section,
+            export_bar,
+        ]
         run_event = run_btn.click(
             fn=gradio_run,
-            inputs=[
-                inp,
-                mode_selector,
-                search_profile_selector,
-                search_result_num_selector,
-                verification_min_rounds_selector,
-                output_detail_level_selector,
-                ui_state,
-            ],
-            outputs=[out_md, run_btn, stop_btn, ui_state, task_id_box],
+            inputs=run_inputs,
+            outputs=run_outputs,
             api_name="run_research_stream",
+        )
+        # Enter 键同样触发研究
+        submit_event = inp.submit(
+            fn=gradio_run,
+            inputs=run_inputs,
+            outputs=run_outputs,
+            api_name=False,
         )
 
         # ui_state 任意一次更新都同步 task_id 到隐藏 textbox（JS 据此写 URL）
@@ -5823,19 +8950,34 @@ def build_demo():
             api_name=False,
             queue=False,
         )
-        export_btn.click(
-            fn=_export_conclusion,
-            inputs=[out_md, export_format_selector, ui_state],
-            outputs=[export_file],
-            api_name=False,
-            queue=False,
-        )
+        for _export_fmt, _export_btn in (
+            ("md", export_md_btn),
+            ("pdf", export_pdf_btn),
+            ("docx", export_docx_btn),
+        ):
+            _export_btn.click(
+                fn=lambda md, state, _fmt=_export_fmt: _export_conclusion(
+                    md, _fmt, state
+                ),
+                inputs=[out_md, ui_state],
+                outputs=[export_file],
+                api_name=False,
+                queue=False,
+            )
 
         # 页面加载时根据 URL ?task_id 决定空闲态 / 重连进行中的任务
         demo.load(
             fn=reconnect_or_init,
             inputs=[ui_state, task_id_box],
-            outputs=[out_md, run_btn, stop_btn, ui_state, task_id_box],
+            outputs=[
+                out_md,
+                run_btn,
+                stop_btn,
+                ui_state,
+                task_id_box,
+                output_section,
+                export_bar,
+            ],
             api_name=False,
             js="""
             (uiState, taskIdBridge) => {
@@ -5854,7 +8996,7 @@ def build_demo():
             fn=stop_current_ui,
             inputs=[ui_state],
             outputs=[run_btn, stop_btn],
-            cancels=[run_event],
+            cancels=[run_event, submit_event],
             api_name=False,
             queue=False,
         )
@@ -5901,32 +9043,226 @@ def build_demo():
             api_name="metrics_last",
         )
 
+        SETTINGS_INPUTS = [
+            mode_selector,
+            output_detail_level_selector,
+            search_profile_selector,
+            search_result_num_selector,
+        ]
+
+        def _settings_status(lang: str, key: str, summary: str) -> str:
+            text = html.escape(I18N[lang][key].format(summary=summary))
+            return f'<div class="modal-status">{text}</div>'
+
+        def _apply_settings(
+            mode: str,
+            output_detail_level: str,
+            search_profile: str,
+            search_result_num: int,
+            lang: str,
+        ):
+            lang = lang if lang in I18N else DEFAULT_LANG
+            summary = _build_settings_summary(
+                lang, mode, output_detail_level, search_profile, search_result_num
+            )
+            return _settings_status(lang, "settings_applied", summary)
+
+        def _fill_settings_preset(preset: str, lang: str):
+            lang = lang if lang in I18N else DEFAULT_LANG
+            if preset == "quick":
+                mode, detail, num = "balanced", "compact", 10
+            elif preset == "deep":
+                mode, detail, num = "research", "detailed", 30
+            else:
+                mode = _normalize_research_mode(DEFAULT_RESEARCH_MODE)
+                detail = _normalize_output_detail_level(DEFAULT_OUTPUT_DETAIL_LEVEL)
+                num = _normalize_search_result_num(DEFAULT_SEARCH_RESULT_NUM)
+            mode = _normalize_research_mode(mode)
+            text = html.escape(
+                I18N[lang]["settings_preset_filled"].format(
+                    preset=I18N[lang][f"preset_{preset}"]
+                )
+            )
+            return [
+                gr.update(value=mode),
+                gr.update(value=detail),
+                gr.update(value=num),
+                gr.update(visible=_is_verified_mode(mode)),
+                f'<div class="modal-status">{text}</div>',
+                _option_hint_html(RESEARCH_MODE_DESCRIPTIONS, mode, lang),
+            ]
+
+        def _reset_settings(lang: str):
+            lang = lang if lang in I18N else DEFAULT_LANG
+            infos = _build_setting_infos(lang)
+            mode = _normalize_research_mode(DEFAULT_RESEARCH_MODE)
+            updates = [
+                gr.update(
+                    value=mode,
+                    choices=_localized_labels(RESEARCH_MODE_LABELS, lang),
+                    label=I18N[lang]["mode_label"],
+                    info=infos["mode_info"],
+                ),
+                gr.update(
+                    value=_normalize_output_detail_level(DEFAULT_OUTPUT_DETAIL_LEVEL),
+                    choices=_build_output_detail_choices(lang),
+                    label=I18N[lang]["output_detail_label"],
+                    info=infos["output_detail_info"],
+                ),
+                gr.update(
+                    value=_normalize_search_profile(DEFAULT_SEARCH_PROFILE),
+                    choices=_localized_labels(SEARCH_PROFILE_LABELS, lang),
+                    label=I18N[lang]["search_profile_label"],
+                    info=infos["search_profile_info"],
+                ),
+                gr.update(
+                    value=_normalize_search_result_num(DEFAULT_SEARCH_RESULT_NUM),
+                    label=I18N[lang]["search_result_num_label"],
+                    info=infos["search_result_num_info"],
+                ),
+                gr.update(
+                    value=_normalize_verification_min_search_rounds(
+                        DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS
+                    ),
+                    visible=_is_verified_mode(mode),
+                    label=I18N[lang]["verification_rounds_label"],
+                    info=infos["verification_rounds_info"],
+                ),
+                _settings_status(
+                    lang,
+                    "settings_reset",
+                    _build_settings_summary(
+                        lang,
+                        mode,
+                        _normalize_output_detail_level(DEFAULT_OUTPUT_DETAIL_LEVEL),
+                        _normalize_search_profile(DEFAULT_SEARCH_PROFILE),
+                        _normalize_search_result_num(DEFAULT_SEARCH_RESULT_NUM),
+                    ),
+                ),
+                _option_hint_html(
+                    RESEARCH_MODE_DESCRIPTIONS,
+                    mode,
+                    lang,
+                ),
+                _option_hint_html(
+                    SEARCH_PROFILE_DESCRIPTIONS,
+                    _normalize_search_profile(DEFAULT_SEARCH_PROFILE),
+                    lang,
+                ),
+            ]
+            return updates
+
+        settings_btn.click(
+            fn=lambda: [gr.update(visible=True), gr.update(value="")],
+            inputs=None,
+            outputs=[settings_modal, settings_status_html],
+            api_name=False,
+            queue=False,
+        )
+        for _preset_key, _preset_btn in (
+            ("quick", preset_quick_btn),
+            ("balanced", preset_balanced_btn),
+            ("deep", preset_deep_btn),
+        ):
+            _preset_btn.click(
+                fn=partial(_fill_settings_preset, _preset_key),
+                inputs=[lang_state],
+                outputs=[
+                    mode_selector,
+                    output_detail_level_selector,
+                    search_result_num_selector,
+                    verification_min_rounds_selector,
+                    settings_status_html,
+                    mode_hint_html,
+                ],
+                api_name=False,
+                queue=False,
+            )
+        mode_selector.change(
+            fn=lambda mode, lang: _option_hint_html(
+                RESEARCH_MODE_DESCRIPTIONS, _normalize_research_mode(mode), lang
+            ),
+            inputs=[mode_selector, lang_state],
+            outputs=[mode_hint_html],
+            api_name=False,
+            queue=False,
+        )
+        search_profile_selector.change(
+            fn=lambda profile, lang: _option_hint_html(
+                SEARCH_PROFILE_DESCRIPTIONS,
+                _normalize_search_profile(profile),
+                lang,
+            ),
+            inputs=[search_profile_selector, lang_state],
+            outputs=[search_profile_hint_html],
+            api_name=False,
+            queue=False,
+        )
+        settings_apply_btn.click(
+            fn=_apply_settings,
+            inputs=[*SETTINGS_INPUTS, lang_state],
+            outputs=[settings_status_html],
+            api_name=False,
+            queue=False,
+        )
+        settings_reset_btn.click(
+            fn=_reset_settings,
+            inputs=[lang_state],
+            outputs=[
+                *SETTINGS_INPUTS,
+                verification_min_rounds_selector,
+                settings_status_html,
+                mode_hint_html,
+                search_profile_hint_html,
+            ],
+            api_name=False,
+            queue=False,
+        )
+        close_settings_btn.click(
+            fn=lambda: gr.update(visible=False),
+            inputs=None,
+            outputs=settings_modal,
+            api_name=False,
+            queue=False,
+        )
+
         lang_toggle_btn.click(
             fn=toggle_language,
-            inputs=[lang_state],
+            inputs=[lang_state, mode_selector, search_profile_selector],
             outputs=[
                 lang_state,
                 nav_html,
                 hero_html,
                 inp,
+                settings_btn,
                 stop_btn,
                 run_btn,
                 output_label_html,
                 out_md,
-                options_title_html,
+                output_section,
+                settings_modal_title_html,
+                settings_hint_html,
+                preset_quick_btn,
+                preset_balanced_btn,
+                preset_deep_btn,
                 mode_selector,
+                mode_hint_html,
                 search_profile_selector,
+                search_profile_hint_html,
                 search_result_num_selector,
                 verification_min_rounds_selector,
                 output_detail_level_selector,
-                export_format_selector,
-                export_btn,
-                export_file,
-                export_hint_html,
+                settings_reset_btn,
+                settings_apply_btn,
+                settings_status_html,
                 lang_toggle_btn,
+                close_settings_btn,
+                export_file,
                 footer_html,
             ],
             api_name=False,
+            queue=False,
+            show_progress="hidden",
         )
 
     return demo

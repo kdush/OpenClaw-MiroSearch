@@ -27,7 +27,7 @@ def _load_demo_main():
     return module
 
 
-def test_build_demo_uses_two_column_layout_with_right_options():
+def test_build_demo_uses_single_column_layout_with_settings_modal():
     demo_main = _load_demo_main()
     demo = demo_main.build_demo()
     components = demo.config["components"]
@@ -39,16 +39,26 @@ def test_build_demo_uses_two_column_layout_with_right_options():
         if elem_id:
             component_by_elem_id[elem_id] = component
 
-    assert component_by_elem_id["layout-shell"]["type"] == "row"
+    # 单栏布局：选项收进设置弹窗，不再有右侧选项栏
+    assert component_by_elem_id["layout-shell"]["type"] == "column"
     assert "left-history-column" not in component_by_elem_id
+    assert "right-options-column" not in component_by_elem_id
     assert component_by_elem_id["main-content-column"]["type"] == "column"
-    assert component_by_elem_id["right-options-column"]["type"] == "column"
+    # 设置弹窗承载全部研究参数控件
     assert component_by_elem_id["mode-selector"]["type"] == "dropdown"
     assert component_by_elem_id["search-profile-selector"]["type"] == "dropdown"
     assert component_by_elem_id["search-result-num-selector"]["type"] == "dropdown"
     assert component_by_elem_id["verification-rounds-selector"]["type"] == "slider"
-    assert component_by_elem_id["output-detail-level-selector"]["type"] == "dropdown"
+    assert component_by_elem_id["output-detail-level-selector"]["type"] == "radio"
     assert component_by_elem_id["api-caller-id"]["type"] == "textbox"
+    # 导出入口在结果末尾（export-bar），icon 化三格式按钮，不再走顶部按钮 + 弹窗
+    assert "export-open-btn" not in component_by_elem_id
+    assert "export-format-selector" not in component_by_elem_id
+    assert component_by_elem_id["export-md-btn"]["type"] == "button"
+    assert component_by_elem_id["export-pdf-btn"]["type"] == "button"
+    assert component_by_elem_id["export-docx-btn"]["type"] == "button"
+    assert component_by_elem_id["export-file"]["type"] == "file"
+    assert component_by_elem_id["export-bar"]["type"] == "row"
 
     run_research_api = [
         dependency
@@ -107,6 +117,39 @@ def test_build_demo_syncs_task_id_bridge_for_load_and_run_stream():
     ]
     assert len(run_stream_dependencies) == 1
     assert task_id_bridge_id in run_stream_dependencies[0]["outputs"]
+
+
+def test_question_input_submit_triggers_same_outputs_as_run_button():
+    demo_main = _load_demo_main()
+    demo = demo_main.build_demo()
+    components = demo.config["components"]
+    dependencies = demo.config["dependencies"]
+
+    component_id_by_elem_id = {}
+    for component in components:
+        elem_id = component.get("props", {}).get("elem_id")
+        if elem_id:
+            component_id_by_elem_id[elem_id] = component.get("id")
+
+    question_input_id = component_id_by_elem_id["question-input"]
+
+    submit_dependencies = [
+        dependency
+        for dependency in dependencies
+        if dependency.get("targets") == [(question_input_id, "submit")]
+    ]
+    assert len(submit_dependencies) == 1
+    submit_dep = submit_dependencies[0]
+
+    run_stream_dependencies = [
+        dependency
+        for dependency in dependencies
+        if dependency.get("api_name") == "run_research_stream"
+    ]
+    assert len(run_stream_dependencies) == 1
+    # Enter 提交与运行按钮写入同一组输出（含导出条）
+    assert submit_dep["outputs"] == run_stream_dependencies[0]["outputs"]
+    assert submit_dep.get("api_name") in (None, False)
 
 
 def test_stop_buttons_cancel_run_events_without_waiting_in_queue():

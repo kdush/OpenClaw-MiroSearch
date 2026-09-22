@@ -110,9 +110,11 @@ async def test_local_cache_key_separates_effective_research_depth(
         _cancel_check,
     ):
         executions.append((search_result_num, verification_min_rounds))
+        # 差异必须落在正文里：结论卡标题会被渲染器统一改写，只有正文能反映两次
+        # 请求真的用了不同的检索深度。
         conclusion = (
-            f"# 研究结论 {search_result_num}/{verification_min_rounds}\n\n"
-            + "这是用于验证真实缓存路由的完整结论。" * 12
+            "这是用于验证真实缓存路由的完整结论 "
+            f"{search_result_num}/{verification_min_rounds}。" * 12
         )
         yield {"event": "final_output", "data": {"markdown": conclusion}}
         yield {"event": "done", "data": {"status": "completed"}}
@@ -246,7 +248,8 @@ async def test_api_mode_run_once_uses_only_remote_backend_and_forwards_effective
         caller_id="caller-A",
     )
 
-    assert "远端研究结论" in result
+    # 结论卡会重写报告标题，因此断言落在正文上；本用例考察的是路由与参数转发。
+    assert "服务端返回的最终 Markdown。" in result
     assert create_calls == [
         {
             "query": "远端路由测试",
@@ -554,7 +557,8 @@ async def test_original_seventh_positional_argument_remains_render_mode(
         assert cancel_check is not None
         yield {
             "event": "final_output",
-            "data": {"markdown": "# 位置参数兼容"},
+            # 交付前会经消费者版式重排：只有小节才有正文，裸标题会被丢弃
+            "data": {"markdown": "## 结论\n\n位置参数兼容"},
         }
         yield {"event": "done", "data": {"status": "completed"}}
 
@@ -596,7 +600,7 @@ async def test_public_binding_adapter_maps_seventh_argument_to_caller_id(
         assert cancel_check is not None
         yield {
             "event": "final_output",
-            "data": {"markdown": "# 适配器调用"},
+            "data": {"markdown": "## 结论\n\n适配器调用"},
         }
         yield {"event": "done", "data": {"status": "completed"}}
 
