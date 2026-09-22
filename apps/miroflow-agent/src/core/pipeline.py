@@ -19,7 +19,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from miroflow_tools.manager import ToolManager
-from omegaconf import DictConfig
+from omegaconf import DictConfig, open_dict
 
 from ..config.settings import (
     create_mcp_server_parameters,
@@ -31,6 +31,8 @@ from ..logging.task_logger import (
     TaskLog,
     get_utc_plus_8_time,
 )
+from .deep_efficiency import resolve_agent_value
+from .lead_tracker import resolve_lead_tracking_config
 from .orchestrator import Orchestrator
 
 FINAL_ANSWER_UNAVAILABLE_ERROR = "Final summary produced no usable answer."
@@ -130,6 +132,7 @@ async def execute_task_pipeline(
     tool_definitions: Optional[List[Dict[str, Any]]] = None,
     sub_agent_tool_definitions: Optional[Dict[str, List[Dict[str, Any]]]] = None,
     is_final_retry: bool = False,
+    effective_config: Optional[Dict[str, Any]] = None,
 ):
     """
     Executes the full pipeline for a single task.
@@ -147,6 +150,8 @@ async def execute_task_pipeline(
         stream_queue: A queue for streaming the task execution (optional).
         tool_definitions: The definitions of the tools for the main agent (optional).
         sub_agent_tool_definitions: The definitions of the tools for the sub-agents (optional).
+        is_final_retry: Whether this is the final retry attempt (optional).
+        effective_config: The effective research configuration (Phase 1, optional).
 
     Returns:
         包含以下字段的 Pipeline 结果映射：
@@ -183,6 +188,66 @@ async def execute_task_pipeline(
         main_agent_tool_manager.set_task_log(task_log)
         for sub_agent_tool_manager in sub_agent_tool_managers.values():
             sub_agent_tool_manager.set_task_log(task_log)
+
+        # Store effective_config in RunMetrics (Phase 1)
+        if effective_config:
+            task_log.run_metrics.set_effective_config(
+                mode=effective_config.get("mode", "balanced"),
+                search_profile=effective_config.get(
+                    "search_profile", "parallel-trusted"
+                ),
+                search_result_num=effective_config.get("search_result_num", 20),
+                verification_min_search_rounds=effective_config.get(
+                    "verification_min_search_rounds", 3
+                ),
+                output_detail_level=effective_config.get(
+                    "output_detail_level", "balanced"
+                ),
+                research_intensity=effective_config.get(
+                    "research_intensity", "standard"
+                ),
+            )
+            task_log.log_step(
+                "info",
+                "Pipeline | Effective Config",
+                f"Research intensity: {effective_config.get('research_intensity')}, "
+                f"Mode: {effective_config.get('mode')}, "
+                f"Detail level: {effective_config.get('output_detail_level')}",
+            )
+
+            # Sync report detail / research-report flags into cfg.agent so
+            # AnswerGenerator prompts match API/harness effective_config
+            # (Hydra often only sets output_formatter.detail_level).
+            detail = (
+                str(effective_config.get("output_detail_level") or "").strip().lower()
+            )
+            if detail in {"compact", "balanced", "detailed"}:
+                with open_dict(cfg.agent):
+                    cfg.agent.output_detail_level = detail
+            intensity = (
+                str(effective_config.get("research_intensity") or "").strip().lower()
+            )
+            # Deep+detailed hotspot reports need research_report_mode headings
+            if detail == "detailed" or intensity == "deep":
+                with open_dict(cfg.agent):
+                    if not cfg.agent.get("research_report_mode"):
+                        cfg.agent.research_report_mode = True
+                    if intensity:
+                        cfg.agent.research_intensity = intensity
+
+        # Enable lead tracking for deep intensity (Phase 4). Orchestrator resolves
+        # the same flag via resolve_lead_tracking_config; this keeps cfg.agent in
+        # sync for logging and downstream readers on both API and CLI paths.
+        should_enable, _max_fu = resolve_lead_tracking_config(cfg)
+        if should_enable and not cfg.agent.get("enable_lead_tracking"):
+            with open_dict(cfg.agent):
+                cfg.agent.enable_lead_tracking = True
+            task_log.log_step(
+                "info",
+                "Pipeline | Lead Tracking",
+                "Enabled lead tracking (intensity=deep or explicit flag; "
+                f"research_intensity={resolve_agent_value(cfg, 'research_intensity')})",
+            )
 
         # Initialize LLM client
         llm_init_start_time = time.perf_counter()
