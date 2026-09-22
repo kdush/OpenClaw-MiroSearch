@@ -362,7 +362,7 @@ I18N = {
         "preset_quick": "Quick look",
         "preset_balanced": "Balanced",
         "preset_deep": "Deep research",
-        "settings_preset_filled": 'Preset "{preset}" filled in · click Apply to confirm',
+        "settings_preset_filled": 'Preset "{preset}" filled in · click Apply to review the summary',
         "references_heading": "References",
         "btn_settings_reset": "Restore defaults",
         "btn_settings_apply": "Apply",
@@ -424,7 +424,7 @@ I18N = {
         "preset_quick": "快速了解",
         "preset_balanced": "均衡推荐",
         "preset_deep": "深度研究",
-        "settings_preset_filled": "已填入「{preset}」配置 · 点击「应用」生效",
+        "settings_preset_filled": "已填入「{preset}」配置 · 点「应用」可查看配置摘要",
         "references_heading": "参考来源",
         "btn_settings_reset": "恢复默认",
         "btn_settings_apply": "应用",
@@ -2666,11 +2666,32 @@ _REFERENCES_HEADING_RE = re.compile(
     r"(?:[ \t]*\*+)?[ \t]*$"
 )
 _REFERENCE_ENTRY_RE = re.compile(r"\[(\d{1,4})\][^\n]*?(https?://\S+)")
+# 有序列表形态的参考文献条目（``3. 标题 …`` / ``3) 标题 …``）：LLM 通常按此写 References
+_REFERENCE_LIST_ENTRY_RE = re.compile(r"(?m)^[ \t]*(\d{1,4})[.)][ \t]+(\S[^\n]*)$")
+# 无 scheme 的裸域名：仅用于参考文献区补 https 链接，限定常见 TLD，
+# 避免把 DOI（10.1007/…）、arXiv 号（2507.09911）当成域名。
+_BARE_DOMAIN_RE = re.compile(
+    r"(?<![\w./-])((?:www\.)?(?:[a-z0-9-]+\.)+"
+    r"(?:com|org|net|edu|gov|io|ai|co|uk|de|jp|fr|cn|au|ca|us|info|me|dev|app|tech|work|xyz|tv|news)"
+    r"\b(?:/[^\s，；）)】\]]*)?)",
+    re.I,
+)
 # 规范化参考文献条目之间的换行：确保每条 [N] 前有双换行，Markdown 渲染时才能正确分行
 _REFERENCE_NEWLINE_RE = re.compile(r"(?<!\n)\n(\[\d{1,4}\])")
 _CITATION_RE = re.compile(r"\[(\d{1,4})\]")
 _CODE_SEGMENT_RE = re.compile(r"```[\s\S]*?```|`[^`\n]+`")
 _REFERENCE_URL_TRAILING = ".,;:)]>。，、；：）】》」’”"
+
+
+def _reference_url_in_entry(body: str) -> str:
+    """条目里的来源 URL：优先完整 http(s)，否则把裸域名补成 https。"""
+    full = re.search(r"https?://\S+", body or "")
+    if full:
+        return full.group(0).rstrip(_REFERENCE_URL_TRAILING)
+    bare = _BARE_DOMAIN_RE.search(body or "")
+    if bare:
+        return "https://" + bare.group(1).rstrip(_REFERENCE_URL_TRAILING)
+    return ""
 
 
 def _linkify_reference_citations(markdown_text: str) -> str:
@@ -2682,14 +2703,31 @@ def _linkify_reference_citations(markdown_text: str) -> str:
         return markdown_text
 
     body = markdown_text[: heading_match.start()]
-    references_section = markdown_text[heading_match.start() :]
+    head_part = markdown_text[heading_match.start() : heading_match.end()]
+    references_tail = markdown_text[heading_match.end() :]
+    # References 之后常还有兄弟章节（如 深入了解）：只有标题到下一个标题之间
+    # 才是来源条目区，否则后续编号列表、裸域名会被误当成来源。
+    next_heading = re.search(r"(?m)^#{1,6}[ \t]", references_tail)
+    if next_heading:
+        references_block = references_tail[: next_heading.start()]
+        rest = references_tail[next_heading.start() :]
+    else:
+        references_block, rest = references_tail, ""
 
     id_to_url: Dict[str, str] = {}
-    for entry in _REFERENCE_ENTRY_RE.finditer(references_section):
+    for entry in _REFERENCE_ENTRY_RE.finditer(references_block):
         ref_id = entry.group(1)
         raw_url = entry.group(2).rstrip(_REFERENCE_URL_TRAILING)
         if ref_id and raw_url and ref_id not in id_to_url:
             id_to_url[ref_id] = raw_url
+    # 有序列表条目按序号入表，正文 [N] 才能指向对应来源
+    for entry in _REFERENCE_LIST_ENTRY_RE.finditer(references_block):
+        ref_id = entry.group(1)
+        if ref_id in id_to_url:
+            continue
+        url = _reference_url_in_entry(entry.group(2))
+        if url:
+            id_to_url[ref_id] = url
 
     if not id_to_url:
         return markdown_text
@@ -2714,9 +2752,15 @@ def _linkify_reference_citations(markdown_text: str) -> str:
         cursor = end
     pieces.append(_CITATION_RE.sub(_replace_citation, body[cursor:]))
 
-    # 规范化参考文献条目之间的换行，确保 Markdown 渲染时每条 [N] 独占一行
-    references_section = _REFERENCE_NEWLINE_RE.sub(r"\n\n\1", references_section)
-    return "".join(pieces) + references_section
+    # 裸域名补成 Markdown 链接，来源条目才有可点的落点
+    def _link_bare_domain(match: "re.Match[str]") -> str:
+        token = match.group(1)
+        return f"[{token}](https://{token.rstrip(_REFERENCE_URL_TRAILING)})"
+
+    references_block = _BARE_DOMAIN_RE.sub(_link_bare_domain, references_block)
+    # 规范化参考文献条目之间的换行，确保每条 [N] 独占一行
+    references_block = _REFERENCE_NEWLINE_RE.sub(r"\n\n\1", references_block)
+    return "".join(pieces) + head_part + references_block + rest
 
 
 FORMAT_ERROR_MARKERS = (
@@ -3023,7 +3067,7 @@ def _decorate_report_for_web(
         conf_m = re.search(r"<!--\s*confidence:(high|mid|low)\s*-->", body)
         level = conf_m.group(1) if conf_m else "mid"
         body = re.sub(r"<!--\s*confidence:(?:high|mid|low)\s*-->\s*", "", body)
-        label_m = re.search(r"\*\*?置信度：([高中低])\*\*?", body)
+        label_m = re.search(r"\*\*?置信度：([高中低])[。.]?\*\*?", body)
         if label_m:
             label = f"置信度：{label_m.group(1)}"
         else:
@@ -3040,8 +3084,8 @@ def _decorate_report_for_web(
         # then keep the answer in ONE escaped <div>: Gradio Markdown drops bare
         # text / <p> siblings inside HTML blocks.
         body = re.sub(
-            r"(?m)^[ \t]*\*{0,2}置信度：[高中低]\*{0,2}[ \t]*$"
-            r"|\*{0,2}置信度：[高中低]\*{0,2}",
+            r"(?m)^[ \t]*\*{0,2}置信度：[高中低][。.]?\*{0,2}[ \t]*$"
+            r"|\*{0,2}置信度：[高中低][。.]?\*{0,2}",
             "",
             body,
         ).strip()
@@ -3258,6 +3302,8 @@ def _build_references_section(sources: List[Dict[str, str]]) -> List[str]:
     for idx, src in enumerate(sources, 1):
         title = str(src.get("title") or src["url"]).replace("[", "(").replace("]", ")")
         lines.append(f"[{idx}] [{title}]({src['url']})")
+        # 条目间空行：相邻行会被 Markdown 合并成一段，来源挤在一起无法逐条阅读
+        lines.append("")
     return lines
 
 
@@ -5662,7 +5708,9 @@ def build_demo():
         box-sizing: border-box !important;
         overflow: auto !important;
         cursor: pointer !important;
-        background: rgba(15, 23, 42, 0.62) !important;
+        background: rgba(2, 6, 23, 0.66) !important;
+        backdrop-filter: blur(6px) !important;
+        -webkit-backdrop-filter: blur(6px) !important;
     }
 
     /* Set by the dialog script while a modal is mounted. */
@@ -5681,26 +5729,55 @@ def build_demo():
         flex: 0 0 auto !important;
         display: flex !important;
         flex-direction: column !important;
-        gap: 10px !important;
+        gap: 8px !important;
         /* Auto margins centre the card, yet collapse to 0 when the card is
            taller than the overlay — so the top stays reachable while scrolling. */
         margin: auto !important;
-        width: min(420px, 100%) !important;
-        max-width: 420px !important;
+        width: min(460px, 100%) !important;
+        max-width: 460px !important;
         min-width: 0 !important;
-        padding: 18px 22px 20px !important;
+        padding: 20px 24px 18px !important;
         box-sizing: border-box !important;
         position: relative !important;
         z-index: 1 !important;
         cursor: default !important;
         color: var(--ink-strong) !important;
-        background: rgba(30, 41, 59, 0.97) !important;
-        border: 1px solid var(--panel-border) !important;
+        background: linear-gradient(180deg, rgba(32, 44, 64, 0.98), rgba(22, 31, 47, 0.98)) !important;
+        border: 1px solid rgba(148, 163, 184, 0.16) !important;
         border-radius: 16px !important;
-        box-shadow: 0 16px 40px rgba(15, 23, 42, 0.35), 0 0 0 1px rgba(148, 163, 184, 0.12) !important;
+        box-shadow: 0 24px 64px rgba(2, 6, 23, 0.55), 0 0 0 1px rgba(148, 163, 184, 0.10) !important;
+        animation: miro-modal-pop 0.16s ease-out !important;
         /* Option lists are absolutely positioned inside their own block, so no
            ancestor may clip. The overlay scrolls instead of the card. */
         overflow: visible !important;
+    }
+    @keyframes miro-modal-pop {
+        from { opacity: 0; transform: translateY(10px) scale(0.985); }
+        to { opacity: 1; transform: none; }
+    }
+    /* Accent bar along the top edge of the card. */
+    #settings-modal .modal-card::before {
+        content: "" !important;
+        position: absolute !important;
+        top: 0 !important;
+        left: 24px !important;
+        right: 24px !important;
+        height: 3px !important;
+        border-radius: 0 0 4px 4px !important;
+        background: linear-gradient(90deg, #22d3ee, #818cf8) !important;
+    }
+    @media (prefers-reduced-motion: reduce) {
+        #settings-modal .modal-card {
+            animation: none !important;
+        }
+    }
+    @media (max-width: 480px) {
+        #settings-modal {
+            padding: 12px !important;
+        }
+        #settings-modal .modal-card {
+            padding: 18px 16px 16px !important;
+        }
     }
 
     /* Keep fields in one column and never wider than the card. */
@@ -5719,6 +5796,7 @@ def build_demo():
         flex-direction: column !important;
         flex-wrap: nowrap !important;
         align-items: stretch !important;
+        gap: 10px !important;
         width: 100% !important;
         overflow: visible !important;
     }
@@ -5730,6 +5808,24 @@ def build_demo():
     #settings-modal .modal-card [data-testid="dropdown"]{
         width: 100% !important;
         max-width: 100% !important;
+    }
+    /* Gradio stacks a 14px block margin plus 10px of padding inside every HTML
+       block; together they added ~150px of blank to the card. */
+    #settings-modal .modal-card .block{
+        margin-bottom: 0 !important;
+    }
+    #settings-modal .modal-card .html-container{
+        padding-top: 0 !important;
+        padding-bottom: 0 !important;
+    }
+    #settings-modal .modal-card .prose{
+        margin: 0 !important;
+    }
+    /* Gradio pads the dropdown's inner wrap by 12px top/bottom, which made each
+       field ~24px taller than it looks. */
+    #settings-modal .modal-card .wrap-inner{
+        padding-top: 6px !important;
+        padding-bottom: 6px !important;
     }
 
     /* Gradio writes overflow:hidden inline on blocks; the option list must
@@ -5789,7 +5885,7 @@ def build_demo():
         justify-content: flex-end !important;
         gap: 8px !important;
         width: 100% !important;
-        margin-top: 4px !important;
+        margin-top: 0 !important;
     }
     /* Status sits on its own full-width row above the action buttons. The
        direct flex child is Gradio's block wrapper (#settings-status), not
@@ -5798,12 +5894,40 @@ def build_demo():
         flex: 1 1 100% !important;
         min-width: 0 !important;
     }
+    /* Before the first Apply/Reset the status block is an empty prose box;
+       it still reserved a row above the buttons. */
+    #settings-modal .modal-footer > #settings-status:not(:has(.modal-status)){
+        display: none !important;
+    }
+    /* 应用/恢复/预设的确认信息：原来只是一行 11px 浅蓝小字，几乎看不出
+       点击有反应，改为带边框的提示条。 */
     #settings-modal .modal-footer .modal-status{
+        display: block !important;
         margin: 0 !important;
-        color: #7dd3fc;
-        font-size: 0.76em;
-        line-height: 1.4;
-        text-align: left;
+        padding: 7px 10px !important;
+        border-radius: 8px !important;
+        border: 1px solid rgba(34, 211, 238, 0.35) !important;
+        background: rgba(34, 211, 238, 0.10) !important;
+        color: #a5f3fc !important;
+        font-size: 12.5px !important;
+        line-height: 1.5 !important;
+        text-align: left !important;
+        animation: miro-status-in 0.18s ease-out !important;
+    }
+    #settings-modal .modal-footer .modal-status::before {
+        content: "✓ " !important;
+        font-weight: 700 !important;
+    }
+    @keyframes miro-status-in {
+        from { opacity: 0; transform: translateY(3px); }
+        to { opacity: 1; transform: none; }
+    }
+    /* 选择器要与上面的提示条完全一致，否则同权重的 prefers-reduced-motion 规则
+       会因书写顺序在前而被覆盖。 */
+    @media (prefers-reduced-motion: reduce) {
+        #settings-modal .modal-footer .modal-status {
+            animation: none !important;
+        }
     }
     .modal-status:empty {
         display: none;
@@ -5817,6 +5941,7 @@ def build_demo():
         padding: 0 12px !important;
         border-radius: 10px !important;
         font-size: 13px !important;
+        font-weight: 600 !important;
     }
     #settings-reset-btn {
         background: rgba(15, 23, 42, 0.72) !important;
@@ -5827,14 +5952,10 @@ def build_demo():
         border-color: rgba(34, 211, 238, 0.45) !important;
         color: #22d3ee !important;
     }
-    #settings-apply-btn {
-        padding: 0 14px !important;
-        font-weight: 600 !important;
-    }
 
     .modal-title {
-        font-size: 18px;
-        font-weight: 600;
+        font-size: 20px;
+        font-weight: 700;
         color: var(--ink-strong);
         margin: 0 44px 2px 0;
         letter-spacing: 0.02em;
@@ -5842,45 +5963,9 @@ def build_demo():
         min-height: 36px;
     }
 
-    /* ===== Settings modal polish ====================================== */
-    #settings-modal {
-        background: rgba(2, 6, 23, 0.66) !important;
-        backdrop-filter: blur(6px) !important;
-        -webkit-backdrop-filter: blur(6px) !important;
-    }
-    #settings-modal .modal-card {
-        width: min(460px, 100%) !important;
-        max-width: 460px !important;
-        gap: 16px !important;
-        padding: 28px 30px 26px !important;
-        background: linear-gradient(180deg, rgba(32, 44, 64, 0.98), rgba(22, 31, 47, 0.98)) !important;
-        border-color: rgba(148, 163, 184, 0.16) !important;
-        box-shadow: 0 24px 64px rgba(2, 6, 23, 0.55), 0 0 0 1px rgba(148, 163, 184, 0.10) !important;
-        animation: miro-modal-pop 0.16s ease-out !important;
-    }
-    #settings-modal .modal-card::before {
-        content: "" !important;
-        position: absolute !important;
-        top: 0 !important;
-        left: 30px !important;
-        right: 30px !important;
-        height: 3px !important;
-        border-radius: 0 0 4px 4px !important;
-        background: linear-gradient(90deg, #22d3ee, #818cf8) !important;
-    }
-    @keyframes miro-modal-pop {
-        from { opacity: 0; transform: translateY(10px) scale(0.985); }
-        to { opacity: 1; transform: none; }
-    }
-    @media (prefers-reduced-motion: reduce) {
-        #settings-modal .modal-card {
-            animation: none !important;
-        }
-    }
-    #settings-modal .modal-title {
-        font-size: 20px !important;
-        font-weight: 700 !important;
-    }
+    /* ===== Settings modal polish ======================================
+       Typography, colour and the divider rhythm only — geometry lives in the
+       "Modals: settings" block above. */
     #settings-modal .modal-title::after {
         content: "" !important;
         display: block !important;
@@ -5901,24 +5986,19 @@ def build_demo():
         border-radius: 50% !important;
         transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease !important;
     }
-    /* Divider rhythm: one faint line above each field after the title.
-       Option hints hug the selector they describe — no divider, pulled up. */
-    #settings-modal .modal-card .form {
-        gap: 16px !important;
+    /* Divider rhythm: one faint line above each field group. The option hints
+       are card children, not form children, so they hug the field above. */
+    #settings-modal .modal-card > .form {
+        border-top: 1px solid rgba(148, 163, 184, 0.10) !important;
+        padding-top: 10px !important;
     }
-    #settings-modal .modal-card .form > *:not(:first-child) {
-        border-top: 1px solid rgba(148, 163, 184, 0.08) !important;
-        padding-top: 14px !important;
-    }
-    #settings-modal .modal-card .form > #mode-option-hint,
-    #settings-modal .modal-card .form > #search-profile-option-hint {
-        border-top: none !important;
-        padding-top: 0 !important;
-        margin-top: -10px !important;
+    #mode-option-hint,
+    #search-profile-option-hint {
+        margin-top: -6px !important;
     }
     /* Gradio 默认给每个表单块较大内边距，与分隔线叠加后会显得松散 */
     #settings-modal .modal-card .form > .block.padded {
-        padding: 4px 0 !important;
+        padding: 0 !important;
     }
     #settings-modal input[type="range"],
     #settings-modal input[type="radio"] {
@@ -6057,9 +6137,10 @@ def build_demo():
         border-color: rgba(34, 211, 238, 0.5) !important;
         background: rgba(34, 211, 238, 0.06) !important;
     }
+    /* 导出文件会自动下载（export_titles_script 监听该容器并点击生成的链接），
+       文件块本身只是触发载体，不再占据工具栏位置。 */
     #export-file {
-        flex: 1 1 220px !important;
-        max-width: 420px !important;
+        display: none !important;
     }
 
     #lang-toggle-btn {
@@ -7586,6 +7667,37 @@ def build_demo():
         border-left: 2px solid rgba(148, 163, 184, 0.18) !important;
         margin-left: 4px !important;
     }
+    /* 折叠区内的来源条目：报告正文的 #log-view li/a 规则带 !important，
+       需按同级作用域覆盖，条目间距与悬挂缩进才能生效。 */
+    #log-view .report-fold h3 {
+        font-size: 0.95rem !important;
+        font-weight: 600 !important;
+        color: #cbd5e1 !important;
+        margin: 10px 0 4px !important;
+        border-bottom: none !important;
+        padding-bottom: 0 !important;
+    }
+    #log-view .report-fold ol,
+    #log-view .report-fold ul {
+        margin: 4px 0 2px !important;
+        padding-left: 26px !important;
+        list-style-position: outside !important;
+    }
+    #log-view .report-fold ol > li,
+    #log-view .report-fold ul > li {
+        margin: 7px 0 !important;
+    }
+    #log-view .report-fold a:not(.ref-citation):not(.ref-chip) {
+        color: #7dd3fc !important;
+        text-decoration: none !important;
+        border-bottom: 1px dashed rgba(125, 211, 252, 0.4) !important;
+        word-break: break-all !important;
+        overflow-wrap: anywhere !important;
+    }
+    #log-view .report-fold a:not(.ref-citation):not(.ref-chip):hover {
+        color: #22d3ee !important;
+        border-bottom-color: rgba(34, 211, 238, 0.7) !important;
+    }
     .report-tldr {
         margin: 4px 0 18px !important;
         padding: 0 0 12px !important;
@@ -8408,6 +8520,9 @@ def build_demo():
     if (!topId) return;
     var card = openCards[topId];
     if (ev.key === "Escape") {
+      // An open dropdown list owns this Escape; closing the dialog here would
+      // throw away the edits the user was about to confirm.
+      if (card.querySelector("ul.options")) return;
       var btn = card.querySelector("[id$='-close-btn']");
       if (btn) btn.click();
       return;
