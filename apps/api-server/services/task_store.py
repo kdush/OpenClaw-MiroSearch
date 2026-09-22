@@ -63,6 +63,8 @@ class TaskMeta:
     search_result_num: int = 20
     verification_min_search_rounds: int = 3
     output_detail_level: str = "detailed"
+    research_intensity: str = "standard"
+    effective_config: Optional[Dict[str, Any]] = None
     created_at: float = field(default_factory=time.time)
     started_at: Optional[float] = None
     finished_at: Optional[float] = None
@@ -71,7 +73,7 @@ class TaskMeta:
 
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典。"""
-        return {
+        result = {
             "task_id": self.task_id,
             "status": self.status.value,
             "caller_id": self.caller_id,
@@ -81,16 +83,28 @@ class TaskMeta:
             "search_result_num": str(self.search_result_num),
             "verification_min_search_rounds": str(self.verification_min_search_rounds),
             "output_detail_level": self.output_detail_level,
+            "research_intensity": self.research_intensity,
             "created_at": str(self.created_at),
             "started_at": "" if self.started_at is None else str(self.started_at),
             "finished_at": "" if self.finished_at is None else str(self.finished_at),
             "current_stage": self.current_stage,
             "error": "" if self.error is None else self.error,
         }
+        if self.effective_config is not None:
+            result["effective_config"] = json.dumps(self.effective_config)
+        return result
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "TaskMeta":
         """从字典创建。"""
+        effective_config_str = data.get("effective_config", "")
+        effective_config = None
+        if effective_config_str:
+            try:
+                effective_config = json.loads(effective_config_str)
+            except (json.JSONDecodeError, TypeError):
+                effective_config = None
+
         return cls(
             task_id=data["task_id"],
             status=TaskStatus(data["status"]),
@@ -103,6 +117,8 @@ class TaskMeta:
                 data.get("verification_min_search_rounds", 3)
             ),
             output_detail_level=data.get("output_detail_level", "detailed"),
+            research_intensity=data.get("research_intensity", "standard"),
+            effective_config=effective_config,
             created_at=float(data.get("created_at", time.time())),
             started_at=_parse_optional_float(data.get("started_at")),
             finished_at=_parse_optional_float(data.get("finished_at")),
@@ -155,6 +171,8 @@ class TaskStore:
         search_result_num: int = 20,
         verification_min_search_rounds: int = 3,
         output_detail_level: str = "detailed",
+        research_intensity: str = "standard",
+        effective_config: Optional[Dict[str, Any]] = None,
     ) -> TaskMeta:
         """创建新任务记录。"""
         meta = TaskMeta(
@@ -167,6 +185,8 @@ class TaskStore:
             search_result_num=search_result_num,
             verification_min_search_rounds=verification_min_search_rounds,
             output_detail_level=output_detail_level,
+            research_intensity=research_intensity,
+            effective_config=effective_config,
         )
 
         key = f"{self.KEY_TASK}:{task_id}"
