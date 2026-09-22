@@ -31,11 +31,15 @@ class ProviderRegistry:
         """返回所有当前可用的搜索源名称列表。"""
         return [name for name, p in self._providers.items() if p.is_available()]
 
-    def resolve_order(self, order_config: str) -> list[str]:
+    def resolve_order(
+        self, order_config: str, *, strict: bool = False
+    ) -> list[str]:
         """
         按配置字符串解析可用 provider 顺序。
 
-        不可用的自动过滤；未显式配置但可用的追加到末尾。
+        不可用的自动过滤。默认会把未显式配置但可用的 provider 追加到末尾；
+        ``strict=True`` 时仅返回配置中明确列出且当前可用的 provider（用于
+        ``searxng-only`` 等硬约束路由，避免 SERPER 等密钥存在时静默扩容）。
         """
         seen: set[str] = set()
         result: list[str] = []
@@ -46,6 +50,8 @@ class ProviderRegistry:
             if name not in seen and self.get(name) and self.get(name).is_available():
                 result.append(name)
                 seen.add(name)
+        if strict:
+            return result
         # 追加未显式配置但可用的 provider
         for name in self._providers:
             if name not in seen and self._providers[name].is_available():
