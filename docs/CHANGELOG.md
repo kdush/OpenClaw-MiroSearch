@@ -7,6 +7,10 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## \[Unreleased\]
 
+### Changed
+
+- **报告排版**：终稿剥离 Token/计费噪音；丢弃截断 URL；pending 线索改为「未跟进」摘要；detailed 可附内容分析与 Mermaid 关系拓扑（见 `docs/REPORT_LAYOUT.md`）。
+
 ## \[0.2.11\] - 2026-08-13
 
 ### Changed

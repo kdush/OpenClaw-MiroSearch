@@ -19,3 +19,9 @@
 - [API 规格 / API Spec](./API_SPEC.md)（含 AI Agent 接入指引）
 - [部署指南 / Deployment Guide](./DEPLOY.md)（含 Docker Compose 与本地工具部署）
 - [抓取能力迭代计划 / Scraping Iteration Plan](./SCRAPING_ITERATION_PLAN.md)（T1-T9，对应 v0.2.3 → v0.3.0）
+
+## 研究质量 / Research Quality
+
+- [研究强度 / Research Intensity](./RESEARCH_INTENSITY.md)（light / standard / deep 三档行为与配置）
+- [深度效率旋钮 / Deep Efficiency](./DEEP_EFFICIENCY.md)（Round 6–8 提速旋钮与度量）
+- [报告排版 / Report Layout](./REPORT_LAYOUT.md)（终稿章节规范与禁止内容）
