@@ -2,7 +2,7 @@
 
 This guide describes how to integrate the MiroThinker model with [LobeChat](https://github.com/lobehub/lobe-chat), an open-source, modern LLM UI framework supporting tool usage (function calling).
 
-> Note: This is a compatibility extension document. The core retrieval service flow of OpenClaw-MiroSearch does not depend on LobeChat.
+> Note: This is a compatibility extension document. The core retrieval service flow of Diting does not depend on LobeChat.
 
 ## Before You Start
 

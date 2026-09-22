@@ -1,10 +1,10 @@
-# OpenClaw-MiroSearch
+# 谛听（Diting）
 
 <p align="center">
-  <img src="assets/mirologo.png" alt="OpenClaw-MiroSearch Logo" width="320" />
+  <img src="assets/diting_logo.png" alt="Diting Logo" width="320" />
 </p>
 
-OpenClaw-MiroSearch 是一个面向智能体场景的开源联网检索工程，目标是提供可控成本、可配置路由与可编程调用接口。
+谛听是一个面向智能体场景的开源联网检索工程，目标是提供可控成本、可配置路由与可编程调用接口。
 
 > 📄 English version: [README.md](./README.md)
 
@@ -40,7 +40,7 @@ OpenClaw-MiroSearch 是一个面向智能体场景的开源联网检索工程，
 - `apps/miroflow-agent/`：Agent 运行与配置
 - `libs/miroflow-tools/`：MCP 工具与检索路由实现
 - `assets/`：品牌与静态资源
-- `skills/openclaw-mirosearch/`：面向 OpenClaw 的调用技能包
+- `skills/diting/`：面向 OpenClaw 的调用技能包
 
 ## 快速部署
 
@@ -168,20 +168,20 @@ Skill 使用建议（先分流）：
 - 简单搜索（快速网页检索、单事实查询）：优先使用仓库内分发的 `searxng` skill
   - 仓库目录：`skills/searxng/`
   - 打包文件：`skills/searxng.zip`
-- 深度检索或高质量检索（多来源交叉、核查、研究报告）：使用 `openclaw-mirosearch` skill
+- 深度检索或高质量检索（多来源交叉、核查、研究报告）：使用 `diting` skill
 
 Skill 安装：
 
 - 推荐双 skill 打包：`skills/openclaw-search-skills-bundle.zip`
 - 简单搜索 skill：`skills/searxng/`
-- 仓库目录：`skills/openclaw-mirosearch/`
-- 打包文件：`skills/openclaw-mirosearch.zip`
-- 安装说明：[`skills/openclaw-mirosearch/references/skill-install.md`](skills/openclaw-mirosearch/references/skill-install.md)
+- 仓库目录：`skills/diting/`
+- 打包文件：`skills/diting.zip`
+- 安装说明：[`skills/diting/references/skill-install.md`](skills/diting/references/skill-install.md)
 
 Skill 使用：
 
-- 使用说明：[`skills/openclaw-mirosearch/references/usage.md`](skills/openclaw-mirosearch/references/usage.md)
-- API 说明：[`skills/openclaw-mirosearch/references/api.md`](skills/openclaw-mirosearch/references/api.md)
+- 使用说明：[`skills/diting/references/usage.md`](skills/diting/references/usage.md)
+- API 说明：[`skills/diting/references/api.md`](skills/diting/references/api.md)
 - AI Agent 接入详解：[`docs/API_SPEC.md`](docs/API_SPEC.md)
 
 ## 建议配置基线
@@ -219,7 +219,7 @@ Skill 使用：
 - API Server 说明：[`apps/api-server/README.md`](apps/api-server/README.md)
 - Agent 说明：[`apps/miroflow-agent/README.md`](apps/miroflow-agent/README.md)
 - 工具层说明：[`libs/miroflow-tools/README.md`](libs/miroflow-tools/README.md)
-- OpenClaw 技能包：[`skills/openclaw-mirosearch/SKILL.md`](skills/openclaw-mirosearch/SKILL.md)
+- OpenClaw 技能包：[`skills/diting/SKILL.md`](skills/diting/SKILL.md)
 
 ## 开源协作文档
 

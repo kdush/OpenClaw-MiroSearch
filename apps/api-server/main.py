@@ -78,8 +78,8 @@ async def _lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="MiroSearch API",
-    description="OpenClaw-MiroSearch 标准 HTTP API，独立于 Gradio Demo",
+    title="Diting API",
+    description="谛听标准 HTTP API，独立于 Gradio Demo",
     version=settings.api_version,
     docs_url="/docs",
     redoc_url="/redoc",

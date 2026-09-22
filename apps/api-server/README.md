@@ -1,4 +1,4 @@
-# MiroSearch API Server
+# Diting API Server
 
 独立于 Gradio Demo 的标准 HTTP API 层，基于 FastAPI 构建。
 

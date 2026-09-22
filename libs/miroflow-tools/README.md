@@ -1,6 +1,6 @@
-# 🛠️ MiroFlow Tools (OpenClaw-MiroSearch)
+# 🛠️ MiroFlow Tools (Diting)
 
-> A comprehensive tool management system and MCP (Model Context Protocol) server collection for OpenClaw-MiroSearch, providing a unified interface to various AI capabilities including code execution, vision processing, audio transcription, web searching, reasoning, and document reading.
+> A comprehensive tool management system and MCP (Model Context Protocol) server collection for Diting, providing a unified interface to various AI capabilities including code execution, vision processing, audio transcription, web searching, reasoning, and document reading.
 
 ## ✨ Features
 

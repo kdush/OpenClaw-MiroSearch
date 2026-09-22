@@ -14,8 +14,8 @@
 # 环境变量：
 #   APT_MIRROR        覆盖 Dockerfile 内默认的 apt 镜像源（默认清华园）
 #   PIP_INDEX_URL     覆盖 PyPI 镜像源
-#   IMAGE_TAG_API     覆盖 api-server 镜像 tag（默认 openclaw-mirosearch-api:latest）
-#   IMAGE_TAG_DEMO    覆盖 gradio-demo 镜像 tag（默认 openclaw-mirosearch:latest）
+#   IMAGE_TAG_API     覆盖 api-server 镜像 tag（默认 diting-api:latest）
+#   IMAGE_TAG_DEMO    覆盖 gradio-demo 镜像 tag（默认 diting:latest）
 
 set -euo pipefail
 
@@ -23,8 +23,8 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
 TARGET="${1:-all}"
-IMAGE_TAG_API="${IMAGE_TAG_API:-openclaw-mirosearch-api:latest}"
-IMAGE_TAG_DEMO="${IMAGE_TAG_DEMO:-openclaw-mirosearch:latest}"
+IMAGE_TAG_API="${IMAGE_TAG_API:-diting-api:latest}"
+IMAGE_TAG_DEMO="${IMAGE_TAG_DEMO:-diting:latest}"
 
 BUILD_ARGS=()
 [[ -n "${APT_MIRROR:-}" ]] && BUILD_ARGS+=("--build-arg" "APT_MIRROR=${APT_MIRROR}")

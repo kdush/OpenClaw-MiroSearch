@@ -1,9 +1,9 @@
 ---
-name: openclaw-mirosearch
+name: diting
 description: 面向 OpenClaw 或其他智能体的深度检索与高质量联网研究技能。用于需要多来源交叉验证、事实核查、长篇研究报告、可控检索路由或异步任务编排的场景。优先通过 FastAPI API 提交任务、轮询或订阅 SSE、按 caller_id 取消任务，并按网络环境选择 mode、search_profile、search_result_num、verification_min_search_rounds、output_detail_level。简单单事实搜索优先改用 searxng skill。
 ---
 
-# OpenClaw-MiroSearch（深度检索 Skill · v0.2.2）
+# 谛听（深度检索 Skill · v0.2.2）
 
 ## 何时使用
 
@@ -12,7 +12,7 @@ description: 面向 OpenClaw 或其他智能体的深度检索与高质量联网
 - 简单搜索（快速找网页、查一个事实、低成本优先）：
   - 推荐使用 `searxng` skill：`https://clawhub.ai/abk234/searxng`
 - 深度检索或高质量检索（多来源交叉、核查、结构化报告）：
-  - 使用本 skill（`openclaw-mirosearch`）
+  - 使用本 skill（`diting`）
 
 ## API 选择
 
@@ -69,7 +69,7 @@ description: 面向 OpenClaw 或其他智能体的深度检索与高质量联网
 
 - **FastAPI**：任务状态为 `completed` 或 `cached` 时，`result` 字段为最终 Markdown
 - **Gradio**：以 SSE `event: complete` 作为结束信号
-- 调用脚本 `call_openclaw_mirosearch.py` 内置 SSE 流式进度追踪 + 自动降级重试：
+- 调用脚本 `call_diting.py` 内置 SSE 流式进度追踪 + 自动降级重试：
   1. 优先通过 SSE stream 实时展示进度（`stage_heartbeat` 事件）
   2. 若结果包含 `"Task incomplete"` 或 `"No \boxed{} content found"`，自动触发降级重试
   3. 降级顺序：mode 从严格到宽松（verified → research → balanced → quota），search_profile 切换到更宽容的路由
@@ -89,7 +89,7 @@ description: 面向 OpenClaw 或其他智能体的深度检索与高质量联网
 - Skill 使用：`references/usage.md`
 - API 参考：`references/api.md`
 - 模式选择：`references/modes.md`
-- 调用脚本：`scripts/call_openclaw_mirosearch.py`
+- 调用脚本：`scripts/call_diting.py`
 
 ## 交付要求
 

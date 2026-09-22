@@ -1,4 +1,4 @@
-name: openclaw-mirosearch
+name: diting
 
 services:
   app:
@@ -7,7 +7,7 @@ services:
       dockerfile: apps/gradio-demo/Dockerfile
       # 使用宿主机网络拉 apt / pip 包，规避 docker0 桥接网无法访问外部仓库的环境
       network: host
-    image: openclaw-mirosearch:latest
+    image: diting:latest
     restart: unless-stopped
     network_mode: host
     env_file:
@@ -33,7 +33,7 @@ services:
       dockerfile: apps/api-server/Dockerfile
       # 使用宿主机网络拉 apt / pip 包，规避 docker0 桥接网无法访问外部仓库的环境
       network: host
-    image: openclaw-mirosearch-api:latest
+    image: diting-api:latest
     restart: unless-stopped
     network_mode: host
     env_file:
@@ -62,7 +62,7 @@ services:
       dockerfile: apps/api-server/Dockerfile
       # 使用宿主机网络拉 apt / pip 包，规避 docker0 桥接网无法访问外部仓库的环境
       network: host
-    image: openclaw-mirosearch-api:latest
+    image: diting-api:latest
     restart: unless-stopped
     network_mode: host
     env_file:

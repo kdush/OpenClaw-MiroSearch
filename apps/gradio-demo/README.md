@@ -1,4 +1,4 @@
-# OpenClaw-MiroSearch Demo (Gradio) / Web Demo 与 API 入口
+# 谛听 Demo (Gradio) / Web Demo 与 API 入口
 
 This directory provides a Web Demo and external API entry point.
 

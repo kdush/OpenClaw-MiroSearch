@@ -1,6 +1,6 @@
 # API 规格说明
 
-本文档定义 OpenClaw-MiroSearch 对外 API 的调用约定（统一标准接口）。
+本文档定义谛听对外 API 的调用约定（统一标准接口）。
 
 > 接口约束：研究接口仅保留 `run_research_once`，历史双接口已收敛为统一标准。
 

@@ -1,10 +1,10 @@
-# OpenClaw-MiroSearch
+# Diting (谛听)
 
 <p align="center">
-  <img src="assets/mirologo.png" alt="OpenClaw-MiroSearch Logo" width="320" />
+  <img src="assets/diting_logo.png" alt="Diting Logo" width="320" />
 </p>
 
-OpenClaw-MiroSearch is an open-source web retrieval engineering project for agent scenarios, designed to provide controllable cost, configurable routing, and programmable API interfaces.
+Diting is an open-source web retrieval engineering project for agent scenarios, designed to provide controllable cost, configurable routing, and programmable API interfaces.
 
 > 📄 中文文档：[README_zh.md](./README_zh.md)
 
@@ -165,18 +165,18 @@ Skill guidance:
 - Simple search, single-fact lookup, and cost-first usage: use the repository-distributed `searxng` skill
   - Repository: `skills/searxng/`
   - Packaged file: `skills/searxng.zip`
-- Deep research or high-quality retrieval: use the `openclaw-mirosearch` skill
-  - Skill docs: [`skills/openclaw-mirosearch/SKILL.md`](skills/openclaw-mirosearch/SKILL.md)
-  - Usage docs: [`skills/openclaw-mirosearch/references/usage.md`](skills/openclaw-mirosearch/references/usage.md)
+- Deep research or high-quality retrieval: use the `diting` skill
+  - Skill docs: [`skills/diting/SKILL.md`](skills/diting/SKILL.md)
+  - Usage docs: [`skills/diting/references/usage.md`](skills/diting/references/usage.md)
 
 Skill acquisition and installation:
 
 - Recommended dual-skill bundle: `skills/openclaw-search-skills-bundle.zip`
 - Simple search skill: `skills/searxng/`
-- Repository: `skills/openclaw-mirosearch/`
-- Packaged file: `skills/openclaw-mirosearch.zip`
-- Installation guide: [`skills/openclaw-mirosearch/references/skill-install.md`](skills/openclaw-mirosearch/references/skill-install.md)
-- API docs: [`skills/openclaw-mirosearch/references/api.md`](skills/openclaw-mirosearch/references/api.md)
+- Repository: `skills/diting/`
+- Packaged file: `skills/diting.zip`
+- Installation guide: [`skills/diting/references/skill-install.md`](skills/diting/references/skill-install.md)
+- API docs: [`skills/diting/references/api.md`](skills/diting/references/api.md)
 - AI Agent integration: [`docs/API_SPEC.md`](docs/API_SPEC.md)
 
 ## Recommended Configuration Baseline
@@ -222,7 +222,7 @@ Skill acquisition and installation:
 - API server docs: [`apps/api-server/README.md`](apps/api-server/README.md)
 - Agent docs: [`apps/miroflow-agent/README.md`](apps/miroflow-agent/README.md)
 - Tools docs: [`libs/miroflow-tools/README.md`](libs/miroflow-tools/README.md)
-- OpenClaw skill package: [`skills/openclaw-mirosearch/SKILL.md`](skills/openclaw-mirosearch/SKILL.md)
+- OpenClaw skill package: [`skills/diting/SKILL.md`](skills/diting/SKILL.md)
 
 ## Open Source Collaboration
 

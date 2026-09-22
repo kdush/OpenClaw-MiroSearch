@@ -1,8 +1,8 @@
 # Contributing Guide / 贡献指南
 
-Thank you for contributing to OpenClaw-MiroSearch.
+Thank you for contributing to Diting.
 
-感谢你参与 OpenClaw-MiroSearch 的开发与改进。
+感谢你参与谛听的开发与改进。
 
 ## Development Environment / 开发环境
 

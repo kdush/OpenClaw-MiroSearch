@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""调用 OpenClaw-MiroSearch 统一脚本，支持 FastAPI（推荐）和 Gradio 两种 API 模式。"""
+"""调用谛听统一脚本，支持 FastAPI（推荐）和 Gradio 两种 API 模式。"""
 import argparse
 import json
 import os
@@ -408,7 +408,7 @@ def run_research_gradio(
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="调用 OpenClaw-MiroSearch API 并输出最终 Markdown（支持 FastAPI 和 Gradio 两种模式）"
+        description="调用谛听 API 并输出最终 Markdown（支持 FastAPI 和 Gradio 两种模式）"
     )
     parser.add_argument(
         "--api-mode",
