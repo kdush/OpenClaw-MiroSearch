@@ -57,6 +57,9 @@ def _validated_cache_quality(quality: object) -> Optional[Dict[str, Any]]:
     normalized = _validated_result_quality(quality)
     if normalized is None or not normalized["answer_available"]:
         return None
+    # 降级报告来自总结失败的兜底，重跑一次通常能拿到完整总结，不能固化进共享缓存。
+    if "degraded_report_fallback" in normalized["issues"]:
+        return None
     return normalized
 
 

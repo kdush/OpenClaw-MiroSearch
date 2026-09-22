@@ -12,6 +12,7 @@ This module provides the AnswerGenerator class that handles:
 """
 
 import asyncio
+import json
 import logging
 import os
 import time
@@ -22,8 +23,10 @@ from omegaconf import DictConfig
 from ..io.output_formatter import OutputFormatter
 from ..io.report_structure import ReportStructureValidator
 from ..llm.base_client import (
+    INTERNAL_MESSAGE_TYPE_KEY,
     SUMMARY_AGENT_TYPES,
     OMITTED_TOOL_RESULT_TEXT,
+    TOOL_RESULT_MESSAGE_TYPE,
     BaseClient,
 )
 from ..logging.task_logger import TaskLog
@@ -114,6 +117,16 @@ RESEARCH_DETAILED_RETRY_MIN_CHARS = _read_env_int(
     5000,
     minimum=RESEARCH_BALANCED_RETRY_MIN_CHARS,
 )
+
+# 总结不可用且无后续重试机会时的降级报告：直接交付研究阶段已有产出，
+# 避免单个步骤失败导致整任务无结果。通知行保持独立成行加粗：前端据首个
+# 加粗单行生成结论卡片，降级状态必须出现在报告最显眼处。
+DEGRADED_REPORT_NOTICE = (
+    "**系统说明：最终总结模型未返回可用结果；以下报告由系统从研究阶段已收集的"
+    "证据自动汇总，未经总结模型润色与结构校验，请结合文末来源谨慎参考。**"
+)
+DEGRADED_REPORT_MIN_DRAFT_CHARS = 200
+DEGRADED_REPORT_MAX_SOURCES = 12
 
 
 def _parse_bool_flag(value: Any, default: bool = False) -> bool:
@@ -509,6 +522,98 @@ class AnswerGenerator:
             "2) 补齐必要的来源分歧与不确定项说明；\n"
             "3) 结尾保留 \\boxed{一句话核心结论}。"
         )
+
+    @staticmethod
+    def _is_usable_source_url(url: str) -> bool:
+        if not url.startswith(("http://", "https://")):
+            return False
+        host = url.split("//", 1)[1].split("/", 1)[0]
+        return "." in host
+
+    @classmethod
+    def _source_entries(cls, payload: Dict[str, Any]) -> List[Tuple[str, str]]:
+        """从搜索/抓取工具结果里取 (标题, URL)，失败结果不入列表。"""
+        entries: List[Tuple[str, str]] = []
+        organic = payload.get("organic")
+        if isinstance(organic, list):
+            for item in organic:
+                if isinstance(item, dict):
+                    entries.append(
+                        (str(item.get("title") or ""), str(item.get("link") or ""))
+                    )
+        if payload.get("success"):
+            url = payload.get("final_url") or payload.get("url")
+            if url:
+                entries.append((str(payload.get("title") or ""), str(url)))
+        return [
+            (title.strip(), url.strip())
+            for title, url in entries
+            if cls._is_usable_source_url(url.strip())
+        ]
+
+    def _collect_evidence_sources(
+        self, message_history: List[Dict[str, Any]]
+    ) -> List[Tuple[str, str]]:
+        """按抓取先后顺序汇总工具结果里的来源清单（URL 去重、限量）。"""
+        sources: List[Tuple[str, str]] = []
+        seen: set = set()
+        for message in message_history:
+            if message.get(INTERNAL_MESSAGE_TYPE_KEY) != TOOL_RESULT_MESSAGE_TYPE:
+                continue
+            for line in self._message_text_content(message).splitlines():
+                line = line.strip()
+                if not line.startswith("{"):
+                    continue
+                try:
+                    payload = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                for title, url in self._source_entries(payload):
+                    key = url.rstrip("/")
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    sources.append((title, url))
+                    if len(sources) >= DEGRADED_REPORT_MAX_SOURCES:
+                        return sources
+        return sources
+
+    def build_degraded_report(
+        self, message_history: List[Dict[str, Any]]
+    ) -> Optional[str]:
+        """总结不可用且无后续重试机会时，用已有产出确定性拼装降级报告。
+
+        主体取研究阶段最后一段足够长的助手正文，来源取工具结果里的真实链接；
+        两者都没有时返回 None，由上层显式判定失败。
+        """
+        draft = ""
+        for message in reversed(message_history):
+            if message.get("role") != "assistant":
+                continue
+            text = self._message_text_content(message).strip()
+            if len(text) >= DEGRADED_REPORT_MIN_DRAFT_CHARS:
+                draft = text
+                break
+        if not draft:
+            return None
+
+        lines = ["## 结论", "", DEGRADED_REPORT_NOTICE, ""]
+        if self.intermediate_boxed_answers:
+            lines.append(
+                f"- 研究阶段产出的结论：{self.intermediate_boxed_answers[-1].strip()}"
+            )
+            lines.append("")
+        lines.extend([draft, ""])
+        sources = self._collect_evidence_sources(message_history)
+        if sources:
+            lines.extend(["## 参考来源", ""])
+            for index, (title, url) in enumerate(sources, 1):
+                prefix = f"{title} — " if title else ""
+                lines.append(f"{index}. {prefix}{url}")
+            lines.append("")
+        return "\n".join(lines).strip() + "\n"
 
     async def generate_cross_verification_note(
         self,
@@ -1225,6 +1330,9 @@ class AnswerGenerator:
         | ON  (limit>0)      | No                | Generate answer → no fallback, fail summary |
         | ON  (limit>0)      | Yes               | SKIP generation → fail summary directly     |
 
+        无后续重试机会（``retry_with_summary=false``，或评测最后一轮）时，
+        总结不可用会改为交付降级报告，而不是让整任务失败。
+
         Args:
             system_prompt: System prompt for the LLM
             message_history: Conversation history
@@ -1298,33 +1406,59 @@ class AnswerGenerator:
                     "Main Agent | Final Answer (Final Retry)",
                     "This is the final retry. Using intermediate fallback if available.",
                 )
-            return (
-                final_summary,
-                final_boxed_answer,
-                None,
-                usage_log,
-                message_history,
-                result_quality,
+        else:
+            # CASE: Context management ON + normal completion (not reached max turns,
+            # not final retry). Don't use fallback - wrong guess would reduce accuracy.
+            final_answer_text, final_summary, final_boxed_answer = (
+                self.handle_context_management_no_fallback(
+                    final_answer_text,
+                    final_summary,
+                    final_boxed_answer,
+                    answer_available=bool(
+                        result_quality.get("answer_available", False)
+                    ),
+                )
             )
 
-        # CASE: Context management ON + normal completion (not reached max turns, not final retry)
-        # Don't use fallback - wrong guess would reduce accuracy
-        final_answer_text, final_summary, final_boxed_answer = (
-            self.handle_context_management_no_fallback(
-                final_answer_text,
-                final_summary,
-                final_boxed_answer,
-                answer_available=bool(result_quality.get("answer_available", False)),
-            )
-        )
+            if (
+                not result_quality.get("answer_available", False)
+                and self.retry_with_summary
+            ):
+                failure_experience_summary = await self.generate_failure_summary(
+                    system_prompt, message_history, tool_definitions, turn_count
+                )
 
-        if (
-            not result_quality.get("answer_available", False)
-            and self.retry_with_summary
-        ):
-            failure_experience_summary = await self.generate_failure_summary(
-                system_prompt, message_history, tool_definitions, turn_count
-            )
+        # 不会再有新的总结尝试（产品档 retry_with_summary=false，或评测最后一轮）时，
+        # 用研究阶段已有产出拼装降级报告，避免总结模型抖动导致整任务无结果。
+        answer_available = bool(result_quality.get("answer_available", False))
+        if not answer_available and (is_final_retry or not self.retry_with_summary):
+            degraded_report = self.build_degraded_report(message_history)
+            if degraded_report:
+                final_summary = degraded_report
+                if (
+                    final_boxed_answer == FORMAT_ERROR_MESSAGE
+                    and self.intermediate_boxed_answers
+                ):
+                    final_boxed_answer = self.intermediate_boxed_answers[-1]
+                issues = [
+                    issue
+                    for issue in result_quality.get("issues", [])
+                    if issue != "no_answer_available"
+                ]
+                if "degraded_report_fallback" not in issues:
+                    issues.append("degraded_report_fallback")
+                result_quality = {
+                    "format_valid": False,
+                    "fallback_used": True,
+                    "issues": issues,
+                    "answer_available": True,
+                }
+                self.task_log.log_step(
+                    "warning",
+                    "Main Agent | Final Answer (Degraded Report)",
+                    "Final summary unavailable; delivered an auto-assembled "
+                    f"degraded report ({len(final_summary)} chars).",
+                )
 
         return (
             final_summary,

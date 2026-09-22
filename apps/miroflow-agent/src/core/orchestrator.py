@@ -30,6 +30,7 @@ from ..llm.base_client import BaseClient
 from ..logging.task_logger import TaskLog, get_utc_plus_8_time
 from ..utils.parsing_utils import extract_llm_response_text
 from ..utils.prompt_utils import (
+    FORMAT_ERROR_MESSAGE,
     generate_agent_specific_system_prompt,
     generate_agent_summarize_prompt,
     mcp_tags,
@@ -2307,7 +2308,10 @@ class Orchestrator:
             final_summary,
             result_quality,
         )
-        if final_output_emitted:
+        # 只有真实答案才作为正文块展示：占位串（未输出 \boxed{}）会被前端改写成
+        # 「未收敛」提示，与已交付的报告相互矛盾。
+        has_real_answer = final_boxed_answer not in (None, FORMAT_ERROR_MESSAGE)
+        if final_output_emitted and has_real_answer:
             await self.stream.tool_call("show_text", {"text": final_boxed_answer})
         await self.stream.end_llm("Final Summary")
         await self.stream.end_agent("Final Summary", self.current_agent_id)
