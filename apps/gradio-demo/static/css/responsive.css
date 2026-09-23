@@ -1,0 +1,85 @@
+/* Responsive breakpoints */
+    /* ===== Responsive ===== */
+    @media (max-width: 768px) {
+        .hero-title {
+            font-size: 18px;
+        }
+
+        .hero-section {
+            padding-top: 28px;
+        }
+
+        .brand-logo {
+            height: 28px;
+            max-width: 96px;
+        }
+
+        .top-nav {
+            width: calc(100% - 24px);
+            margin: 12px auto 8px;
+            padding: 12px 14px;
+            flex-wrap: wrap;
+        }
+
+        .nav-right {
+            width: 100%;
+            min-width: 0;
+            justify-content: flex-start;
+        }
+
+        .skills-top-link {
+            padding: 6px 12px;
+            font-size: 0.78em;
+        }
+        
+        .hero-section {
+            /* 顶部固定工具栏会压在页头 logo 上，窄屏留出工具条高度 */
+            padding: 88px 16px 16px;
+        }
+
+        .hero-brand {
+            margin-bottom: 14px;
+            gap: 8px;
+        }
+
+        .hero-logo {
+            width: min(220px, 70vw);
+            max-height: 84px;
+        }
+
+        .hero-brand-name {
+            font-size: 0.9em;
+        }
+
+        .hero-subtitle {
+            gap: 10px;
+            font-size: 0.92em;
+        }
+
+        #layout-shell {
+            padding: 0 16px 28px !important;
+            gap: 16px !important;
+        }
+
+        #main-content-column {
+            padding: 0 !important;
+        }
+
+        #log-view {
+            min-height: 260px;
+            padding: 22px 20px !important;
+            border-radius: 22px !important;
+        }
+    }
+
+
+    @media (min-width: 1200px) {
+        #layout-shell,
+        #output-section {
+            max-width: 960px !important;
+        }
+        #log-view p {
+            max-width: 42em;
+        }
+    }
+    

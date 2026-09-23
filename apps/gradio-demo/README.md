@@ -54,6 +54,22 @@ uv run main.py
 
 默认监听：`http://127.0.0.1:8080`
 
+### 前端静态资源（开发热读）
+
+主题与脚本已外置，不再塞在 `main.py` 大字符串里：
+
+| 路径 | 用途 |
+|------|------|
+| `static/theme.css` | 入口：`@import` 各分段 |
+| `static/css/*.css` | 分段样式：`base` / `settings-modal` / `export` / `output-log` / `search-cards` / `report-*` / `nav` / `hero` / `icons` / `overrides` / `responsive` |
+| `static/js/*.js` | 星空、弹窗、快捷键等脚本 |
+| `static_assets.py` | 挂载 `/diting-static`、组装 `head` |
+| `ui_i18n.py` | 中英文案与选项标签 |
+| `ui_layout.py` / `ui_demo.py` | Gradio Blocks 布局（与 pipeline 解耦） |
+
+- **改 CSS / JS**：编辑 `static/` 下的文件 → **刷新浏览器**（默认 `DITING_STATIC_HOT=1`，`Cache-Control: no-store`）。
+- **生产 / Docker / Compose**：默认 `DITING_STATIC_HOT=0`（短缓存）；本地覆盖可设 `DITING_STATIC_HOT=1`。
+
 ### Docker Compose 一键部署
 
 在仓库根目录执行：

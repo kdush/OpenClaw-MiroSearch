@@ -231,8 +231,12 @@ def test_build_demo_head_prefills_task_id_bridge_from_url():
     demo = demo_main.build_demo()
     head = demo.config.get("head") or ""
 
-    assert "initialUrlTaskId" in head
-    assert "if (!input.value && initialUrlTaskId)" in head
+    assert '<script src="/diting-static/js/task_id_url_bridge.js"></script>' in head
+    bridge = (GRADIO_DEMO_DIR / "static" / "js" / "task_id_url_bridge.js").read_text(
+        encoding="utf-8"
+    )
+    assert "initialUrlTaskId" in bridge
+    assert "if (!input.value && initialUrlTaskId)" in bridge
 
 
 def test_build_launch_kwargs_defaults_to_blocking():

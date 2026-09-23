@@ -16,6 +16,7 @@ services:
       BACKEND_MODE: api
       HOST: 0.0.0.0
       PORT: ${APP_PORT:-8080}
+      DITING_STATIC_HOT: "0"
       API_BASE_URL: ${GRADIO_API_BASE_URL:-http://127.0.0.1:${API_PORT:-8090}}
       SEARXNG_BASE_URL: ${SEARXNG_BASE_URL:-http://127.0.0.1:${SEARXNG_HOST_PORT:-27080}}
     healthcheck:
