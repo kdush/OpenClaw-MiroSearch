@@ -1,15 +1,16 @@
 (function () {
-  var VER = 7;
+  var VER = 10;
   if (window.__miroStarfieldVer === VER) return;
   window.__miroStarfieldVer = VER;
 
   var old = document.getElementById("bg-particles");
   if (old) old.remove();
 
+  // Slower drift than v7 — background should feel calm, not busy.
   var LAYER = [
-    { speed: 0.15, size: 0.32, alpha: 0.32, countDiv: 3600, maxN: 240, minN: 100 },
-    { speed: 0.48, size: 0.72, alpha: 0.58, countDiv: 5600, maxN: 160, minN: 45 },
-    { speed: 1.15, size: 1.35, alpha: 0.88, countDiv: 8600, maxN: 95, minN: 40 }
+    { speed: 0.08, size: 0.32, alpha: 0.32, countDiv: 3600, maxN: 240, minN: 100 },
+    { speed: 0.22, size: 0.72, alpha: 0.58, countDiv: 5600, maxN: 160, minN: 45 },
+    { speed: 0.48, size: 1.35, alpha: 0.88, countDiv: 8600, maxN: 95, minN: 40 }
   ];
 
   var canvas = document.createElement("canvas");
@@ -21,7 +22,7 @@
   var layers = [[], [], []];
   var meteors = [];
   var w = 0, h = 0, rafId = 0, t = 0, nextMeteorAt = 0;
-  var camVX = 0.16, camVY = 0.09, windPhase = 0;
+  var camVX = 0.06, camVY = 0.035, windPhase = 0;
   var reduceMq = window.matchMedia("(prefers-reduced-motion: reduce)");
 
   function isMobile() {
@@ -38,22 +39,22 @@
     var spec = LAYER[depth];
     var giant = depth === 2 && Math.random() < 0.1;
     var twinkly = Math.random() < (depth === 0 ? 0.16 : depth === 1 ? 0.32 : 0.5);
-    var floatR = (0.08 + Math.random() * 0.28) * (0.3 + depth * 0.4);
+    var floatR = (0.06 + Math.random() * 0.2) * (0.3 + depth * 0.4);
     return {
       x: Math.random() * w,
       y: Math.random() * h,
-      vx: (Math.random() - 0.5) * 0.12 * spec.speed,
-      vy: (Math.random() - 0.5) * 0.12 * spec.speed,
+      vx: (Math.random() - 0.5) * 0.05 * spec.speed,
+      vy: (Math.random() - 0.5) * 0.05 * spec.speed,
       r: (giant ? 1.6 + Math.random() * 1.5 : 0.35 + Math.random() * 1.1) * spec.size,
       a: (0.28 + Math.random() * 0.52) * spec.alpha,
       tw: Math.random() * Math.PI * 2,
       tw2: Math.random() * Math.PI * 2,
-      twSpeed: twinkly ? (0.016 + Math.random() * 0.024) : (0.006 + Math.random() * 0.01),
-      twSpeed2: 0.035 + Math.random() * 0.05,
-      twAmp: twinkly ? (0.32 + Math.random() * 0.28) : (0.1 + Math.random() * 0.14),
-      flash: twinkly && Math.random() < 0.18,
+      twSpeed: twinkly ? (0.008 + Math.random() * 0.012) : (0.003 + Math.random() * 0.005),
+      twSpeed2: 0.018 + Math.random() * 0.025,
+      twAmp: twinkly ? (0.28 + Math.random() * 0.22) : (0.08 + Math.random() * 0.12),
+      flash: twinkly && Math.random() < 0.12,
       floatPhase: Math.random() * Math.PI * 2,
-      floatSpeed: 0.005 + Math.random() * 0.01,
+      floatSpeed: 0.0025 + Math.random() * 0.005,
       floatRx: floatR * (0.55 + Math.random() * 0.7),
       floatRy: floatR * (0.45 + Math.random() * 0.7),
       glow: giant || (depth === 2 && Math.random() < 0.45) || (depth === 1 && Math.random() < 0.18),
@@ -65,23 +66,24 @@
   }
 
   function spawnMeteor() {
-    var heavy = Math.random() < 0.3;
+    var heavy = Math.random() < 0.28;
     var fromLeft = Math.random() < 0.58;
     var angle = 0.26 + Math.random() * 0.5;
-    var speed = heavy ? (6.5 + Math.random() * 4) : (8.5 + Math.random() * 5);
+    // Very slow glide + long trail.
+    var speed = heavy ? (1.05 + Math.random() * 0.85) : (1.25 + Math.random() * 1.0);
     var ux = fromLeft ? Math.cos(angle) : -Math.cos(angle);
     var uy = Math.sin(angle) * (0.72 + Math.random() * 0.35);
     return {
-      x: fromLeft ? (-70 - Math.random() * 100) : (w + 70 + Math.random() * 100),
+      x: fromLeft ? (-90 - Math.random() * 120) : (w + 90 + Math.random() * 120),
       y: Math.random() * h * 0.5,
       vx: ux * speed,
       vy: uy * speed,
       speed: speed,
       heavy: heavy,
-      len: heavy ? (120 + Math.random() * 90) : (75 + Math.random() * 70),
+      len: heavy ? (160 + Math.random() * 100) : (110 + Math.random() * 80),
       life: 0,
-      maxLife: heavy ? (55 + Math.random() * 30) : (36 + Math.random() * 26),
-      width: heavy ? (2.2 + Math.random() * 1.4) : (1.0 + Math.random() * 0.8),
+      maxLife: heavy ? (150 + Math.random() * 70) : (120 + Math.random() * 60),
+      width: heavy ? (2.0 + Math.random() * 1.2) : (0.9 + Math.random() * 0.7),
       hue: heavy ? (24 + Math.random() * 24) : (188 + Math.random() * 35)
     };
   }
@@ -107,7 +109,7 @@
       }
       for (var i = 0; i < n; i++) layers[d].push(newStar(d));
     }
-    nextMeteorAt = t + 40 + Math.random() * 60;
+    nextMeteorAt = t + 180 + Math.random() * 200;
   }
 
   function resize() {
@@ -235,9 +237,9 @@
 
     if (animate) {
       t += 1;
-      windPhase += 0.003;
-      camVX += (Math.sin(windPhase * 0.7) * 0.22 + Math.sin(windPhase * 1.2) * 0.06 - camVX) * 0.028;
-      camVY += (Math.cos(windPhase * 0.52) * 0.14 + Math.cos(windPhase * 1.05) * 0.04 - camVY) * 0.028;
+      windPhase += 0.0014;
+      camVX += (Math.sin(windPhase * 0.55) * 0.09 + Math.sin(windPhase * 0.9) * 0.025 - camVX) * 0.018;
+      camVY += (Math.cos(windPhase * 0.4) * 0.055 + Math.cos(windPhase * 0.8) * 0.018 - camVY) * 0.018;
     }
 
     ctx.clearRect(0, 0, w, h);
@@ -262,8 +264,8 @@
 
     if (!animate || scale === 0) return;
 
-    var maxMeteors = mobile ? 1 : 3;
-    var meteorGap = mobile ? (140 + Math.random() * 180) : (70 + Math.random() * 120);
+    var maxMeteors = mobile ? 1 : 1;
+    var meteorGap = mobile ? (360 + Math.random() * 320) : (280 + Math.random() * 320);
     if (t >= nextMeteorAt && meteors.length < maxMeteors) {
       meteors.push(spawnMeteor());
       nextMeteorAt = t + meteorGap;

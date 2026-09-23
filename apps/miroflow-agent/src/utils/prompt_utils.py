@@ -320,7 +320,7 @@ def generate_cross_verification_prompt(
         "7. 若是时效性/态势类问题（如“最新、进展、情况、冲突、战争、疫情、行情”），最终答案必须包含“关键数字速览”小节。\n"
         "8. “关键数字速览”至少列出 3 条可核验数字（每条带时间与来源）；若不足 3 条，必须写明缺失项与已尝试检索口径。\n"
         "9. 禁止使用“搜索结果内容被省略/未展示”作为不给数字的理由。\n\n"
-        f"本次任务原问题：\"{task_description}\"\n"
+        f'本次任务原问题："{task_description}"\n'
         f"期望检索轮次下限：{min_search_rounds}\n"
         f"期望高置信来源下限：{min_high_conf_sources}\n"
         f"高置信来源参考域名：{domains_text}\n\n"

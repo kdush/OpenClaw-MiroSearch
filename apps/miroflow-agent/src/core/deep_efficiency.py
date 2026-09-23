@@ -123,13 +123,6 @@ def default_max_lead_follow_ups_for_intensity(intensity: str) -> int:
     return 3
 
 
-def scrape_budget_exceeded(scrape_count: int, max_scrape: int) -> bool:
-    """True when a hard scrape cap is set and already reached."""
-    if max_scrape <= 0:
-        return False
-    return scrape_count >= max_scrape
-
-
 def scrape_skip_message(max_scrape: int, scrape_count: int) -> str:
     return (
         f"[scrape_budget] Full-page scrape skipped "

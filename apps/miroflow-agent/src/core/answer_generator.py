@@ -231,8 +231,7 @@ class AnswerGenerator:
         # 只有 deep 档把核验折叠进骨架提示词：standard 档保留高模型核验轮与
         # 交叉校验说明，避免默认档为省一轮调用而降质
         self.fold_verification_into_summary = (
-            self.oneshot_final_report
-            and resolve_research_intensity(cfg) == "deep"
+            self.oneshot_final_report and resolve_research_intensity(cfg) == "deep"
         )
         # 骨架提示词只服务详细报告；其他档位不得因此丢掉“过短扩写”重试
         self.oneshot_skeleton_active = (

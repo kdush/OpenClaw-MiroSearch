@@ -110,7 +110,7 @@ curl -sS -N http://127.0.0.1:8090/v1/research/<task_id>/stream
 - [变更记录](docs/CHANGELOG_zh.md)
 - [安全策略](docs/SECURITY_zh.md)
 - [贡献指南](docs/CONTRIBUTING_zh.md)
-- [OpenClaw Skill](skills/diting/SKILL.md)
+- [Diting Skill](skills/diting/SKILL.md)
 
 ## 开发
 
@@ -201,7 +201,7 @@ Skill 使用：
 - API Server 说明：[`apps/api-server/README.md`](apps/api-server/README.md)
 - Agent 说明：[`apps/miroflow-agent/README.md`](apps/miroflow-agent/README.md)
 - 工具层说明：[`libs/miroflow-tools/README.md`](libs/miroflow-tools/README.md)
-- OpenClaw 技能包：[`skills/diting/SKILL.md`](skills/diting/SKILL.md)
+- Diting 技能包：[`skills/diting/SKILL.md`](skills/diting/SKILL.md)
 
 ## 开源协作文档
 

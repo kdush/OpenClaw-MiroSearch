@@ -119,9 +119,7 @@ class _FakeProvider:
 
     async def search(self, params):
         return [
-            SearchResult(
-                position=1, title="fake", link="https://fake.com", snippet=""
-            )
+            SearchResult(position=1, title="fake", link="https://fake.com", snippet="")
         ], {"provider": self._name}
 
 

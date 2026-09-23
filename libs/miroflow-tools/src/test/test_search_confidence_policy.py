@@ -143,7 +143,8 @@ def test_searxng_only_confidence_ignores_other_available_providers(monkeypatch):
     assert confidence["constraints"]["min_provider_coverage"] == 1
     assert confidence["passed"] is True
 
-    # Without allowed_providers, multi-key env can still push ceiling to ≥2
-    # (regression guard for callers that forget to pass the route list).
+    # Without allowed_providers the ceiling falls back to every credentialed
+    # provider (searxng + serper + serpapi), so coverage 1 no longer satisfies it.
     wide = module._evaluate_confidence(organic, {"searxng"})
-    assert wide["constraints"]["min_provider_coverage"] >= 1
+    assert wide["constraints"]["min_provider_coverage"] == 2
+    assert wide["passed"] is False

@@ -318,7 +318,9 @@ def _evaluate_confidence(
     # Cap coverage by providers allowed on *this route*, not every credential
     # present in the environment (searxng-only must not require serper/serpapi).
     if allowed_providers is not None:
-        route_pool = {str(name).strip() for name in allowed_providers if str(name).strip()}
+        route_pool = {
+            str(name).strip() for name in allowed_providers if str(name).strip()
+        }
         coverage_ceiling = len(route_pool) if route_pool else 1
     else:
         coverage_ceiling = len(_registry.available_names()) or 1
@@ -391,9 +393,7 @@ def _ensure_confidence_evaluated(
     """串行回退/合并模式同样产出置信度，否则该门控只在并发路由下生效。"""
     if search_params.get("confidence") is not None:
         return
-    covered = providers_with_results or {
-        str(search_params.get("provider", "")).strip()
-    }
+    covered = providers_with_results or {str(search_params.get("provider", "")).strip()}
     allowed = search_params.get("provider_order")
     if not isinstance(allowed, list):
         allowed = None
@@ -695,29 +695,23 @@ async def google_search(
 
                     # 补检源可能不在 SEARCH_PROVIDER_ORDER 里，合并时按结果实际来源补齐，
                     # 否则刚取回的结果会因为不在 order 列表而被丢掉。
-                    merged_results = _merge_provider_results(
-                        [
-                            *providers,
-                            *[
-                                name
-                                for name in provider_results_map
-                                if name not in providers
-                            ],
+                    merge_order = [
+                        *providers,
+                        *[
+                            name
+                            for name in provider_results_map
+                            if name not in providers
                         ],
+                    ]
+                    merged_results = _merge_provider_results(
+                        merge_order,
                         provider_results_map,
                         result_num,
                     )
                     confidence = _evaluate_confidence(
                         merged_results,
                         providers_with_results,
-                        allowed_providers=[
-                            *providers,
-                            *[
-                                name
-                                for name in provider_results_map
-                                if name not in providers
-                            ],
-                        ],
+                        allowed_providers=merge_order,
                     )
                     confidence_passed = (
                         not SEARCH_CONFIDENCE_ENABLED

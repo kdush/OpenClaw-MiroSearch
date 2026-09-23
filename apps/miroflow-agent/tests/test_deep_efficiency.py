@@ -14,7 +14,6 @@ from src.core.deep_efficiency import (
     resolve_oneshot_final_report,
     resolve_parallel_tool_calls,
     resolve_summary_keep_tool_result,
-    scrape_budget_exceeded,
 )
 from src.core.lead_tracker import resolve_lead_tracking_config
 
@@ -44,12 +43,6 @@ def test_resolve_max_scrape_per_task_deep_default():
     agent = _CfgDict(research_intensity="deep")
     cfg = _CfgDict(agent=agent)
     assert resolve_max_scrape_per_task(cfg) == DEFAULT_DEEP_MAX_SCRAPE_PER_TASK
-
-
-def test_scrape_budget_exceeded():
-    assert scrape_budget_exceeded(8, 8) is True
-    assert scrape_budget_exceeded(7, 8) is False
-    assert scrape_budget_exceeded(100, 0) is False  # 0 = unlimited
 
 
 def test_early_stop_defaults_on_for_deep():

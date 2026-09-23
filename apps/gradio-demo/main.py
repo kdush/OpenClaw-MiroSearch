@@ -44,6 +44,7 @@ from ui_i18n import (
     SEARCH_PROFILE_LABELS,
     _UI_LANG,
     _label_for,
+    _label_map,
     _progress_copy,
 )
 
@@ -497,27 +498,27 @@ def _build_settings_summary(
 SEARCH_STAGE_TOOL_NAMES = {
     "google_search",
     "sogou_search",
+    "scrape_url",
     "scrape",
     "scrape_website",
     "scrape_webpage",
     "scrape_and_extract_info",
 }
 
+
 # 工具名 → 前端友好显示名
-TOOL_DISPLAY_NAMES: dict[str, str] = {
-    "google_search": "网络搜索",
-    "sogou_search": "搜狗搜索",
-    "scrape": "网页抓取",
-    "scrape_website": "网页抓取",
-    "scrape_webpage": "网页抓取",
-    "scrape_url": "网页抓取",
-    "scrape_and_extract_info": "信息提取",
-    "show_text": "文本展示",
-}
+def _tool_display_name(raw_name: str, ui_lang: Optional[str] = None) -> str:
+    return str(_label_map("tool_display_names", lang=ui_lang).get(raw_name, raw_name))
 
 
-def _tool_display_name(raw_name: str) -> str:
-    return TOOL_DISPLAY_NAMES.get(raw_name, raw_name)
+def _agent_display_name(raw_name: str) -> str:
+    names = _label_map("agent_display_names")
+    raw = str(raw_name or "").strip()
+    if raw in names:
+        return str(names[raw])
+    if "Search" in raw:
+        return str(names.get("Search Agent", raw))
+    return raw
 
 
 RENDER_MODE_CHOICES = {"full", "summary_with_details", "summary_only"}
@@ -1541,7 +1542,7 @@ async def stream_events_optimized(
             phase = "检索" if tool_name in SEARCH_STAGE_TOOL_NAMES else "工具调用"
             _touch_stage(
                 phase,
-                detail=f"{_tool_display_name(tool_name)} 执行中",
+                detail=f"{tool_name} 执行中",
                 last_tool=tool_name,
                 search_round_increment=is_search_output,
             )
@@ -1837,21 +1838,6 @@ def _init_render_state():
     }
 
 
-_RUNTIME_PHASE_LABELS = {
-    "初始化": "准备中",
-    "排队": "排队中",
-    "推理": "正在分析",
-    "检索": "正在检索",
-    "总结": "正在生成报告",
-    "校验": "正在交叉校验",
-    "工具调用": "正在调用工具",
-    "并行工具": "正在并行处理",
-    "线索追踪": "正在追踪线索",
-    "异常": "研究中断",
-    "已取消": "已停止",
-    "完成": "研究完成",
-}
-
 # agent 心跳里的内部措辞 → 用户可读文案；返回 "" 表示与阶段重复、不展示
 _RUNTIME_DETAIL_DROP = {
     "等待开始",
@@ -1877,7 +1863,7 @@ _RUNTIME_DETAIL_DROP_RE = re.compile(
 )
 
 
-def _clean_runtime_detail(detail: str) -> str:
+def _clean_runtime_detail(detail: str, ui_lang: Optional[str] = None) -> str:
     text = str(detail or "").strip()
     if not text:
         return ""
@@ -1885,27 +1871,33 @@ def _clean_runtime_detail(detail: str) -> str:
     if retry_match:
         if retry_match.group(1) == "1":
             return ""
-        return f"第 {retry_match.group(1)} 次重试生成总结"
+        return _progress_copy(
+            "runtime_detail_summary_retry", lang=ui_lang, n=retry_match.group(1)
+        )
     if text in _RUNTIME_DETAIL_DROP or _RUNTIME_DETAIL_DROP_RE.match(text):
         return ""
     if text == "交叉校验降级重试":
-        return "降级重试"
+        return _progress_copy("runtime_detail_degraded_retry", lang=ui_lang)
     if text == "命中交叉校验门槛，追加检索指令":
-        return "校验未通过，补充检索"
+        return _progress_copy("runtime_detail_verify_recheck", lang=ui_lang)
     tool_running = re.match(r"^(.+?) 执行中$", text)
     if tool_running:
-        return tool_running.group(1)
+        return _tool_display_name(tool_running.group(1), ui_lang)
     return text
 
 
-def _format_runtime_status_label(state: dict) -> str:
+def _format_runtime_status_label(state: dict, ui_lang: Optional[str] = None) -> str:
     runtime_stage = state.get("runtime_stage") or {}
     phase = str(runtime_stage.get("phase") or "执行中")
     search_round = int(runtime_stage.get("search_round") or 0)
-    detail = _clean_runtime_detail(str(runtime_stage.get("detail") or ""))
-    parts = [_RUNTIME_PHASE_LABELS.get(phase, phase)]
+    detail = _clean_runtime_detail(
+        str(runtime_stage.get("detail") or ""), ui_lang=ui_lang
+    )
+    parts = [str(_label_map("runtime_phase_labels", lang=ui_lang).get(phase, phase))]
     if search_round > 0:
-        parts.append(f"已完成 {search_round} 次检索")
+        parts.append(
+            _progress_copy("runtime_search_rounds", lang=ui_lang, n=search_round)
+        )
     if detail:
         parts.append(detail)
     return " · ".join(parts)
@@ -1916,7 +1908,7 @@ def _format_elapsed_value(started_at: float) -> str:
     return f"{seconds // 60}:{seconds % 60:02d}"
 
 
-def _runtime_status_markup(state: dict) -> str:
+def _runtime_status_markup(state: dict, ui_lang: Optional[str] = None) -> str:
     """运行态状态卡：状态文案 + 耗时（耗时由前端每秒自增）。"""
     started_at = float((state.get("runtime_stage") or {}).get("started_at") or 0.0)
     elapsed_html = ""
@@ -1924,11 +1916,15 @@ def _runtime_status_markup(state: dict) -> str:
         # 起始时间放进 style 自定义属性：Markdown 净化会剥掉 data-*，
         # 只有 class/style 能活着到达前端，供每秒自增的计时脚本读取。
         elapsed_html = (
-            '<span class="runtime-elapsed">已用 <span class="runtime-elapsed-value" '
+            f'<span class="runtime-elapsed">'
+            f'{_progress_copy("runtime_elapsed", lang=ui_lang)} '
+            '<span class="runtime-elapsed-value" '
             f'style="--start-ts:{int(started_at)}">'
             f"{_format_elapsed_value(started_at)}</span></span>"
         )
-    return _spinner_markup(_format_runtime_status_label(state), elapsed_html)
+    return _spinner_markup(
+        _format_runtime_status_label(state, ui_lang=ui_lang), elapsed_html
+    )
 
 
 def _format_think_content(text: str) -> str:
@@ -2075,7 +2071,10 @@ def _format_search_results(
             threshold = confidence_info.get("threshold")
             passed = confidence_info.get("passed")
             lines.append(
-                f'<div class="search-count">置信度: <strong>{score}</strong> / 阈值 {threshold} / 通过={passed}</div>'
+                '<div class="search-count">'
+                f'{_progress_copy("search_confidence")}: <strong>{score}</strong>'
+                f' / {_progress_copy("search_threshold")} {threshold}'
+                f' / {_progress_copy("search_passed")}={passed}</div>'
             )
         if route_trace:
             route_items = []
@@ -2088,11 +2087,11 @@ def _format_search_results(
                 route_items.append(f"{phase}:{provider}:{status}{suffix}")
             if route_items:
                 lines.append(
-                    f'<div class="search-count">链路跟踪: {" | ".join(route_items)}</div>'
+                    f'<div class="search-count">{_progress_copy("search_route_trace")}: {" | ".join(route_items)}</div>'
                 )
         if fallback_errors:
             lines.append(
-                f'<div class="search-count">补检异常: {"; ".join(fallback_errors[:3])}</div>'
+                f'<div class="search-count">{_progress_copy("search_fallback_errors")}: {"; ".join(fallback_errors[:3])}</div>'
             )
 
         # Results list
@@ -2114,15 +2113,17 @@ def _format_search_results(
         lines.append("</div>")
         if len(results) > visible_count:
             lines.append(
-                f'<div class="search-count">仅展示前 {visible_count} 条，完整结果共 {len(results)} 条。</div>'
+                f'<div class="search-count">'
+                f'{_progress_copy("search_display_truncated", visible=visible_count, total=len(results))}</div>'
             )
     elif not search_success:
         lines.append(
-            f'<div class="search-count">⚠️ 检索失败: <strong>{search_error or "搜索源未返回有效结果"}</strong></div>'
+            f'<div class="search-count">⚠️ {_progress_copy("search_failed")}: '
+            f'<strong>{search_error or _progress_copy("search_no_valid_results")}</strong></div>'
         )
         if fallback_errors:
             lines.append(
-                f'<div class="search-count">搜索源异常: {"; ".join(fallback_errors[:3])}</div>'
+                f'<div class="search-count">{_progress_copy("search_provider_errors")}: {"; ".join(fallback_errors[:3])}</div>'
             )
         if route_trace:
             route_items = []
@@ -2133,7 +2134,7 @@ def _format_search_results(
                 route_items.append(f"{phase}:{provider}:{status}")
             if route_items:
                 lines.append(
-                    f'<div class="search-count">链路跟踪: {" | ".join(route_items)}</div>'
+                    f'<div class="search-count">{_progress_copy("search_route_trace")}: {" | ".join(route_items)}</div>'
                 )
 
     lines.append("</div>")
@@ -2216,7 +2217,9 @@ def _extract_google_search_step_summary(tool_input: dict, tool_output: dict) -> 
         provider_text = _truncate_single_line(
             provider_text, SEARCH_STEP_SOURCE_PREVIEW_CHARS
         )
-        line_parts.append(f"命中源: {html.escape(provider_text)}")
+        line_parts.append(
+            f"{_progress_copy('progress_sources_hit')}: {html.escape(provider_text)}"
+        )
     if not line_parts:
         return ""
     return f"🔍 {' | '.join(line_parts)}"
@@ -2983,6 +2986,7 @@ def _keep_last_report_glance(decorated_blocks: List[str]) -> List[str]:
 
 _REPORT_SOURCE_TOOL_NAMES = {"google_search", "sogou_search"}
 _REPORT_SCRAPE_TOOL_NAMES = {
+    "scrape_url",
     "scrape",
     "scrape_website",
     "scrape_webpage",
@@ -3572,13 +3576,7 @@ def _render_markdown_inner(
                     if is_final_summary:
                         final_summary_blocks.append(content)
                     else:
-                        display_name = agent_name
-                        if display_name == "Main Agent":
-                            display_name = "主智能体 (Main Agent)"
-                        elif display_name == "Sub Agent":
-                            display_name = "子智能体 (Sub Agent)"
-                        elif "Search" in display_name:
-                            display_name = "检索智能体 (Search Agent)"
+                        display_name = _agent_display_name(agent_name)
 
                         safe_name = html.escape(str(display_name), quote=False)
                         # Escape HTML so agent text cannot break the card shell;
@@ -3586,7 +3584,8 @@ def _render_markdown_inner(
                         safe_content = html.escape(str(content), quote=False)
                         formatted_thought = (
                             f'<details class="thought-card">\n'
-                            f"  <summary>💭 {safe_name} 思考与规划</summary>\n"
+                            f"  <summary>💭 {safe_name} "
+                            f"{_progress_copy('thought_card_label')}</summary>\n"
                             f'  <div class="thought-content">\n\n{safe_content}\n\n</div>\n'
                             f"</details>\n"
                         )
@@ -3627,6 +3626,7 @@ def _render_markdown_inner(
                 continue
 
             # Special formatting for scrape/webpage tools
+            # scrape_url 不在此列：其结果是带 metrics 的嵌套 JSON，预览函数会原样吐出 JSON 串
             if tool_name in (
                 "scrape",
                 "scrape_website",
@@ -3693,7 +3693,9 @@ def _render_markdown_inner(
                         f'<div class="tool-brief">{html.escape(brief, quote=False)}</div>'
                     )
                 if has_output:
-                    process_lines.append('<div class="tool-status">✓ 完成</div>')
+                    process_lines.append(
+                        f'<div class="tool-status">✓ {_progress_copy("tool_status_done")}</div>'
+                    )
                 process_lines.append("</div>")
 
     merged_final_summary_blocks = _merge_final_summary_blocks(
@@ -3785,7 +3787,7 @@ def _render_markdown_inner(
     if float(runtime_stage.get("updated_at") or 0) > 0:
         return f"*{_progress_copy('output_running_hint')}*"
 
-    return "*等待开始研究...*"
+    return f"*{_progress_copy('output_idle_placeholder')}*"
 
 
 def _update_state_with_event(state: dict, message: dict):
@@ -3837,7 +3839,7 @@ def _update_state_with_event(state: dict, message: dict):
             "检索" if tool_name in SEARCH_STAGE_TOOL_NAMES else "工具调用"
         )
         runtime_stage["last_tool"] = tool_name
-        runtime_stage["detail"] = f"{_tool_display_name(tool_name)} 执行中"
+        runtime_stage["detail"] = f"{tool_name} 执行中"
         runtime_stage["updated_at"] = time.time()
         entry = tools[tool_call_id]
         if tool_name == "show_text" and "delta_input" in data:
@@ -4251,7 +4253,8 @@ async def _render_stream_via_api(
         ui_lang=(ui_state or {}).get("ui_lang"),
     )
     yield _pack_ui_stream(
-        initial_markdown + _runtime_status_markup(state),
+        initial_markdown
+        + _runtime_status_markup(state, ui_lang=ui_state.get("ui_lang")),
         gr.update(interactive=False),
         gr.update(interactive=True),
         ui_state,
@@ -4278,7 +4281,7 @@ async def _render_stream_via_api(
                 ui_lang=(ui_state or {}).get("ui_lang"),
             )
             yield _pack_ui_stream(
-                md + _runtime_status_markup(state),
+                md + _runtime_status_markup(state, ui_lang=ui_state.get("ui_lang")),
                 gr.update(interactive=False),
                 gr.update(interactive=True),
                 ui_state,
@@ -4493,10 +4496,11 @@ async def gradio_run(
             render_mode=resolved_ui_render_mode,
             final_summary_merge_strategy=resolved_summary_merge_strategy,
             output_detail_level=resolved_output_detail_level,
+            ui_lang=resolved_ui_lang,
         )
         # Initial: disable Run, enable Stop, and show spinner at bottom of text
         yield _pack_ui_stream(
-            initial_markdown + _runtime_status_markup(state),
+            initial_markdown + _runtime_status_markup(state, ui_lang=resolved_ui_lang),
             gr.update(interactive=False),
             gr.update(interactive=True),
             ui_state,
@@ -4518,9 +4522,10 @@ async def gradio_run(
                 render_mode=resolved_ui_render_mode,
                 final_summary_merge_strategy=resolved_summary_merge_strategy,
                 output_detail_level=resolved_output_detail_level,
+                ui_lang=resolved_ui_lang,
             )
             yield _pack_ui_stream(
-                md + _runtime_status_markup(state),
+                md + _runtime_status_markup(state, ui_lang=resolved_ui_lang),
                 gr.update(interactive=False),
                 gr.update(interactive=True),
                 ui_state,
@@ -4535,6 +4540,7 @@ async def gradio_run(
                 render_mode=resolved_ui_render_mode,
                 final_summary_merge_strategy=resolved_summary_merge_strategy,
                 output_detail_level=resolved_output_detail_level,
+                ui_lang=resolved_ui_lang,
             ),
             gr.update(interactive=True),
             gr.update(interactive=False),
@@ -4786,7 +4792,9 @@ def _schedule_remote_task_cancellation(task_ids: List[str]) -> int:
     return len(resolved_task_ids)
 
 
-def _mark_runtime_status_cancelled(markdown: Optional[str]) -> Optional[str]:
+def _mark_runtime_status_cancelled(
+    markdown: Optional[str], ui_lang: Optional[str] = None
+) -> Optional[str]:
     """把流式状态块改写为终态「已停止」。
 
     停止按钮会 cancel 掉事件流，最后一帧的 spinner 不会再被覆盖，
@@ -4795,7 +4803,9 @@ def _mark_runtime_status_cancelled(markdown: Optional[str]) -> Optional[str]:
     text = str(markdown or "")
     if 'class="runtime-status"' not in text:
         return markdown
-    label = _format_runtime_status_label({"runtime_stage": {"phase": "已取消"}})
+    label = _format_runtime_status_label(
+        {"runtime_stage": {"phase": "已取消"}}, ui_lang=ui_lang
+    )
     text = re.sub(r'<div class="runtime-spinner"[^>]*></div>', "", text)
     # 终态不再自增：摘掉计时钩子，并按停止这一刻重算耗时
     # （最后一帧是上一次服务端渲染的，直接沿用会让耗时回跳到几秒前）
@@ -4815,9 +4825,7 @@ def _mark_runtime_status_cancelled(markdown: Optional[str]) -> Optional[str]:
     return text
 
 
-def stop_current_ui(
-    ui_state: Optional[dict] = None, markdown: Optional[str] = None
-):
+def stop_current_ui(ui_state: Optional[dict] = None, markdown: Optional[str] = None):
     tid = (ui_state or {}).get("task_id")
     target_ids = [tid] if tid else _get_active_task_ids()
     _cancel_task_ids(target_ids)
@@ -4826,7 +4834,9 @@ def stop_current_ui(
     if api_client.is_api_mode_enabled() and tid:
         _schedule_remote_task_cancellation([tid])
     return (
-        _mark_runtime_status_cancelled(markdown),
+        _mark_runtime_status_cancelled(
+            markdown, ui_lang=(ui_state or {}).get("ui_lang")
+        ),
         gr.update(interactive=True),
         gr.update(interactive=False),
     )

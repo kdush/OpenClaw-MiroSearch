@@ -1,7 +1,5 @@
 """SerpAPIProvider 单元测试。"""
 
-import json
-
 import httpx
 import pytest
 

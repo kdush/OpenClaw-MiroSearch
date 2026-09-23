@@ -72,6 +72,53 @@ I18N = {
         "scrape_status_failed": "Failed",
         "scrape_status_done": "Done",
         "progress_process_summary": "Thinking & search process (done — click to expand)",
+        "search_confidence": "Confidence",
+        "search_threshold": "threshold",
+        "search_passed": "passed",
+        "search_route_trace": "Route trace",
+        "search_fallback_errors": "Recheck errors",
+        "search_provider_errors": "Search provider errors",
+        "search_display_truncated": "Showing first {visible} of {total} results.",
+        "search_failed": "Search failed",
+        "search_no_valid_results": "Search providers returned no usable results.",
+        "output_idle_placeholder": "*Waiting for research to start...*",
+        "thought_card_label": "Thinking & planning",
+        "tool_status_done": "Done",
+        "agent_display_names": {
+            "Main Agent": "Main agent",
+            "Sub Agent": "Sub agent",
+            "Search Agent": "Search agent",
+        },
+        "runtime_elapsed": "Elapsed",
+        "runtime_search_rounds": "{n} search round(s) done",
+        "runtime_detail_summary_retry": "Summary retry #{n}",
+        "runtime_detail_degraded_retry": "Degraded retry",
+        "runtime_detail_verify_recheck": "Verification failed, extra search",
+        "runtime_phase_labels": {
+            "初始化": "Getting ready",
+            "排队": "Queued",
+            "推理": "Analyzing",
+            "检索": "Searching",
+            "总结": "Writing report",
+            "校验": "Cross-checking",
+            "工具调用": "Running tool",
+            "并行工具": "Running tools in parallel",
+            "线索追踪": "Following leads",
+            "异常": "Interrupted",
+            "已取消": "Stopped",
+            "完成": "Finished",
+            "执行中": "Working",
+        },
+        "tool_display_names": {
+            "google_search": "Web search",
+            "sogou_search": "Sogou search",
+            "scrape": "Web scrape",
+            "scrape_website": "Web scrape",
+            "scrape_webpage": "Web scrape",
+            "scrape_url": "Web scrape",
+            "scrape_and_extract_info": "Info extraction",
+            "show_text": "Text display",
+        },
         "output_detail_labels": {
             "compact": "Compact",
             "balanced": "Balanced",
@@ -128,6 +175,53 @@ I18N = {
         "scrape_status_failed": "抓取失败",
         "scrape_status_done": "抓取完成",
         "progress_process_summary": "思考与检索过程（已完成，点击展开）",
+        "search_confidence": "置信度",
+        "search_threshold": "阈值",
+        "search_passed": "通过",
+        "search_route_trace": "链路跟踪",
+        "search_fallback_errors": "补检异常",
+        "search_provider_errors": "搜索源异常",
+        "search_display_truncated": "仅展示前 {visible} 条，完整结果共 {total} 条。",
+        "search_failed": "检索失败",
+        "search_no_valid_results": "搜索源未返回有效结果",
+        "output_idle_placeholder": "*等待开始研究...*",
+        "thought_card_label": "思考与规划",
+        "tool_status_done": "完成",
+        "agent_display_names": {
+            "Main Agent": "主智能体 (Main Agent)",
+            "Sub Agent": "子智能体 (Sub Agent)",
+            "Search Agent": "检索智能体 (Search Agent)",
+        },
+        "runtime_elapsed": "已用",
+        "runtime_search_rounds": "已完成 {n} 次检索",
+        "runtime_detail_summary_retry": "第 {n} 次重试生成总结",
+        "runtime_detail_degraded_retry": "降级重试",
+        "runtime_detail_verify_recheck": "校验未通过，补充检索",
+        "runtime_phase_labels": {
+            "初始化": "准备中",
+            "排队": "排队中",
+            "推理": "正在分析",
+            "检索": "正在检索",
+            "总结": "正在生成报告",
+            "校验": "正在交叉校验",
+            "工具调用": "正在调用工具",
+            "并行工具": "正在并行处理",
+            "线索追踪": "正在追踪线索",
+            "异常": "研究中断",
+            "已取消": "已停止",
+            "完成": "研究完成",
+            "执行中": "执行中",
+        },
+        "tool_display_names": {
+            "google_search": "网络搜索",
+            "sogou_search": "搜狗搜索",
+            "scrape": "网页抓取",
+            "scrape_website": "网页抓取",
+            "scrape_webpage": "网页抓取",
+            "scrape_url": "网页抓取",
+            "scrape_and_extract_info": "信息提取",
+            "show_text": "文本展示",
+        },
         "output_detail_labels": {
             "compact": "精简",
             "balanced": "适中",
@@ -231,13 +325,27 @@ def _label_for(labels: dict, key: str, lang: str) -> str:
     return entry[1] if lang == LANG_EN else entry[0]
 
 
-def _progress_copy(key: str, *, lang: Optional[str] = None, **fmt) -> str:
-    """UI progress strings; follow explicit lang, else current UI lang ContextVar."""
+def _resolve_ui_lang(lang: Optional[str] = None) -> str:
+    """Explicit lang when valid, else the current UI lang ContextVar."""
     try:
         current = _UI_LANG.get()
     except LookupError:
         current = DEFAULT_LANG
-    resolved = lang if lang in I18N else (current if current in I18N else DEFAULT_LANG)
+    return lang if lang in I18N else (current if current in I18N else DEFAULT_LANG)
+
+
+def _label_map(key: str, *, lang: Optional[str] = None) -> dict:
+    """Nested label table for the resolved UI lang (runtime phases, tool names)."""
+    resolved = _resolve_ui_lang(lang)
+    entry = I18N.get(resolved, I18N[DEFAULT_LANG]).get(key)
+    if not isinstance(entry, dict):
+        entry = I18N[DEFAULT_LANG].get(key)
+    return entry if isinstance(entry, dict) else {}
+
+
+def _progress_copy(key: str, *, lang: Optional[str] = None, **fmt) -> str:
+    """UI progress strings; follow explicit lang, else current UI lang ContextVar."""
+    resolved = _resolve_ui_lang(lang)
     template = (
         I18N.get(resolved, I18N[DEFAULT_LANG]).get(key)
         or I18N[DEFAULT_LANG].get(key)

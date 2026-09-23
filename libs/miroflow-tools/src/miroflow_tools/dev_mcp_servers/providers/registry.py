@@ -31,9 +31,7 @@ class ProviderRegistry:
         """返回所有当前可用的搜索源名称列表。"""
         return [name for name, p in self._providers.items() if p.is_available()]
 
-    def resolve_order(
-        self, order_config: str, *, strict: bool = False
-    ) -> list[str]:
+    def resolve_order(self, order_config: str, *, strict: bool = False) -> list[str]:
         """
         按配置字符串解析可用 provider 顺序。
 
@@ -43,9 +41,7 @@ class ProviderRegistry:
         """
         seen: set[str] = set()
         result: list[str] = []
-        configured = [
-            p.strip().lower() for p in order_config.split(",") if p.strip()
-        ]
+        configured = [p.strip().lower() for p in order_config.split(",") if p.strip()]
         for name in configured:
             if name not in seen and self.get(name) and self.get(name).is_available():
                 result.append(name)

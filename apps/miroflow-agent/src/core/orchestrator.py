@@ -43,7 +43,6 @@ from .deep_efficiency import (
     resolve_exit_on_early_stop,
     resolve_max_scrape_per_task,
     resolve_parallel_tool_calls,
-    scrape_budget_exceeded,
     scrape_skip_message,
 )
 from .lead_tracker import LeadTrackingManager, resolve_lead_tracking_config
@@ -543,9 +542,7 @@ class Orchestrator:
         confidence = parsed.get("confidence")
         if not isinstance(confidence, dict):
             params = parsed.get("searchParameters")
-            confidence = (
-                params.get("confidence") if isinstance(params, dict) else None
-            )
+            confidence = params.get("confidence") if isinstance(params, dict) else None
         # enabled=false 表示用户不要置信度门控，此时不拿它当检索质量背书
         if not isinstance(confidence, dict):
             return
@@ -574,9 +571,7 @@ class Orchestrator:
         if self.max_scrape_per_task <= 0:
             return True
         with self._scrape_budget_lock:
-            used = (
-                self.task_log.run_metrics.scrape_count + self._scrape_slots_reserved
-            )
+            used = self.task_log.run_metrics.scrape_count + self._scrape_slots_reserved
             if used >= self.max_scrape_per_task:
                 return False
             self._scrape_slots_reserved += 1

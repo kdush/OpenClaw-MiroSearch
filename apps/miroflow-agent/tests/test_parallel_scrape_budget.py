@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import threading
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -14,14 +15,14 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.core.orchestrator import SCRAPE_TOOL_NAMES, Orchestrator  # noqa: E402
+from src.core.orchestrator import Orchestrator  # noqa: E402
 from src.logging.task_logger import RunMetrics  # noqa: E402
 
 
 def _bare_orchestrator(*, max_scrape: int = 8, scrape_count: int = 7) -> Orchestrator:
     obj = Orchestrator.__new__(Orchestrator)
     obj.max_scrape_per_task = max_scrape
-    obj._scrape_budget_lock = __import__("threading").Lock()
+    obj._scrape_budget_lock = threading.Lock()
     obj._scrape_slots_reserved = 0
     obj.task_log = MagicMock()
     obj.task_log.run_metrics = RunMetrics()
@@ -78,7 +79,3 @@ def test_early_stop_requires_high_conf_not_raw_domains():
 
     orch.early_stop_high_conf_domains = {"reuters.com", "apnews.com"}
     assert orch._should_early_stop_clue_chase() is True
-
-
-def test_scrape_tool_names_include_webpage_fetchers():
-    assert "scrape_webpage" in SCRAPE_TOOL_NAMES

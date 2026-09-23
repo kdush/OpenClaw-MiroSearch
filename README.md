@@ -108,7 +108,7 @@ These are client recommendations, not immutable server defaults. Omitted optiona
 - [Changelog](docs/CHANGELOG.md)
 - [Security](docs/SECURITY.md)
 - [Contributing](docs/CONTRIBUTING.md)
-- [OpenClaw skill](skills/diting/SKILL.md)
+- [Diting skill](skills/diting/SKILL.md)
 
 ## Development
 
@@ -205,7 +205,7 @@ Skill acquisition and installation:
 - API server docs: [`apps/api-server/README.md`](apps/api-server/README.md)
 - Agent docs: [`apps/miroflow-agent/README.md`](apps/miroflow-agent/README.md)
 - Tools docs: [`libs/miroflow-tools/README.md`](libs/miroflow-tools/README.md)
-- OpenClaw skill package: [`skills/diting/SKILL.md`](skills/diting/SKILL.md)
+- Diting skill package: [`skills/diting/SKILL.md`](skills/diting/SKILL.md)
 
 ## Open Source Collaboration
 

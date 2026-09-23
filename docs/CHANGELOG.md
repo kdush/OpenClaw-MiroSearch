@@ -11,22 +11,22 @@ and the project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
-- **总结失败不再丢失报告**：最终总结模型返回不可用结果（超时、限流、内容拦截等）且已无后续重试机会时（产品档 `retry_with_summary=false`，或评测最后一轮），改为交付系统自动汇总的降级报告——由研究阶段已收集的证据确定性拼装，并在结论区加粗标注「系统说明」；不再以 `Final summary produced no usable answer.` 判定整任务失败。质量元数据新增 `degraded_report_fallback` issue，且该结果不进入共享缓存，避免把一次总结抖动固化为长期结果。
-- **不再展示占位结论块**：缺少 `\boxed{}` 时不再把占位串作为正文块推给前端（它会被改写成「未收敛」提示，与已交付的报告相互矛盾），报告结论一律以正文内的结论区为准。
+- **Summary failures no longer drop the report**: when the final summarization model returns an unusable result (timeout, rate limit, content filtering, …) and no further retry remains (product profiles with `retry_with_summary=false`, or the final evaluation round), the pipeline now delivers a degraded report assembled deterministically from the evidence gathered during research, marking the conclusion section in bold as product copy 「系统说明」, instead of failing the whole task with `Final summary produced no usable answer.`. Quality metadata gains a `degraded_report_fallback` issue, and such results stay out of the shared cache so a one-off summarization hiccup is not frozen into a long-lived result.
+- **Placeholder conclusion blocks are no longer rendered**: when `\boxed{}` is missing, the placeholder string is no longer pushed to the frontend as a body block (it would be rewritten into a 「未收敛」 hint contradicting the delivered report); the conclusion shown to users always comes from the conclusion section of the report body.
 
 ### Changed
 
-- **品牌更名**：项目更名为「谛听 / Diting」，同步更新页头 Logo 与 favicon、页面标题、技能包名与脚本名、Docker 镜像名、SearXNG 实例名、导出文件名前缀（`diting-conclusion.*`）与文档表述；上游 MiroThinker / MiroFlow 归属与历史记录保持不变。
-- **报告排版**：终稿剥离 Token/计费噪音；丢弃截断 URL；pending 线索改为「未跟进」摘要；detailed 可附内容分析与 Mermaid 关系拓扑（见 `docs/REPORT_LAYOUT.md`）。
-- **结果区视觉收敛**：宽屏（≥1200px）下结果区放宽到 960px，正文段落保留 42em 行宽；移除结果区「研究进度」静态标题与 Gradio 默认流式进度线，进行中状态统一由正文里的状态行表达。
-- **进度状态文案统一**：运行态状态行收敛为一套口语化词表（准备中 / 正在分析 / 正在检索 / 正在调用工具 / 正在交叉校验 / 正在生成报告），去掉「研究进行中」「第 N 回合」等重复或内部口径，检索轮次改为「已完成 N 次检索」；工具名统一走中文显示名并补齐 `scrape_url`，避免状态行与工具卡直接暴露英文工具 id；首帧空状态改为「研究已启动…」提示且不再与状态行重复；终态补齐可见文案——停止后显示「已停止」、失败显示「研究中断：原因」（与 error 事件去重）、完成与缓存命中不再残留运行态。
-- **状态行显示耗时**：「已用 m:ss」随状态行右侧显示，由前端每秒自增（不依赖服务端帧）；停止后停在停止那一刻，不再自增。
-- **深空主题与搜索行**：页面底色改为近黑虚空（`#000208`）+ 局部星云，叠加视差星空与流星画布；搜索框改为半透明玻璃胶囊（最大宽度 584px），「开始研究 / 停止 / 设置」收起为输入框内右侧三个 36px 圆形幽灵图标（文案保留在 DOM，作为悬停提示与无障碍名），开始与停止按运行状态互斥显示（放大镜 ↔ 停止方块），窄屏不再换行。设置弹窗去掉双层盒子，输入面改为浅于卡片的浅底 + 浅描边；字段说明文字抬到 12px 下限。
+- **Brand rename**: the project is renamed to 谛听 / Diting, updating the header logo and favicon, page titles, skill package and script names, Docker image names, SearXNG instance name, export filename prefix (`diting-conclusion.*`) and documentation wording; upstream MiroThinker / MiroFlow attribution and historical records are unchanged.
+- **Report layout**: final reports drop token/billing noise and truncated URLs; pending leads become a 「未跟进」 summary; the detailed level may append a content analysis and a Mermaid relationship map (see `docs/REPORT_LAYOUT.md`).
+- **Result area visual tightening**: on wide screens (≥1200px) the result area widens to 960px while body paragraphs keep a 42em measure; the static 「研究进度」 heading in the result area and Gradio's default streaming progress bar are removed, leaving the status line in the body as the single in-progress indicator.
+- **Unified progress status wording**: running status lines converge on one colloquial vocabulary (「准备中 / 正在分析 / 正在检索 / 正在调用工具 / 正在交叉校验 / 正在生成报告」), dropping duplicated or internal phrasings such as 「研究进行中」 and 「第 N 回合」 and rephrasing search rounds as 「已完成 N 次检索」; tool names use Chinese display names and `scrape_url` is added, so status lines and tool cards no longer expose English tool ids; the first empty frame reads 「研究已启动…」 instead of duplicating the status line; terminal states gain visible copy — 「已停止」 after a stop and 「研究中断：原因」 on failure (deduplicated against the error event) — and completion or a cache hit no longer leaves a running state behind.
+- **Elapsed time on the status line**: 「已用 m:ss」 is shown at the right of the status line, incremented client-side every second (without depending on server frames); after a stop it freezes at the moment of the stop instead of counting on.
+- **Deep-space theme and search row**: the page background becomes a near-black void (`#000208`) with localized nebulae, overlaid with a parallax starfield and a meteor canvas; the search box becomes a translucent glass capsule (max width 584px), and 「开始研究 / 停止 / 设置」 collapse into three 36px round ghost icons inside the input (their labels kept in the DOM as tooltips and accessible names), with start and stop mutually exclusive per run state (magnifier ↔ stop square) and no wrapping on narrow screens. The settings modal loses its double box, its input surfaces switch to a layer lighter than the card with a light outline, and field descriptions are raised to a 12px floor.
 
 ### Compatibility
 
-- **技能包改名**：`skills/openclaw-mirosearch/` 重命名为 `skills/diting/`，调用脚本为 `scripts/call_diting.py`，打包文件为 `skills/diting.zip`（压缩包根目录为 `diting/`）；已安装旧技能的调用方需按新路径重新安装。
-- **镜像名变更**：Compose 与 `scripts/deploy/build_images.sh` 的默认镜像名改为 `diting:latest` 与 `diting-api:latest`，已有部署需重新构建或显式覆盖 `IMAGE_TAG_*`。
+- **Skill package rename**: `skills/openclaw-mirosearch/` is renamed to `skills/diting/`, its invocation script to `scripts/call_diting.py`, and its packaged file to `skills/diting.zip` (archive root `diting/`); callers that installed the old skill must reinstall it from the new path.
+- **Image name change**: the default image names in Compose and `scripts/deploy/build_images.sh` become `diting:latest` and `diting-api:latest`; existing deployments must rebuild or explicitly override `IMAGE_TAG_*`.
 
 ## \[0.2.11\] - 2026-08-13
 
