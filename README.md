@@ -4,138 +4,121 @@
   <img src="assets/diting_logo.png" alt="Diting Logo" width="320" />
 </p>
 
-Diting is an open-source web retrieval engineering project for agent scenarios, designed to provide controllable cost, configurable routing, and programmable API interfaces.
+[English](README.md) | [中文](README_zh.md)
 
-> 📄 中文文档：[README_zh.md](./README_zh.md)
+Diting (谛听) is an open-source agentic research service built on MiroThinker. It combines multi-provider web search, full-page extraction, multi-step reasoning, source verification, asynchronous execution, and structured Markdown reports.
 
-## Project Goals
+Current stable release: **v0.2.11**. See the [Changelog](docs/CHANGELOG.md) for released changes and the [Roadmap](docs/ROADMAP.md) for planned work.
 
-- Lower search cost with local SearXNG and optional commercial search sources
-- Improve result stability with parallel search, confidence evaluation, and high-trust supplemental search
-- Make system integration easier with a unified API for OpenClaw and other agents
+## Current capabilities
 
-## Upstream & License
+- Six research modes: `balanced`, `verified`, `research`, `production-web`, `quota`, and `thinking`.
+- Six search profiles: `searxng-first`, `serp-first`, `multi-route`, `parallel`, `parallel-trusted`, and `searxng-only`.
+- Search providers: SearXNG, SerpAPI, Serper, Tavily, and optional Sogou integration.
+- Full-page extraction for HTML, text, PDF, JSON, RSS, Atom, and XML, with redirect SSRF checks, response-size limits, encoding recovery, table preservation, and natural-boundary truncation.
+- FastAPI task service backed by arq and Valkey, with persistent task metadata, event streams, results, cancellation, and result caching.
+- Gradio UI with API-backed reconnect, progress display, clickable citations, and Markdown/PDF/Word export.
+- OpenAI-compatible and Anthropic model clients, stage-specific model routing, key rotation, bounded retries, and model failback.
+- Fail-closed FastAPI authentication, request rate limiting, caller-scoped cancellation, and per-task tool isolation.
 
-This project is modified from [MiroMindAI/MiroThinker](https://github.com/MiroMindAI/MiroThinker). The repository retains the original license requirements while adding engineering improvements for OpenClaw/Agent toolchain integration. Compatible with existing search channels (SearXNG, SerpAPI, Serper) and the original MiroFlow toolchain.
+Planned features such as batch `scrape_urls`, Prometheus/Grafana, RRF ranking, an MCP adapter, and Helm packaging are not implemented yet; they are tracked in the [Roadmap](docs/ROADMAP.md).
 
-- License: [`LICENSE`](LICENSE)
+## Architecture
 
-## Implemented Features
+The default Docker Compose stack contains five services:
 
-- **6 research modes**: `production-web` / `verified` / `research` / `balanced` (default) / `quota` / `thinking`
-- **6 search routing profiles**: `searxng-first` / `serp-first` / `multi-route` / `parallel` / `parallel-trusted` / `searxng-only`
-- **Multi-source search**: SearXNG, SerpAPI, Serper — with parallel aggregation and confidence-based supplemental retrieval
-- **Dual integration interfaces**: FastAPI standard REST API (recommended, `/v1/research`) plus Gradio-compatible `run_research_once`
-- **Runtime observability**: stage heartbeat (search/reasoning/verification/summary), stale-task auto-reconciliation
-- **Independent API server**: FastAPI-based `apps/api-server/` with standard REST endpoints (`/v1/research`), Bearer Token auth, and request rate limiting
-- **Result caching**: in-memory LRU + TTL cache to avoid redundant search/LLM costs for identical queries
-- **Multi-key rotation**: LLM and search API keys support pool rotation with 429-aware backoff
-- **Model failback**: automatic fallback to secondary model on consecutive primary model failures
-- **CI regression gate**: GitHub Actions `run-tests.yml` with 60+ automated tests across 3 apps
+| Service | Purpose | Default host port |
+|---|---|---:|
+| `app` | Gradio UI and compatibility API | 8080 |
+| `api` | FastAPI research API | 8090 |
+| `worker` | arq research worker | — |
+| `valkey` | Queue, task state, event streams, and cache | internal only |
+| `searxng` | Self-hosted search provider | 27080 |
 
-> For full API specification and parameter reference, see [`docs/API_SPEC.md`](docs/API_SPEC.md)
->
-> For architecture overview and data flow diagrams, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+See [Architecture](docs/ARCHITECTURE.md) for data flow and module boundaries.
 
-<p align="center"><img src="assets/demo-screenshot.png" alt="Demo Screenshot" width="900" /></p>
+## Quick start
 
-## Quick Start
-
-### 1. Install Dependencies
+Requirements: Docker with Compose v2, an OpenAI-compatible or Anthropic LLM endpoint, and at least one usable search provider.
 
 ```bash
-cd apps/gradio-demo
-uv sync
+cp .env.compose.example .env.compose
+# Edit .env.compose and replace placeholder LLM/search credentials.
+docker compose --env-file .env.compose up -d --build
+docker compose ps
 ```
 
-### 2. Initialize Configuration
+The example binds published ports to `127.0.0.1` and explicitly enables unauthenticated local development with `AUTH_DISABLED=1`. For shared or production access, set `AUTH_DISABLED=0`, configure a strong `API_TOKENS` value, set the same token as `API_BEARER_TOKEN` for the Gradio API backend, and place TLS termination in front of the service.
+
+Check the stack:
 
 ```bash
-cp .env.example .env
+curl -sS http://127.0.0.1:8090/health
+curl -sS http://127.0.0.1:8080/gradio_api/info
+curl -sS http://127.0.0.1:27080/healthz
 ```
 
-Minimal `.env` example:
+For source-based setup, host-network deployment, authentication, and troubleshooting, see [Deployment](docs/DEPLOY.md).
+
+## FastAPI example
+
+Submit a task:
 
 ```bash
-# OpenAI-compatible LLM gateway
-BASE_URL="https://api.longcat.chat/openai"
-API_KEY="<your_longcat_key>"
-DEFAULT_LLM_PROVIDER="openai" # openai / anthropic / qwen
-DEFAULT_MODEL_NAME="gpt-4o-mini"
-MODEL_TOOL_NAME="gpt-4o-mini"
-MODEL_FAST_NAME="gpt-4o-mini"
-MODEL_THINKING_NAME="gpt-4o-mini"
-MODEL_SUMMARY_NAME="gpt-4o-mini"
-
-# Search sources (configure at least one)
-SEARXNG_BASE_URL="http://127.0.0.1:27080"
-SERPAPI_API_KEY="<your_serpapi_key>"
-SERPER_API_KEY="<your_serper_key>"
-
-# Default execution strategy
-DEFAULT_RESEARCH_MODE="balanced"
-DEFAULT_SEARCH_PROFILE="parallel-trusted"
-```
-
-Model configuration notes:
-
-- `DEFAULT_LLM_PROVIDER` controls provider routing (`openai` / `anthropic` / `qwen`)
-- `DEFAULT_MODEL_NAME` is the default primary model
-- Per-stage model variables:
-  - `MODEL_TOOL_NAME`: tool-calling stage
-  - `MODEL_FAST_NAME`: fast stage
-  - `MODEL_THINKING_NAME`: deep-thinking stage
-  - `MODEL_SUMMARY_NAME`: summarization stage
-- Fallback rules:
-  - If `MODEL_TOOL_NAME`, `MODEL_FAST_NAME`, or `MODEL_THINKING_NAME` is unset, it falls back to `DEFAULT_MODEL_NAME`
-  - If `MODEL_SUMMARY_NAME` is unset, it falls back to `MODEL_FAST_NAME`
-
-### 3. Start Service
-
-```bash
-uv run main.py
-```
-
-Default address: `http://127.0.0.1:8090`
-
-### 4. Health Check
-
-```bash
-curl -sS 'http://127.0.0.1:8090/health'
-```
-
-## API Usage Example
-
-Recommended FastAPI API flow (async task queue):
-
-```bash
-BASE_URL="http://127.0.0.1:8090"
-QUERY="Which Chinese companies have released OpenClaw variants?"
-MODE="verified"
-PROFILE="parallel-trusted"
-RESULT_NUM=30
-MIN_ROUNDS=4
-DETAIL_LEVEL="balanced" # compact / balanced / detailed
-CALLER_ID="openclaw-session-001"
-
-TASK_ID=$(curl -sS -X POST "$BASE_URL/v1/research" \
+curl -sS -X POST http://127.0.0.1:8090/v1/research \
   -H 'Content-Type: application/json' \
-  -d "{\"query\":\"$QUERY\",\"mode\":\"$MODE\",\"search_profile\":\"$PROFILE\",\"search_result_num\":$RESULT_NUM,\"verification_min_search_rounds\":$MIN_ROUNDS,\"output_detail_level\":\"$DETAIL_LEVEL\",\"caller_id\":\"$CALLER_ID\"}" \
-  | python3 -c 'import sys,json;print(json.load(sys.stdin)["task_id"])')
-
-curl -sS "$BASE_URL/v1/research/$TASK_ID"
+  -d '{
+    "query": "Compare the latest practical quantum-computing milestones",
+    "mode": "verified",
+    "search_profile": "parallel-trusted",
+    "search_result_num": 30,
+    "verification_min_search_rounds": 4,
+    "output_detail_level": "balanced",
+    "caller_id": "example-client"
+  }'
 ```
 
-Stream live task events:
+The response contains `task_id` and `status`. Poll or stream the task:
 
 ```bash
-curl -sS -N "$BASE_URL/v1/research/$TASK_ID/stream"
+curl -sS http://127.0.0.1:8090/v1/research/<task_id>
+curl -sS -N http://127.0.0.1:8090/v1/research/<task_id>/stream
 ```
 
-Cancel tasks for the current caller session:
+When authentication is enabled, add `Authorization: Bearer <token>` to protected requests. The full contract is in [API Specification](docs/API_SPEC.md).
+
+## Recommended profiles
+
+| Intent | Mode | Search profile | Suggested depth |
+|---|---|---|---|
+| General research | `balanced` | `parallel-trusted` | 20 results |
+| Fact verification | `verified` | `parallel-trusted` | 30 results, 4 rounds |
+| Cost-sensitive search | `quota` | `searxng-only` | 10-20 results |
+| Mainland China without a stable proxy | `balanced` | `searxng-first` | 20 results |
+
+These are client recommendations, not immutable server defaults. Omitted optional fields are resolved from the deployment's `DEFAULT_*` environment variables.
+
+## Documentation
+
+- [Documentation index](docs/README.md)
+- [API specification](docs/API_SPEC.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [Deployment](docs/DEPLOY.md)
+- [Roadmap](docs/ROADMAP.md)
+- [Changelog](docs/CHANGELOG.md)
+- [Security](docs/SECURITY.md)
+- [Contributing](docs/CONTRIBUTING.md)
+- [OpenClaw skill](skills/diting/SKILL.md)
+
+## Development
+
+Python 3.12+ is required for the primary applications and library.
 
 ```bash
-curl -sS -X POST "$BASE_URL/v1/research/cancel?caller_id=$CALLER_ID"
+# Install app dependencies
+cd apps/gradio-demo && uv sync
+cd ../miroflow-agent && uv sync
+cd ../../libs/miroflow-tools && uv sync
 ```
 
 If you need legacy compatibility or want to reuse the Demo UI directly, Gradio API remains available:
@@ -231,31 +214,23 @@ Skill acquisition and installation:
 - Code of conduct: [`docs/CODE_OF_CONDUCT.md`](docs/CODE_OF_CONDUCT.md)
 - Changelog: [`docs/CHANGELOG.md`](docs/CHANGELOG.md)
 
+
 ## Development Validation
 
 ```bash
-# Repository root
-just format
+# Repository-wide checks
 just lint
+just sort-imports
+just format
+just format-md
 
-# Demo startup
-cd apps/gradio-demo && uv sync && uv run main.py
-
-# Agent tests
-cd apps/miroflow-agent && uv run pytest
-
-# API server tests
-cd apps/api-server && uv run pytest tests/ -v
+# Focused test suites
+cd apps/miroflow-agent && uv sync && uv run pytest
+cd apps/api-server && uv sync && AUTH_DISABLED=1 uv run pytest
+cd apps/gradio-demo && uv sync && uv run pytest
+cd libs/miroflow-tools && uv sync && uv run pytest
 ```
 
-## Roadmap
+## License and upstream
 
-See: [`docs/ROADMAP.md`](docs/ROADMAP.md)
-
-Current planning is divided into the following phases:
-
-- `v0.2.0` (production-ready) ✅: SearchProvider protocol, async task queue (arq + Valkey), SSE streaming, persistent cache, Docker Compose orchestration
-- `v0.2.4` ✅: `scrape_url` redirect SSRF hardening, shared `httpx.AsyncClient`, PDF / JSON / RSS / Atom / XML support
-- `v0.2.5` (current) ✅: T6–T8 in [`docs/SCRAPING_ITERATION_PLAN.md`](docs/SCRAPING_ITERATION_PLAN.md) — `trafilatura`, HTML table markdown, smart truncation, Prometheus metrics, eval pipeline in CI, multi-source RRF ranking, multilingual retrieval optimization
-- `v0.3.0` (batch scraping + site-friendliness): T9 in [`docs/SCRAPING_ITERATION_PLAN.md`](docs/SCRAPING_ITERATION_PLAN.md) — batch `scrape_urls`, quotas and rate limiting, robots.txt validation
-- `v1.0.0` (ecosystem distribution): Helm Chart / one-click cloud deploy, skill versioned release, compatibility matrix auto-verification
+This repository is derived from [MiroMindAI/MiroThinker](https://github.com/MiroMindAI/MiroThinker) and retains its license requirements. See [LICENSE](LICENSE) and the upstream attribution in the project history.

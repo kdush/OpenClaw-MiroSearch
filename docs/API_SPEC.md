@@ -1,26 +1,251 @@
-# API 规格说明
+# API Specification
 
-本文档定义谛听对外 API 的调用约定（统一标准接口）。
+[中文](./API_SPEC_zh.md)
 
-> 接口约束：研究接口仅保留 `run_research_once`，历史双接口已收敛为统一标准。
+This document defines the current public API contract. The FastAPI service is
+the primary integration surface; the Gradio endpoints are compatibility APIs
+for existing clients.
 
-## 基础地址
+The project release is `v0.2.11`. The API service reports an independently
+configurable `API_VERSION`, whose code default is `0.2.0`.
 
-- 本地默认：`http://127.0.0.1:8080`
+## FastAPI base URL
 
-## 端点一览
+The Docker Compose default is:
 
-1. `POST /gradio_api/call/run_research_once`
-1. `GET /gradio_api/call/run_research_once/{event_id}`
-1. `POST /gradio_api/call/stop_current`
-1. `POST /gradio_api/call/stop_current_by_caller`（v0.1.9+）
-1. `GET /gradio_api/info`
+```text
+http://127.0.0.1:8090
+```
 
-## 1) run_research_once（统一标准接口）
+OpenAPI documentation is available at `/docs` and `/redoc`.
 
-### 请求
+## Authentication and rate limiting
 
-`POST /gradio_api/call/run_research_once`
+All `/v1/*` endpoints require a Bearer token unless unauthenticated development
+mode is explicitly enabled. `/health` is public.
+
+```http
+Authorization: Bearer <token>
+```
+
+The authentication policy is fail-closed:
+
+- if `API_TOKENS` is empty and `AUTH_DISABLED` is not `1`, protected endpoints
+  return `503`;
+- if tokens are configured but the request has no valid token, protected
+  endpoints return `401`;
+- `AUTH_DISABLED=1` is for local development only.
+
+Rate limiting is enabled by default at `30` requests per minute. Health and API
+documentation paths bypass the limiter. See [Deployment Guide](./DEPLOY.md) for
+production settings.
+
+## Endpoint summary
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/v1/research` | Submit a research task |
+| `GET` | `/v1/research/{task_id}` | Read task status, metadata, and result |
+| `GET` | `/v1/research/{task_id}/stream` | Stream task events over SSE |
+| `POST` | `/v1/research/{task_id}/cancel` | Cancel one task |
+| `POST` | `/v1/research/cancel?caller_id=...` | Cancel active tasks for one caller |
+| `GET` | `/v1/metrics/last` | Read the latest run metrics |
+| `GET` | `/health` | Read public service health |
+
+## Submit a research task
+
+`POST /v1/research`
+
+```bash
+curl -X POST http://127.0.0.1:8090/v1/research \
+  -H "Authorization: Bearer ${API_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "What changed in retrieval-augmented generation this year?",
+    "mode": "balanced",
+    "search_profile": "parallel-trusted",
+    "search_result_num": 20,
+    "verification_min_search_rounds": 3,
+    "output_detail_level": "balanced",
+    "caller_id": "client-session-42"
+  }'
+```
+
+### Request fields
+
+| Field | Required | Allowed values or meaning |
+| --- | --- | --- |
+| `query` | Yes | Non-empty research question |
+| `mode` | No | `balanced`, `verified`, `research`, `production-web`, `quota`, `thinking` |
+| `search_profile` | No | `searxng-first`, `serp-first`, `multi-route`, `parallel`, `parallel-trusted`, `searxng-only` |
+| `search_result_num` | No | `10`, `20`, or `30` |
+| `verification_min_search_rounds` | No | Integer from `1` through `8`; verification behavior is mode-dependent |
+| `output_detail_level` | No | `compact`, `balanced`, or `detailed` |
+| `caller_id` | No | Stable caller identifier used for scoped cancellation |
+
+Omitted or `null` policy fields use the deployment's `DEFAULT_*` values. The
+code-level safe fallbacks are `balanced`, `searxng-first`, `20`, `3`, and
+`detailed`, but deployment configuration may override them.
+
+### Response
+
+A newly queued task returns:
+
+```json
+{
+  "task_id": "2d66d941-0ce8-4f35-b0fb-92102bdfd5ea",
+  "status": "accepted"
+}
+```
+
+A cache hit returns a new task record with status `cached`:
+
+```json
+{
+  "task_id": "cached-9fba276d-2867-4985-96e2-99a957c615e8",
+  "status": "cached"
+}
+```
+
+The submit response never embeds the report body. Retrieve it through the task
+status endpoint or the SSE stream, including for cache hits.
+
+## Read task status and result
+
+`GET /v1/research/{task_id}`
+
+```bash
+curl -H "Authorization: Bearer ${API_TOKEN}" \
+  http://127.0.0.1:8090/v1/research/${TASK_ID}
+```
+
+```json
+{
+  "task_id": "2d66d941-0ce8-4f35-b0fb-92102bdfd5ea",
+  "status": "completed",
+  "meta": {
+    "task_id": "2d66d941-0ce8-4f35-b0fb-92102bdfd5ea",
+    "status": "completed",
+    "caller_id": "client-session-42",
+    "query": "What changed in retrieval-augmented generation this year?",
+    "mode": "balanced",
+    "search_profile": "parallel-trusted",
+    "search_result_num": 20,
+    "verification_min_search_rounds": 3,
+    "output_detail_level": "balanced",
+    "created_at": 0,
+    "started_at": 0,
+    "finished_at": 0,
+    "current_stage": "",
+    "error": null
+  },
+  "result": "# Research report...",
+  "event_count": 12,
+  "result_quality": {
+    "format_valid": true,
+    "fallback_used": false,
+    "issues": [],
+    "answer_available": true
+  }
+}
+```
+
+Task statuses are `queued`, `running`, `completed`, `failed`, `cancelled`, and
+`cached`. Clients should treat `completed`, `failed`, `cancelled`, and `cached`
+as terminal states.
+
+## Stream task events
+
+`GET /v1/research/{task_id}/stream`
+
+```bash
+curl -N -H "Authorization: Bearer ${API_TOKEN}" \
+  http://127.0.0.1:8090/v1/research/${TASK_ID}/stream
+```
+
+The response uses Server-Sent Events. Persisted pipeline events are replayed in
+order, heartbeats keep idle connections alive, and the stream ends with a
+`done` event:
+
+```text
+event: done
+data: {"status":"completed"}
+```
+
+For completed or cached tasks, consume the persisted `final_output` event or
+read `result` from the status endpoint. For failed or cancelled tasks, inspect
+the terminal event and `done` payload.
+
+## Cancel tasks
+
+Cancel a single queued or running task:
+
+```bash
+curl -X POST -H "Authorization: Bearer ${API_TOKEN}" \
+  http://127.0.0.1:8090/v1/research/${TASK_ID}/cancel
+```
+
+Cancel all queued or running tasks for one caller:
+
+```bash
+curl -X POST -H "Authorization: Bearer ${API_TOKEN}" \
+  "http://127.0.0.1:8090/v1/research/cancel?caller_id=client-session-42"
+```
+
+`caller_id` is required and must not be blank. This endpoint never falls back
+to global cancellation.
+
+```json
+{
+  "cancelled": 1,
+  "task_ids": ["2d66d941-0ce8-4f35-b0fb-92102bdfd5ea"]
+}
+```
+
+## Metrics and health
+
+`GET /v1/metrics/last` is protected and returns the latest persisted run
+metrics, or a `no_data` response before any run has completed.
+
+`GET /health` is public:
+
+```json
+{
+  "status": "ok",
+  "version": "0.2.0"
+}
+```
+
+The version shown above is the code default for `API_VERSION`, not the project
+release number.
+
+## Error handling
+
+| Status | Meaning |
+| --- | --- |
+| `400` | Task is not cancellable in its current state |
+| `401` | Bearer token is missing or invalid |
+| `404` | Task does not exist or has expired |
+| `422` | Request validation failed |
+| `429` | Request rate limit was exceeded |
+| `503` | Authentication is not configured, or the task queue is unavailable |
+
+Clients should retry transient `429` and `503` responses with bounded backoff.
+Do not retry validation or authentication failures without changing the
+request or configuration.
+
+## Gradio compatibility API
+
+The Gradio service defaults to `http://127.0.0.1:8080`. These endpoints remain
+for UI and legacy integrations; new service integrations should use FastAPI.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/gradio_api/call/run_research_once` | Submit the seven-item compatibility request |
+| `GET` | `/gradio_api/call/run_research_once/{event_id}` | Poll the Gradio event stream |
+| `POST` | `/gradio_api/call/stop_current` | Cancel by `caller_id` |
+| `POST` | `/gradio_api/call/stop_current_by_caller` | Cancel by `caller_id` |
+| `GET` | `/gradio_api/info` | Read Gradio endpoint metadata |
 
 ```json
 {
@@ -36,299 +261,5 @@
 }
 ```
 
-字段说明：
-
-- `query`：研究问题（字符串，必填）
-- `mode`：研究模式（可选，默认 `balanced`）
-- `search_profile`：检索路由（可选，默认 `searxng-first`）
-- `search_result_num`：单轮检索条数（可选，`10/20/30`）
-- `verification_min_search_rounds`：最少检索轮次（可选，仅 `verified` 生效）
-- `output_detail_level`：输出篇幅档位（可选，`compact/balanced/detailed`）
-- `caller_id`：调用方标识（可选，v0.1.9+；用于会话级任务隔离，配合 `stop_current` 定向取消）
-
-### 兼容性与迁移
-
-下一发布版本开始，Gradio HTTP 端点的第 7 个数组项固定为 `caller_id`。仍按旧版
-6 项数组调用的客户端需要追加一个稳定的调用方标识；如暂时不需要定向取消，也可以
-显式传入空字符串。直接调用 Python 函数 `run_research_once()` 的旧代码不受影响，
-其第 7 个位置参数仍是 `render_mode`；新增的 `caller_id` 只能通过第 8 个位置参数或
-关键字参数传入。
-
-### 响应
-
-```json
-{
-  "event_id": "xxxx"
-}
-```
-
-参数生效约束：
-
-- `verification_min_search_rounds` 仅在 `mode=verified` 时生效；其它模式按服务默认门槛处理
-
-## 2) 轮询结果
-
-`GET /gradio_api/call/run_research_once/{event_id}`
-
-返回 SSE 文本，读取 `event: complete` 的 `data`。
-
-`data` 为 JSON 数组，第一项为最终 Markdown 输出。
-
-终态约定：
-
-- 任务完成以 `event: complete` 为准
-- `complete.data[0]` 为最终 Markdown 或明确的失败/取消说明
-- 缺少 `\boxed{}` 不再单独判定失败：存在可展示正文时会作为格式降级结果返回；
-  只有没有可用正文时才进入失败终态
-
-心跳约定：
-
-- 期间会持续发送 `event: heartbeat`
-- `heartbeat.data.stage` 包含 `phase/turn/search_round/detail/agent_name`，用于展示“当前处于哪一阶段”
-
-## 3) stop_current
-
-`POST /gradio_api/call/stop_current`
-
-```json
-{
-  "data": ["<caller_id>"]
-}
-```
-
-作用：按 `caller_id` 定向取消排队中或运行中的任务。空值只返回
-`caller_id_required`，绝不退化为全局取消。
-
-旧版 `{"data": []}` 的全局取消调用需要迁移为 `{"data": ["<caller_id>"]}`，并与
-创建任务时的 `caller_id` 保持一致。服务端不会为旧调用恢复全局取消语义；需要按
-明确任务取消时，请改用 FastAPI 的 `POST /v1/research/{task_id}/cancel`。
-
-### 3.1) stop_current_by_caller（v0.1.9+）
-
-`POST /gradio_api/call/stop_current_by_caller`
-
-```json
-{
-  "data": ["<caller_id>"]
-}
-```
-
-作用：按 `caller_id` 定向取消。仅终止该调用方发起的任务，不影响其他并发任务。
-
-## 4) info
-
-`GET /gradio_api/info`
-
-作用：返回接口与参数元信息。
-
-## 模式枚举（`mode`）
-
-- `production-web`
-- `verified`
-- `research`
-- `balanced`
-- `quota`
-- `thinking`
-
-## 检索路由枚举（`search_profile`）
-
-- `searxng-first`
-- `serp-first`
-- `multi-route`
-- `parallel`
-- `parallel-trusted`
-- `searxng-only`
-
-## 输出渲染约定
-
-- API 默认渲染模式跟随 `output_detail_level`：
-  - `compact` -> `summary_only`
-  - `balanced` -> `summary_with_details`
-  - `detailed` -> `full`
-- `detailed` 档会启用报告式总结策略，目标是更完整的长篇输出。
-
-## 输出篇幅枚举（`output_detail_level`）
-
-- `compact`：精简（当前短篇幅，聚焦核心结论）
-- `balanced`：适中（核心优先 + 必要非核心信息）
-- `detailed`：详细（超长报告，信息密集）
-
-## 错误与重试建议
-
-- `422`：参数格式错误（通常是 `data` 数组长度或字段类型不匹配）
-- `429`：上游限流，建议按 `retry_after` 或指数退避重试
-- 超时：建议先调用 `stop_current` 清理挂起任务后再重试
-- 任务日志中的陈旧 `running` 状态会被后台巡检自动收敛为 `failed`，避免长期假运行
-
-## 面向 AI Agent 的接入说明
-
-### 最小调用闭环
-
-1. `GET /gradio_api/info` 确认服务在线与参数签名
-2. `POST /gradio_api/call/run_research_once` 发起任务，保存 `event_id`
-3. `GET /gradio_api/call/run_research_once/{event_id}` 轮询 SSE，直到 `event: complete`
-4. 仅将 `complete` 的第一项 Markdown 作为最终结论输入下游推理
-
-### 参数建议（按任务意图）
-
-- 快速问答：`mode=balanced` + `search_profile=parallel-trusted` + `output_detail_level=compact`
-- 普通研究：`mode=balanced` + `search_profile=parallel-trusted` + `output_detail_level=balanced`
-- 高核查/长文：`mode=verified` + `search_profile=parallel-trusted` + `search_result_num=30` + `verification_min_search_rounds=4` + `output_detail_level=detailed`
-
-### 按网络环境选择检索策略
-
-上层 Agent 应将"网络环境"作为路由决策条件，而不是固定单一模板：
-
-- 中国大陆（无代理或出海链路波动）：
-  - 优先 `search_profile=searxng-first`
-  - 检索源顺序建议：`searxng,serpapi,serper`
-  - 失败策略：保持 `fallback`，不要直接并发所有海外源
-- 海外或有稳定代理：
-  - 优先 `search_profile=parallel-trusted`
-  - 检索源顺序建议：`serpapi,searxng,serper`
-  - 可启用并发聚合与置信补检
-- 未知网络：
-  - 首轮用 `searxng-first` 探测可达性
-  - 连续 1-2 轮稳定后再提升到 `parallel-trusted`
-
-建议 Agent 在启动阶段做一次轻量连通性采样（如 `bing/google/duckduckgo`），用结果决定初始模板，避免全量超时。
-
-### 失败处理建议
-
-- 若 SSE 未出现 `complete`：先调 `stop_current`，再重试
-- 若返回 `No \\boxed{} content found in the final answer.`：视为"未收敛"，不是服务不可用
-- 若出现 429：指数退避并降级 `mode`（`thinking -> balanced -> quota`）
-- 限流 429：服务端已支持多 Key 自动轮转（v0.1.9+），单 Key 限流时自动切换；调用方仍建议指数退避，必要时降级到 `mode=quota`
-- 若看到长期 `running` 但无推进：检查最新 `heartbeat.data.stage`；系统会自动回收陈旧 `running` 为 `failed`
-
-### 输出消费建议
-
-- 只消费 `complete` 事件首项 Markdown
-- 若需要机器二次处理，先保留原文，再做结构化抽取
-- 对时效问题，优先保留"时间锚点 + 关键数字 + 来源"三要素
-- 进度展示建议读取 `heartbeat.data.stage.phase`（检索/推理/校验/总结）与 `search_round`
-
----
-
-## FastAPI API Server（v0.2.0）
-
-独立于 Gradio 的标准 HTTP API 层，默认监听 8090 端口。v0.2.0 起采用异步任务队列架构（arq + Valkey）。
-
-### 基础地址
-
-- 本地默认：`http://127.0.0.1:8090`
-
-### 认证
-
-设置 `API_TOKENS` 环境变量启用 Bearer Token 认证（逗号分隔支持多
-Token）。默认 fail-closed：Token 留空且未显式设置 `AUTH_DISABLED=1`
-时，受保护端点返回 `503`；`AUTH_DISABLED=1` 仅用于本机开发。
-
-```bash
-curl -H "Authorization: Bearer your-token" http://127.0.0.1:8090/v1/research
-```
-
-### 端点一览
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| POST | `/v1/research` | 提交研究任务，异步入队，返回 `task_id` |
-| GET | `/v1/research/{task_id}` | 查询任务状态、元数据与结果 |
-| GET | `/v1/research/{task_id}/stream` | SSE 流式获取任务实时进度事件 |
-| POST | `/v1/research/{task_id}/cancel` | 取消指定任务 |
-| POST | `/v1/research/cancel` | 按必填查询参数 `caller_id` 批量取消 |
-| GET | `/v1/metrics/last` | 最近任务运行指标 |
-| GET | `/health` | 健康检查 |
-
-### 请求示例
-
-```bash
-curl -X POST http://127.0.0.1:8090/v1/research \
-  -H "Authorization: Bearer your-token" \
-  -H "Content-Type: application/json" \
-  -d '{"query": "量子计算最新进展", "mode": "balanced", "search_profile": "parallel-trusted", "output_detail_level": "balanced"}'
-```
-
-响应（异步入队）：
-
-```json
-{"task_id": "xxxx", "status": "accepted"}
-```
-
-缓存命中时（同步返回）：
-
-```json
-{"task_id": "cached-xxxx", "status": "cached"}
-```
-
-缓存正文与普通任务一致，通过 `GET /v1/research/{task_id}` 或 SSE
-`final_output` 事件读取；缓存由 API 与 Worker 通过 Valkey 共享。
-
-SSE 在业务终态事件（`error`、`cancelled` 或 `final_output`）持久化后才提交
-任务终态；客户端收到 `done` 前，服务端还会非阻塞补读一次事件流，避免并发
-窗口漏事件。`done.data.status` 为最终状态，失败或取消时
-`done.data.error` 会携带终态说明。
-
-任务状态查询（`GET /v1/research/{task_id}`）：
-
-```json
-{
-  "task_id": "xxxx",
-  "status": "running",
-  "meta": {
-    "task_id": "xxxx",
-    "status": "running",
-    "query": "...",
-    "mode": "balanced",
-    "current_stage": "tool:unknown",
-    "created_at": 1776648665.85,
-    "started_at": 1776648666.30,
-    "finished_at": null
-  },
-  "result": null,
-  "event_count": 8
-}
-```
-
-### 请求参数（`ResearchRequest`）
-
-| 字段 | 类型 | 必填 | 默认值 | 说明 |
-|------|------|------|--------|------|
-| `query` | string | 是 | — | 研究问题；去除首尾空白后不能为空 |
-| `mode` | string | 否 | `DEFAULT_RESEARCH_MODE` | 研究模式（枚举同上） |
-| `search_profile` | string | 否 | `DEFAULT_SEARCH_PROFILE` | 检索路由（枚举同上） |
-| `search_result_num` | int | 否 | `DEFAULT_SEARCH_RESULT_NUM` | 每轮检索结果数，仅支持 `10/20/30` |
-| `verification_min_search_rounds` | int | 否 | `DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS` | 最少检索轮次，范围 `1..8`，仅 verified 模式影响缓存键 |
-| `output_detail_level` | string | 否 | `DEFAULT_OUTPUT_DETAIL_LEVEL` | 输出篇幅（枚举同上） |
-| `caller_id` | string | 否 | — | 调用方标识，用于定向取消 |
-
-上述可选字段省略或传 `null` 时读取部署默认值；非法部署默认值会记录告警并
-回退到安全内置值。
-
-### 限流
-
-- 默认开启，`RATE_LIMIT_RPM=30`（每分钟 30 次）
-- `/health`、`/docs` 等路径自动跳过
-- 超限返回 `429 Too Many Requests`，附带 `Retry-After` 和 `X-RateLimit-Remaining` 头
-
-### 错误码
-
-| 状态码 | 含义 |
-|--------|------|
-| `401` | 未提供或无效的 Bearer Token |
-| `404` | 任务不存在 |
-| `422` | 参数校验失败（如 mode 不在枚举范围内） |
-| `429` | 请求限流，按 `Retry-After` 头等待后重试 |
-| `503` | 未配置 API Token且未显式启用本地开发认证绕过，或任务队列暂不可用 |
-
----
-
-## 可观测性说明（google_search）
-
-在工具链路中，`google_search` 的结果包含下列元信息（用于判断是否真实走了多路并发与补检）：
-
-- `searchParameters.provider_mode`
-- `searchParameters.providers_with_results`
-- `confidence`
-- `route_trace`
-- `provider_fallback`
+The seventh array item is `caller_id`. Empty cancellation identifiers are
+rejected rather than interpreted as a global stop request.

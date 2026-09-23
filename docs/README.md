@@ -1,27 +1,45 @@
-# 文档索引
+# Documentation
 
-本目录用于存放项目文档（`README.md` 除外）。所有文档均为中英双语格式。
+[English](README.md) | [中文](README_zh.md)
 
-## 规范与治理
+## Start here
 
-- [贡献指南 / Contributing Guide](./CONTRIBUTING.md)（含治理、支持、发布流程）
-- [安全策略 / Security Policy](./SECURITY.md)
-- [行为准则 / Code of Conduct](./CODE_OF_CONDUCT.md)
-- [变更记录 / Changelog](./CHANGELOG.md)
+- [Project README](../README.md): overview and shortest working path.
+- [Deployment](DEPLOY.md): Docker Compose, source setup, authentication, networking, and troubleshooting.
+- [API specification](API_SPEC.md): FastAPI contract and Gradio compatibility API.
 
-## 架构与设计
+## Core reference
 
-- [架构概览 / Architecture Overview](./ARCHITECTURE.md)
+- [Architecture](ARCHITECTURE.md): components, data flow, persistence, and isolation boundaries.
+- [Roadmap](ROADMAP.md): current baseline and planned milestones.
+- [Scraping iteration plan](SCRAPING_ITERATION_PLAN.md): shipped T1-T8 work and pending T9 batch scraping.
+- [Changelog](CHANGELOG.md): released changes by version.
+- [Research intensity](RESEARCH_INTENSITY.md): light / standard / deep behavior.
+- [Deep efficiency](DEEP_EFFICIENCY.md): Round 6–8 speed knobs.
+- [Report layout](REPORT_LAYOUT.md): final report section rules.
 
-## 项目说明
+## Operations and governance
 
-- [路线图 / Roadmap](./ROADMAP.md)
-- [API 规格 / API Spec](./API_SPEC.md)（含 AI Agent 接入指引）
-- [部署指南 / Deployment Guide](./DEPLOY.md)（含 Docker Compose 与本地工具部署）
-- [抓取能力迭代计划 / Scraping Iteration Plan](./SCRAPING_ITERATION_PLAN.md)（T1-T9，对应 v0.2.3 → v0.3.0）
+- [Security policy](SECURITY.md)
+- [Contributing guide](CONTRIBUTING.md)
+- [Code of conduct](CODE_OF_CONDUCT.md)
 
-## 研究质量 / Research Quality
+## Module documentation
 
-- [研究强度 / Research Intensity](./RESEARCH_INTENSITY.md)（light / standard / deep 三档行为与配置）
-- [深度效率旋钮 / Deep Efficiency](./DEEP_EFFICIENCY.md)（Round 6–8 提速旋钮与度量）
-- [报告排版 / Report Layout](./REPORT_LAYOUT.md)（终稿章节规范与禁止内容）
+- [FastAPI server](../apps/api-server/README.md)
+- [Gradio demo](../apps/gradio-demo/README.md)
+- [Agent core](../apps/miroflow-agent/README.md)
+- [MiroFlow tools](../libs/miroflow-tools/README.md)
+- [Deployment assets](../deploy/README.md)
+- [Trace collection](../apps/collect-trace/README.md)
+- [Trace visualization](../apps/visualize-trace/README.md)
+- [LobeHub compatibility](../apps/lobehub-compatibility/README.md)
+
+## Integration packages
+
+- [Diting skill](../skills/diting/SKILL.md)
+- [SearXNG skill](../skills/searxng/SKILL.md)
+
+## Historical design records
+
+Files under `plans/` and `superpowers/` record implementation decisions at a point in time. They are not current product documentation; when they conflict with code or the documents above, the current code and API specification take precedence.

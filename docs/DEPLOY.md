@@ -1,303 +1,179 @@
-# Deployment Guide / 部署指南
+# Deployment Guide
 
----
+[中文](./DEPLOY_zh.md)
 
-## Docker Compose Deployment / Docker Compose 部署
+This guide deploys the `v0.2.11` runtime with Docker Compose. The default
+topology runs `app`, `api`, `worker`, `valkey`, and `searxng`.
 
-Quick standalone deployment, starting by default / 快速独立部署，默认同时启动：
+## Prerequisites
 
-- `app`：Gradio Demo（port/端口 8080，可覆盖 via `APP_PORT`）
-- `api`：FastAPI API Server（port/端口 8090，可覆盖 via `API_PORT`）
-- `searxng`：本地搜索引擎（port/端口 27080）
-- `valkey`：SearXNG 缓存与限流存储
+- Docker Engine 24 or newer
+- Docker Compose v2
+- an OpenAI-compatible LLM endpoint and API key
+- optional search-provider keys for broader retrieval coverage
 
-### Prerequisites / 前置条件
-
-- Docker Engine 24+
-- Docker Compose v2（`docker compose version` 可用）
-
-### 1. Prepare Environment Variables / 准备环境变量
+## Prepare configuration
 
 ```bash
 cp .env.compose.example .env.compose
 ```
 
-Required / 至少需要填写：
+At minimum, replace the placeholder values for:
 
-- `BASE_URL`
-- `API_KEY`
-- 生产或共享部署：`API_TOKENS=<随机强 Token>`，并将
-  `API_BEARER_TOKEN` 设为 `API_TOKENS` 中的同一个 Token
+```dotenv
+BASE_URL=https://your-llm-gateway.example/v1
+API_KEY=replace_with_your_llm_key
+```
 
-Authentication defaults / 认证默认策略：
+Review the copied file before starting. In particular, keep only one effective
+definition of each authentication key (`API_TOKENS`, `API_BEARER_TOKEN`, and
+`AUTH_DISABLED`) and select one mode explicitly. If a template revision contains
+repeated definitions, the last dotenv assignment may win, which is too easy to
+misread during deployment.
 
-- API 默认 fail-closed。`API_TOKENS` 为空且 `AUTH_DISABLED=0` 时，
-  `/v1/*` 受保护端点返回 `503`。
-- `.env.compose.example` 默认只绑定回环地址，并显式选择本机开发模式：
-  `AUTH_DISABLED=1`，`API_TOKENS` 与 `API_BEARER_TOKEN` 留空。
-- 生产或共享部署必须改为 `AUTH_DISABLED=0`，并成对配置
-  `API_TOKENS` 与 `API_BEARER_TOKEN`。
-- Compose 默认用 `BIND_HOST=127.0.0.1` 将 App、API 与 SearXNG
-  端口绑定到回环地址。需要对外提供服务时才改为 `0.0.0.0`，并同时配置
-  Token、防火墙或可信反向代理。
+### Local development authentication
 
-Production example / 生产示例（请替换为随机强 Token）：
+Use this only while all published ports remain loopback-only:
 
-```bash
-API_TOKENS=replace_with_a_random_token
-API_BEARER_TOKEN=replace_with_a_random_token
-AUTH_DISABLED=0
+```dotenv
 BIND_HOST=127.0.0.1
+AUTH_DISABLED=1
+API_TOKENS=
+API_BEARER_TOKEN=
 ```
 
-Optional (improve search quality) / 可选填写（提升检索质量）：
+### Shared or production authentication
 
-- `SERPAPI_API_KEY`
-- `SERPER_API_KEY`
+Generate a strong token outside the repository, then set the same token for the
+FastAPI server and the default Gradio API client:
 
-Recommended (improve cross-validation) / 建议同时设置（提升交叉验证体感）：
-
-- `DEFAULT_SEARCH_PROFILE=parallel-trusted`
-- `DEFAULT_SEARCH_RESULT_NUM=20`（or/或 30）
-- `DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS=3`（for fact-checking, set to / 核查型问题可提到 4）
-
-### Choose Search Strategy by Network / 按网络环境选择引擎（重要）
-
-- 中国大陆（无代理/出海链路不稳定）：
-  - `DEFAULT_SEARCH_PROFILE=searxng-first`
-  - `SEARCH_PROVIDER_ORDER=searxng,serpapi,serper`
-  - `SEARCH_PROVIDER_MODE=fallback`
-  - SearXNG 引擎建议：优先启用 `bing`、`baidu`、`sogou`、`yandex`；建议禁用 `google`、`duckduckgo`、`brave`、`startpage`、`wikipedia`
-- 海外或有稳定代理：
-  - `DEFAULT_SEARCH_PROFILE=parallel-trusted`
-  - `SEARCH_PROVIDER_ORDER=serpapi,searxng,serper`
-  - `SEARCH_PROVIDER_MODE=parallel_conf_fallback`
-  - SearXNG 引擎建议：保留 `google`、`duckduckgo`、`brave`、`startpage`、`wikipedia` 与区域引擎混合
-- 网络环境不确定：
-  - 先用 `DEFAULT_SEARCH_PROFILE=searxng-first` 保守启动，再根据实测切换到 `parallel-trusted`
-
-SearXNG 可覆盖配置：`deploy/searxng/settings.yml`（`compose.yaml` 已挂载到容器）
-
-Connectivity self-check / 连通性自检（在目标机器执行）：
-
-```bash
-curl -sS -m 8 -o /dev/null -w 'bing: %{http_code} %{time_total}\n' https://www.bing.com
-curl -sS -m 8 -o /dev/null -w 'baidu: %{http_code} %{time_total}\n' https://www.baidu.com
-curl -sS -m 8 -o /dev/null -w 'google: %{http_code} %{time_total}\n' https://www.google.com
-curl -sS -m 8 -o /dev/null -w 'duckduckgo: %{http_code} %{time_total}\n' https://duckduckgo.com
+```dotenv
+BIND_HOST=127.0.0.1
+AUTH_DISABLED=0
+API_TOKENS=replace_with_a_random_strong_token
+API_BEARER_TOKEN=replace_with_the_same_token
 ```
 
-### 2. Start Services / 启动服务
+Multiple server tokens may be comma-separated in `API_TOKENS`.
+`API_BEARER_TOKEN` must match one of them. Do not commit `.env.compose`.
+
+The FastAPI service is fail-closed: with no configured tokens and without
+`AUTH_DISABLED=1`, protected endpoints return `503`. Missing or invalid request
+credentials return `401`.
+
+## Choose retrieval defaults
+
+All values remain configurable in `.env.compose`. A conservative starting point
+for networks where overseas providers may be unstable is:
+
+```dotenv
+DEFAULT_RESEARCH_MODE=balanced
+DEFAULT_SEARCH_PROFILE=searxng-first
+DEFAULT_SEARCH_RESULT_NUM=20
+DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS=3
+```
+
+For networks with reliable access to multiple configured providers, use
+`DEFAULT_SEARCH_PROFILE=parallel-trusted`. Add `SERPAPI_API_KEY`,
+`SERPER_API_KEY`, or `TAVILY_API_KEY` only for providers you intend to use.
+
+## Start the stack
 
 ```bash
 docker compose --env-file .env.compose up -d --build
 ```
 
-Compose 顶层项目名固定为 `openclaw-mirosearch`（`compose.yaml` / `compose.host-network.yaml` 的 `name:`）。
-镜像标签可以是 `diting:latest`，但**不要**把项目名改成 `diting`：否则 `docker compose up` 会新建一组容器与
-`diting_valkey-data` 卷，与旧栈争用端口，且读不到原任务/缓存。
+Compose project name stays `openclaw-mirosearch` (`name:` in `compose.yaml` / `compose.host-network.yaml`). Image tags may be `diting:latest`, but **do not** rename the Compose project to `diting`: that creates a second stack and a new `diting_valkey-data` volume, fights the old stack for ports, and loses prior task/cache data.
 
-若曾误用 `name: diting` 起过栈：先 `docker compose -p diting down`（确认无用后再删卷），再在本仓库用默认项目名启动；
-Valkey 数据不会自动迁移，需要停机后自行拷贝卷或接受缓存清空。
+If a `diting` stack was started by mistake: `docker compose -p diting down` (delete volumes only when unused), then start again with the default project name. Valkey data is not migrated automatically.
 
-### 3. Check Status / 检查状态
+The default published addresses are:
 
+| Service | Address |
+| --- | --- |
+| Gradio app | `http://127.0.0.1:8080` |
+| FastAPI | `http://127.0.0.1:8090` |
+| SearXNG | `http://127.0.0.1:27080` |
+
+`worker` and `valkey` are internal services without published host ports. Port
+values can be changed through `APP_PORT`, `API_PORT`, and
+`SEARXNG_HOST_PORT`.
+
+## Verify the deployment
 ```bash
 docker compose ps
-docker compose logs -f app
+docker compose logs --tail=100 api worker
+curl http://127.0.0.1:8090/health
+curl http://127.0.0.1:8080/gradio_api/info
 ```
 
-Port mapping / 端口映射配置：在项目根目录创建 `.env` 文件（注意：这不是 `.env.compose`）：
+The health response reports `API_VERSION`. Its code default is `0.2.0` and is
+independent from the project release `v0.2.11`.
+
+For an authenticated request:
 
 ```bash
-# .env — Docker Compose 变量替换用
-APP_PORT=28080    # Gradio Demo 宿主机端口（默认 8080）
-API_PORT=28090    # API Server 宿主机端口（默认 8090）
+curl -X POST http://127.0.0.1:8090/v1/research \
+  -H "Authorization: Bearer ${API_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"Summarize the latest retrieval research."}'
 ```
 
-> `.env.compose` 用于容器内环境变量，`.env` 用于 `compose.yaml` 中的端口映射等变量替换。
+See [API Specification](./API_SPEC.md) for polling and SSE examples.
 
-### 4. Verify Endpoints / 验证接口
+## Network exposure
+
+Compose binds `app`, `api`, and `searxng` to `127.0.0.1` by default. Prefer a
+trusted reverse proxy with TLS and keep this loopback binding. If direct host
+exposure is unavoidable, set `BIND_HOST=0.0.0.0` only after enabling tokens and
+restricting access with a firewall.
+
+Set `TRUST_PROXY=1` only behind a trusted proxy that overwrites
+`X-Forwarded-For`; otherwise rate limiting can trust spoofed client addresses.
+FastAPI request limiting defaults to `RATE_LIMIT_RPM=30`.
+
+For environments that cannot use Docker bridge networking, the repository also
+provides `compose.host-network.yaml`:
 
 ```bash
-curl -sS 'http://127.0.0.1:8080/gradio_api/info'
-curl -sS 'http://127.0.0.1:8090/health'
-curl -sS 'http://127.0.0.1:27080/healthz'
-curl -sS \
-  -H 'Authorization: Bearer replace_with_a_random_token' \
-  'http://127.0.0.1:8090/v1/metrics/last'
+docker compose -f compose.host-network.yaml \
+  --env-file .env.compose up -d --build
 ```
 
-`/health` 是公共健康检查；`/v1/metrics/last` 用于确认 Bearer Token
-确实从 Gradio/调用方传递到 API。若未配置认证，后者应返回 `503`。
+Host networking removes normal port isolation. Review local port conflicts and
+firewall rules before using it.
 
-Access URLs / 访问地址：
+## Operations
 
-- Gradio Demo：`http://127.0.0.1:8080`（或自定义 `APP_PORT`）
-- API Server：`http://127.0.0.1:8090`（或自定义 `API_PORT`）
-- SearXNG：`http://127.0.0.1:27080`
+Read logs:
 
-### 5. Stop & Clean Up / 停止与清理
+```bash
+docker compose logs -f app api worker
+```
+
+Restart application services without deleting data:
+
+```bash
+docker compose restart app api worker
+```
+
+Stop the stack while retaining named volumes:
 
 ```bash
 docker compose down
 ```
 
-To also remove volumes (clears SearXNG cache) / 如需同时删除卷（会清空 SearXNG 缓存）：
+Valkey task data and SearXNG cache live in named volumes. Removing volumes also
+removes persisted tasks, events, results, and cache; back up required data
+before any volume-removal operation.
 
-```bash
-docker compose down -v
-```
+## Troubleshooting
 
-### Common Scenarios / 常见场景
-
-#### Using External SearXNG / 使用外部 SearXNG
-
-```bash
-# In .env.compose
-SEARXNG_BASE_URL=http://<external_searxng_host>:<port>
-```
-
-#### Upgrade & Rebuild / 升级镜像与重建
-
-```bash
-docker compose pull
-docker compose --env-file .env.compose up -d --build
-```
-
-#### Container Cannot Access External Network / 容器无法访问外网
-
-**Symptom**: LLM calls return `Connection error`, SearXNG pre-check fails; but the host itself can access the external network normally.
-
-**Cause**: Docker network mode, DNS, NAT forwarding, or egress policy restrictions prevent the container from establishing TCP connections to the external network.
-
-**Solution**: Switch the `app` service to host network mode.
-
-1. Edit `compose.yaml`, uncomment `network_mode: host` and comment out `ports`:
-
-```yaml
-services:
-  app:
-    # ...
-    network_mode: host
-    # ports:
-    #   - "${APP_PORT:-8080}:8080"
-```
-
-2. In host mode, `app` accesses SearXNG via `localhost`, set in `.env.compose`:
-
-```bash
-SEARXNG_BASE_URL=http://127.0.0.1:${SEARXNG_HOST_PORT:-27080}
-```
-
-3. Rebuild:
-
-```bash
-docker compose --env-file .env.compose up -d --build
-```
-
-**Verify**:
-
-```bash
-docker exec <container_name> python3 -c "import urllib.request; print(urllib.request.urlopen('https://httpbin.org/ip', timeout=10).read())"
-```
-
----
-
-## Optional Local Tool Deployment / 可选本地工具部署
-
-Deploy optional local tool services to reduce commercial API dependency and enable operation in intranet/local environments.
-
-部署可选的本地工具服务，降低商业 API 依赖，在内网/本地环境可持续运行。
-
-### Available Tools / 可选工具
-
-| Tool | Model | Prerequisites |
-|------|-------|---------------|
-| `tool-transcribe-os` (Audio transcription / 音频转写) | `openai/whisper-large-v3-turbo` | NVIDIA GPU, CUDA |
-| `tool-vqa-os` (Visual Q&A / 视觉问答) | `Qwen/Qwen2.5-VL-72B-Instruct` | NVIDIA GPU, CUDA |
-| `tool-reasoning-os` (Reasoning / 推理) | `Qwen/Qwen3-235B-A22B-Thinking-2507` | NVIDIA GPU, CUDA |
-
-These tools are optional, not required for minimal Demo startup / 这些工具均为可选，不是 Demo 最小启动必需项。
-
-### Audio Transcription / 音频转写
-
-```bash
-pip install vllm==0.10.0
-pip install 'vllm[audio]'
-
-vllm serve openai/whisper-large-v3-turbo \
-  --served-model-name whisper-large-v3-turbo \
-  --task transcription \
-  --host 0.0.0.0 \
-  --port 8000
-```
-
-`.env`:
-
-```bash
-WHISPER_MODEL_NAME="openai/whisper-large-v3-turbo"
-WHISPER_BASE_URL="http://127.0.0.1:8000/v1"
-WHISPER_API_KEY="<optional_key>"
-```
-
-### Visual Q&A / 视觉问答
-
-```bash
-pip install 'sglang[all]'
-
-python3 -m sglang.launch_server \
-  --model-path Qwen/Qwen2.5-VL-72B-Instruct \
-  --tp 8 \
-  --host 0.0.0.0 \
-  --port 8001 \
-  --trust-remote-code
-```
-
-`.env`:
-
-```bash
-VISION_MODEL_NAME="Qwen/Qwen2.5-VL-72B-Instruct"
-VISION_BASE_URL="http://127.0.0.1:8001/v1/chat/completions"
-VISION_API_KEY="<optional_key>"
-```
-
-### Reasoning Service / 推理服务
-
-```bash
-pip install 'sglang[all]'
-
-python3 -m sglang.launch_server \
-  --model-path Qwen/Qwen3-235B-A22B-Thinking-2507 \
-  --tp 8 \
-  --host 0.0.0.0 \
-  --port 8002 \
-  --trust-remote-code \
-  --context-length 131072
-```
-
-`.env`:
-
-```bash
-REASONING_MODEL_NAME="Qwen/Qwen3-235B-A22B-Thinking-2507"
-REASONING_BASE_URL="http://127.0.0.1:8002/v1/chat/completions"
-REASONING_API_KEY="<optional_key>"
-```
-
-### Integration / 接入方式
-
-Enable in `apps/miroflow-agent/conf/agent/*.yaml`:
-
-```yaml
-main_agent:
-  tools:
-    - search_and_scrape_webpage
-    - jina_scrape_llm_summary
-    - tool-transcribe-os
-    - tool-vqa-os
-    - tool-reasoning-os
-```
-
-Ensure `apps/miroflow-agent/.env` has the corresponding addresses and keys / 确保 `apps/miroflow-agent/.env` 填好对应地址与密钥。
-
-> If you don't deploy local versions, you can continue using the default commercial tool versions (without `-os` suffix) / 如果不部署本地版本，可继续使用默认商业工具版本（不带 `-os` 后缀）。
+| Symptom | Check |
+| --- | --- |
+| Protected API returns `503` | Configure `API_TOKENS`, or explicitly use `AUTH_DISABLED=1` for local development |
+| Protected API returns `401` | Verify the Bearer token and `API_BEARER_TOKEN` match a configured server token |
+| Tasks remain `queued` | Check `worker` health and its connection to `valkey` |
+| Gradio cannot submit tasks | Check `BACKEND_MODE=api`, `API_BASE_URL`, and client token configuration |
+| Search returns few results | Check SearXNG health, provider keys, and the selected search profile |
+| Requests return `429` | Reduce request rate or adjust the deployment's bounded rate-limit policy |

@@ -1,25 +1,25 @@
-# Code of Conduct / 行为准则
+[English](CODE_OF_CONDUCT.md) | [中文](CODE_OF_CONDUCT_zh.md)
 
-This project is committed to building an open, professional, and respectful collaboration environment.
+# Code of Conduct
 
-本项目致力于构建开放、专业、尊重他人的协作环境。
+This project is committed to an open, professional, and respectful collaboration environment.
 
-## Expected Behavior / 我们期望的行为
+## Expected Behavior
 
-- Focus discussions on technical facts and verifiable evidence / 讨论问题聚焦技术事实与可验证证据
-- Respect different backgrounds, experiences, and perspectives / 尊重不同背景、经验与观点
-- Provide actionable suggestions during reviews and discussions / 在评审与讨论中给出可执行建议
-- Correct errors promptly and maintain transparent communication / 对错误及时更正并保持透明沟通
+- Keep discussions focused on technical facts and verifiable evidence.
+- Respect different backgrounds, experiences, and perspectives.
+- Provide actionable suggestions in reviews and discussions.
+- Correct mistakes promptly and communicate transparently.
 
-## Unacceptable Behavior / 不可接受的行为
+## Unacceptable Behavior
 
-- Personal attacks, insulting language, or harassment / 人身攻击、侮辱性语言、骚扰行为
-- Malicious spamming, provocation, or discriminatory speech / 恶意刷屏、挑衅、歧视性言论
-- Publishing others' private information without permission / 未经允许公开他人隐私信息
-- Deliberately spreading sensitive vulnerability details knowing the risk / 明知有风险仍传播敏感漏洞细节
+- Personal attacks, insulting language, or harassment
+- Malicious spamming, provocation, or discriminatory speech
+- Publishing another person's private information without permission
+- Knowingly spreading sensitive vulnerability details despite the risk
 
-## Enforcement / 执行与处理
+## Enforcement
 
-Maintainers have the right to edit, remove, or restrict interaction on content that violates this code of conduct. For severe or persistent violations, maintainers may suspend or revoke participation privileges.
+Maintainers may edit or remove content that violates this code of conduct, or restrict interactions involving it. For severe or repeated violations, maintainers may temporarily suspend or permanently revoke participation privileges.
 
-维护者有权对违反行为准则的内容进行编辑、删除或限制互动。对严重或持续违规行为，维护者可暂停或取消其参与权限。
+When assessing a report, maintainers should consider its context, impact, and recurrence, apply a proportionate response, and protect the privacy of reporters and affected participants where practical.
