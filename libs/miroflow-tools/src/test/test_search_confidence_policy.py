@@ -110,3 +110,40 @@ def test_confidence_follows_actual_results(monkeypatch):
     module._ensure_confidence_evaluated([], search_params)
 
     assert search_params["confidence"]["passed"] is False
+
+
+@pytest.mark.unit
+def test_searxng_only_confidence_ignores_other_available_providers(monkeypatch):
+    """Route allows only searxng; commercial keys in env must not raise coverage."""
+    _reset_search_env(monkeypatch)
+    monkeypatch.setenv("SEARCH_PROVIDER_ORDER", "searxng")
+    monkeypatch.setenv("SEARCH_PROVIDER_ORDER_STRICT", "1")
+    monkeypatch.setenv("SEARXNG_BASE_URL", "http://127.0.0.1:27080")
+    monkeypatch.setenv("SERPER_API_KEY", "commercial-key")
+    monkeypatch.setenv("SERPAPI_API_KEY", "commercial-key")
+    monkeypatch.setenv("SEARCH_CONFIDENCE_MIN_RESULTS", "1")
+    monkeypatch.setenv("SEARCH_CONFIDENCE_MIN_UNIQUE_DOMAINS", "1")
+    monkeypatch.setenv("SEARCH_CONFIDENCE_MIN_HIGH_CONF_HITS", "1")
+    monkeypatch.setenv("SEARCH_CONFIDENCE_MIN_PROVIDER_COVERAGE", "2")
+    module = _reload_search_module()
+
+    organic = [
+        {
+            "title": "Reuters",
+            "link": "https://www.reuters.com/world/example",
+            "snippet": "ok",
+            "source": "searxng",
+        }
+    ]
+    confidence = module._evaluate_confidence(
+        organic,
+        {"searxng"},
+        allowed_providers=["searxng"],
+    )
+    assert confidence["constraints"]["min_provider_coverage"] == 1
+    assert confidence["passed"] is True
+
+    # Without allowed_providers, multi-key env can still push ceiling to ≥2
+    # (regression guard for callers that forget to pass the route list).
+    wide = module._evaluate_confidence(organic, {"searxng"})
+    assert wide["constraints"]["min_provider_coverage"] >= 1

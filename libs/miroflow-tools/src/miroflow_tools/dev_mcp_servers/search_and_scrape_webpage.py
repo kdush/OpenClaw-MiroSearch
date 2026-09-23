@@ -296,6 +296,8 @@ def _merge_provider_results(
 def _evaluate_confidence(
     organic_results: list[dict],
     providers_with_results: set[str],
+    *,
+    allowed_providers: Optional[list[str] | set[str]] = None,
 ) -> dict[str, Any]:
     unique_domains = {
         _normalize_domain(str(item.get("link", "")).strip())
@@ -313,12 +315,18 @@ def _evaluate_confidence(
         )
     }
 
-    # 只配了 1 个检索源时，要求 2 路覆盖的门控永远不可能满足，会白白耗尽补检轮次。
+    # Cap coverage by providers allowed on *this route*, not every credential
+    # present in the environment (searxng-only must not require serper/serpapi).
+    if allowed_providers is not None:
+        route_pool = {str(name).strip() for name in allowed_providers if str(name).strip()}
+        coverage_ceiling = len(route_pool) if route_pool else 1
+    else:
+        coverage_ceiling = len(_registry.available_names()) or 1
     min_provider_coverage = max(
         1,
         min(
             SEARCH_CONFIDENCE_MIN_PROVIDER_COVERAGE,
-            len(_registry.available_names()),
+            coverage_ceiling,
         ),
     )
 
@@ -386,8 +394,13 @@ def _ensure_confidence_evaluated(
     covered = providers_with_results or {
         str(search_params.get("provider", "")).strip()
     }
+    allowed = search_params.get("provider_order")
+    if not isinstance(allowed, list):
+        allowed = None
     search_params["confidence"] = _evaluate_confidence(
-        organic_results, {name for name in covered if name}
+        organic_results,
+        {name for name in covered if name},
+        allowed_providers=allowed,
     )
 
 
@@ -596,7 +609,9 @@ async def google_search(
                     providers, provider_results_map, result_num
                 )
                 confidence = _evaluate_confidence(
-                    merged_results, providers_with_results
+                    merged_results,
+                    providers_with_results,
+                    allowed_providers=providers,
                 )
                 parallel_min_success_passed = (
                     len(providers_with_results) >= SEARCH_PROVIDER_PARALLEL_MIN_SUCCESS
@@ -693,7 +708,16 @@ async def google_search(
                         result_num,
                     )
                     confidence = _evaluate_confidence(
-                        merged_results, providers_with_results
+                        merged_results,
+                        providers_with_results,
+                        allowed_providers=[
+                            *providers,
+                            *[
+                                name
+                                for name in provider_results_map
+                                if name not in providers
+                            ],
+                        ],
                     )
                     confidence_passed = (
                         not SEARCH_CONFIDENCE_ENABLED

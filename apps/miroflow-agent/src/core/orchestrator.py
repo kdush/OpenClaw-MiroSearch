@@ -12,6 +12,7 @@ import asyncio
 import gc
 import json
 import logging
+import threading
 import time
 import uuid
 from collections import defaultdict
@@ -307,11 +308,17 @@ class Orchestrator:
             self.deep_exit_on_early_stop,
             self.deep_post_early_stop_turns,
         ) = resolve_exit_on_early_stop(cfg)
-        # Unique domains seen in search results (for early-stop agreement)
+        # Unique domains seen in search results (coverage only — not agreement).
         self.independent_source_domains: set[str] = set()
+        # Trusted/high-conf domains used as a corroboration proxy for early-stop.
+        self.early_stop_high_conf_domains: set[str] = set()
         self.deep_early_stop_triggered = False
         self.deep_early_stop_turn = 0
         self._deep_convergence_nudge_sent = False
+        # Parallel scrape budget: reserve slots before execute so concurrent
+        # scrapes cannot oversubscribe max_scrape_per_task.
+        self._scrape_budget_lock = threading.Lock()
+        self._scrape_slots_reserved = 0
 
     async def _emit_stage_heartbeat(
         self,
@@ -519,8 +526,10 @@ class Orchestrator:
             domain = self._normalize_domain(link)
             if domain:
                 self.independent_source_domains.add(domain)
-                if self.verification_enabled and self._is_high_conf_domain(domain):
-                    self.verification_high_conf_source_domains.add(domain)
+                if self._is_high_conf_domain(domain):
+                    self.early_stop_high_conf_domains.add(domain)
+                    if self.verification_enabled:
+                        self.verification_high_conf_source_domains.add(domain)
 
         if not self.verification_enabled:
             return
@@ -556,40 +565,134 @@ class Orchestrator:
             },
         )
 
+    def _reserve_scrape_slot(self) -> bool:
+        """Atomically reserve one scrape slot before execution.
+
+        Counts in-flight reservations so parallel scrapes cannot all pass a
+        pre-check against the same completed ``scrape_count``.
+        """
+        if self.max_scrape_per_task <= 0:
+            return True
+        with self._scrape_budget_lock:
+            used = (
+                self.task_log.run_metrics.scrape_count + self._scrape_slots_reserved
+            )
+            if used >= self.max_scrape_per_task:
+                return False
+            self._scrape_slots_reserved += 1
+            return True
+
+    def _release_scrape_slot(self) -> None:
+        """Drop a reservation that did not become a counted scrape."""
+        if self.max_scrape_per_task <= 0:
+            return
+        with self._scrape_budget_lock:
+            if self._scrape_slots_reserved > 0:
+                self._scrape_slots_reserved -= 1
+
+    def _commit_scrape_slot(self) -> None:
+        """Convert a reservation into a counted successful scrape."""
+        if self.max_scrape_per_task <= 0:
+            self.task_log.run_metrics.record_scrape(count=1)
+            return
+        with self._scrape_budget_lock:
+            if self._scrape_slots_reserved > 0:
+                self._scrape_slots_reserved -= 1
+            self.task_log.run_metrics.record_scrape(count=1)
+
     def _record_scrape_metric(
         self, tool_name: str, tool_result: dict, turn_count: int
     ) -> None:
         """Count only real full-page scrapes (budget-skip results excluded)."""
+        reserved = False
+        if isinstance(tool_result, dict):
+            reserved = bool(tool_result.pop("_scrape_slot_reserved", False))
+
         if (
             tool_name not in SCRAPE_TOOL_NAMES
             or "error" in tool_result
             or "[scrape_budget]" in str(tool_result.get("result") or "")
         ):
+            if reserved:
+                self._release_scrape_slot()
             return
-        self.task_log.run_metrics.record_scrape(count=1)
+
+        if reserved:
+            self._commit_scrape_slot()
+        else:
+            self.task_log.run_metrics.record_scrape(count=1)
         self.task_log.log_step(
             "debug",
             f"Main Agent | Turn: {turn_count} | Metrics",
             f"Recorded scrape for tool: {tool_name}",
         )
 
-    def _should_early_stop_clue_chase(self) -> bool:
-        """Round 6: stop extra lead follow-ups once multi-source agreement exists.
+    async def _execute_regular_tool_call(
+        self,
+        server_name: str,
+        tool_name: str,
+        arguments: dict,
+        turn_count: int,
+    ) -> dict:
+        """Execute one non-subagent tool, honoring scrape budget."""
+        reserved = False
+        if tool_name in SCRAPE_TOOL_NAMES:
+            if not self._reserve_scrape_slot():
+                skip_msg = scrape_skip_message(
+                    self.max_scrape_per_task, self.task_log.run_metrics.scrape_count
+                )
+                self.task_log.log_step(
+                    "info",
+                    f"Main Agent | Turn: {turn_count} | Scrape Budget",
+                    skip_msg,
+                )
+                return {
+                    "server_name": server_name,
+                    "tool_name": tool_name,
+                    "result": skip_msg,
+                }
+            reserved = True
+        try:
+            tool_result = await self.main_agent_tool_manager.execute_tool_call(
+                server_name=server_name,
+                tool_name=tool_name,
+                arguments=arguments,
+            )
+        except Exception:
+            if reserved:
+                self._release_scrape_slot()
+            raise
+        if reserved and isinstance(tool_result, dict):
+            tool_result = dict(tool_result)
+            tool_result["_scrape_slot_reserved"] = True
+        return tool_result
 
-        Triggers when ≥N independent source domains are present and minimum
-        search rounds are satisfied — enough to fill Conflicts without endless
-        clue chasing.
+    def _should_early_stop_clue_chase(self) -> bool:
+        """Round 6: stop extra lead follow-ups once corroborating sources exist.
+
+        Raw unique-domain count is NOT agreement — opposing sources still
+        diversify domains. Early-stop requires min search rounds plus either:
+
+        - ≥N trusted/high-confidence domains (corroboration proxy), or
+        - tool-side retrieval confidence already passed **and** ≥1 trusted
+          domain (confidence gate already scored multi-signal quality).
         """
         if not self.deep_early_stop_enabled:
-            return False
-        agreeing = len(self.independent_source_domains)
-        if agreeing < self.deep_early_stop_min_sources:
             return False
         search_rounds = int(self.task_log.run_metrics.search_rounds or 0)
         min_rounds = max(2, int(self.verification_min_search_rounds or 2))
         if search_rounds < min_rounds:
             return False
-        return True
+        high_conf = len(self.early_stop_high_conf_domains)
+        if high_conf >= self.deep_early_stop_min_sources:
+            return True
+        if (
+            self.retrieval_confidence_passed
+            and high_conf >= 1
+            and len(self.independent_source_domains) >= self.deep_early_stop_min_sources
+        ):
+            return True
+        return False
 
     def _note_deep_early_stop(self, turn_count: int, reason: str = "") -> None:
         """Record first early-stop trigger for metrics + logs."""
@@ -602,9 +705,11 @@ class Orchestrator:
             "info",
             f"Main Agent | Turn: {turn_count} | Deep Early-Stop",
             (
-                "≥"
-                f"{self.deep_early_stop_min_sources} independent sources "
-                f"({len(self.independent_source_domains)} domains) and "
+                "corroborating sources ready "
+                f"(high_conf={len(self.early_stop_high_conf_domains)}/"
+                f"{self.deep_early_stop_min_sources}, "
+                f"domains={len(self.independent_source_domains)}, "
+                f"confidence_passed={self.retrieval_confidence_passed}) and "
                 f"search_rounds={self.task_log.run_metrics.search_rounds}; "
                 f"stopping extra lead follow-ups"
                 + (
@@ -617,6 +722,8 @@ class Orchestrator:
             ),
             metadata={
                 "independent_domains": sorted(self.independent_source_domains)[:12],
+                "high_conf_domains": sorted(self.early_stop_high_conf_domains)[:12],
+                "retrieval_confidence_passed": self.retrieval_confidence_passed,
                 "search_rounds": self.task_log.run_metrics.search_rounds,
                 "reason": reason,
                 "exit_on_early_stop": self.deep_exit_on_early_stop,
@@ -677,36 +784,6 @@ class Orchestrator:
             "Exiting main loop after early-stop turn cap to avoid LLM timeout burn.",
         )
         return True
-
-    async def _execute_regular_tool_call(
-        self,
-        server_name: str,
-        tool_name: str,
-        arguments: dict,
-        turn_count: int,
-    ) -> dict:
-        """Execute one non-subagent tool, honoring scrape budget."""
-        if tool_name in SCRAPE_TOOL_NAMES and scrape_budget_exceeded(
-            self.task_log.run_metrics.scrape_count, self.max_scrape_per_task
-        ):
-            skip_msg = scrape_skip_message(
-                self.max_scrape_per_task, self.task_log.run_metrics.scrape_count
-            )
-            self.task_log.log_step(
-                "info",
-                f"Main Agent | Turn: {turn_count} | Scrape Budget",
-                skip_msg,
-            )
-            return {
-                "server_name": server_name,
-                "tool_name": tool_name,
-                "result": skip_msg,
-            }
-        return await self.main_agent_tool_manager.execute_tool_call(
-            server_name=server_name,
-            tool_name=tool_name,
-            arguments=arguments,
-        )
 
     async def _parallel_execute_regular_main_tools(
         self,

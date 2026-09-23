@@ -93,6 +93,13 @@ curl -sS -m 8 -o /dev/null -w 'duckduckgo: %{http_code} %{time_total}\n' https:/
 docker compose --env-file .env.compose up -d --build
 ```
 
+Compose 顶层项目名固定为 `openclaw-mirosearch`（`compose.yaml` / `compose.host-network.yaml` 的 `name:`）。
+镜像标签可以是 `diting:latest`，但**不要**把项目名改成 `diting`：否则 `docker compose up` 会新建一组容器与
+`diting_valkey-data` 卷，与旧栈争用端口，且读不到原任务/缓存。
+
+若曾误用 `name: diting` 起过栈：先 `docker compose -p diting down`（确认无用后再删卷），再在本仓库用默认项目名启动；
+Valkey 数据不会自动迁移，需要停机后自行拷贝卷或接受缓存清空。
+
 ### 3. Check Status / 检查状态
 
 ```bash

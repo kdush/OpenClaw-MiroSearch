@@ -26,6 +26,8 @@ def _bare_orchestrator(**kwargs) -> Orchestrator:
     obj.deep_early_stop_turn = 0
     obj._deep_convergence_nudge_sent = False
     obj.independent_source_domains = {"a.com", "b.com"}
+    obj.early_stop_high_conf_domains = {"reuters.com", "bbc.com"}
+    obj.retrieval_confidence_passed = False
     obj.verification_min_search_rounds = 3
     obj.task_log = MagicMock()
     obj.task_log.run_metrics = RunMetrics()
