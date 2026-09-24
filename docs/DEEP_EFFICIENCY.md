@@ -9,7 +9,7 @@ without gutting multi-source cross-verification. Complements
 | Win | What it does | Default (deep) |
 |-----|--------------|----------------|
 | **Parallel tool calls** | When the LLM issues ≥2 non-subagent tools in one turn (e.g. multi-search), execute them concurrently via `asyncio.gather` | `parallel_tool_calls=true` |
-| **Early-stop** | Stop extra lead follow-ups once ≥N independent source domains exist **and** min search rounds are met (Conflicts can be filled) | `deep_early_stop_on_agreement=true`, `min_sources=2` |
+| **Early-stop** | Stop extra lead follow-ups once ≥N trusted domains **and** min search rounds are met **and** an LLM evidence-agreement check confirms sources corroborate the same conclusion | `deep_early_stop_on_agreement=true`, `min_sources=2` |
 | **Exit after early-stop (R7/R8)** | Cap remaining main-loop LLM turns after early-stop; nudge once then force summary | `deep_exit_on_early_stop=true`, `post_turns=1` (was 2) |
 | **Scrape budget** | Prefer search snippets; full-page scrape only until hard cap; further scrapes return a skip message | `max_scrape_per_task=8` |
 | **Clue Top-K** | Deep follow only top 1–2 leads (`max_lead_follow_ups`) | `2` |
@@ -70,10 +70,20 @@ Env overrides: `LLM_TIMEOUT_FAIL_FAST`, `LLM_TIMEOUT_DEGRADE_KEEP_TOOL_RESULTS`,
 
 1. **Early-stop does not skip the first verification / search budget.** It only
    suppresses *additional* lead-trail injections once agreement + rounds are met.
-2. **Round 7/8 exit** turns early-stop into a hard turn cap: after
+2. **Agreement is adjudicated, not inferred from domain counts.** Trusted-domain
+   hits only open the numeric gate; a no-tool LLM check
+   (`generate_agreement_check`) must return `VERDICT: AGREE` before early-stop
+   fires. `conflict` (sources contradict on a load-bearing claim) and `unknown`
+   (call failed / unparseable) are fail-closed — research continues and the
+   Round 7 turn cap stays inactive. After a `conflict` verdict the check is
+   re-run when new search rounds arrive (a later round may resolve the
+   contradiction); at most 3 adjudication calls per run. Observable in logs as
+   `Main Agent | ... | Evidence Agreement` and `evidence_agreement=` in the
+   early-stop metadata.
+3. **Round 7/8 exit** turns early-stop into a hard turn cap: after
    `early_stop_turn + post_turns`, the orchestrator nudges “write the report”
    once, then breaks into final summary — avoiding full `max_turns=12` LLM burn.
-3. **Round 8 oneshot** replaces the “禁止压缩 / 12000 chars” detailed overlay with a
+4. **Round 8 oneshot** replaces the “禁止压缩 / 12000 chars” detailed overlay with a
    single skeleton-fill prompt. Structure gaps are patched locally
    (`enforce_structure`: rename near-miss headings, inject Timeline/Conflicts
    headings above existing body). The skeleton only serves
@@ -83,20 +93,20 @@ Env overrides: `LLM_TIMEOUT_FAIL_FAST`, `LLM_TIMEOUT_DEGRADE_KEEP_TOOL_RESULTS`,
    Expand-rewrite is skipped only where the skeleton is active; the separate
    verification LLM pass is folded into the skeleton for `deep` only, so
    `standard` keeps the high-model verification round.
-4. **Summary context** uses `summary_keep_tool_result` (not research
+5. **Summary context** uses `summary_keep_tool_result` (not research
    `keep_tool_result`) and strips `"Tool result is omitted…"` stubs so the final
    call does not re-summarize condensed placeholders.
-5. **Scrape skip is soft.** The model still receives a clear message to rely on
+6. **Scrape skip is soft.** The model still receives a clear message to rely on
    snippets; conflict-critical pages should be scraped *before* the cap fills.
-6. **Parallelism is turn-local.** Tools across different turns remain sequential
+7. **Parallelism is turn-local.** Tools across different turns remain sequential
    (LLM must request the next batch).
-7. **Quality gates unchanged.** Conflicts / Timeline / Evidence / Confirmed
+8. **Quality gates unchanged.** Conflicts / Timeline / Evidence / Confirmed
    hard gates still apply for `detailed` reports.
-8. **Timeout metrics:** `timeout_count` now increments for OpenAI/httpx timeouts
+9. **Timeout metrics:** `timeout_count` now increments for OpenAI/httpx timeouts
    (not only `asyncio.TimeoutError`). Also: `http_timeout_count`,
    `wall_timeout_count`, `llm_retry_count`, `summary_passes`,
    `early_stop_triggered`, `early_stop_turn`.
-9. **Search-confidence short-circuit.** When a search tool reports
+10. **Search-confidence short-circuit.** When a search tool reports
    `confidence.enabled && passed=yes`, the orchestrator treats the
    cross-verification requirement as met and stops appending "keep searching"
    guidance for missing high-confidence sources; the `min_search_rounds` floor

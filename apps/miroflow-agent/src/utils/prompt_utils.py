@@ -11,6 +11,8 @@ This module provides:
 - Failure experience templates for retry mechanisms
 """
 
+import re
+
 # ============================================================================
 # Format Error Messages
 # ============================================================================
@@ -326,3 +328,44 @@ def generate_cross_verification_prompt(
         f"高置信来源参考域名：{domains_text}\n\n"
         "请先输出“交叉校验报告”，再进入最终答案阶段。"
     )
+
+
+_AGREEMENT_VERDICT_RE = re.compile(r"(?i)verdict\s*[:：]\s*(agree|conflict)\b")
+
+
+def generate_agreement_check_prompt(
+    task_description: str,
+    high_conf_domains: list[str],
+) -> str:
+    """
+    生成“证据一致性裁决”提示词：判断已收集证据是否支持同一结论（无工具）。
+
+    供提前结束研究前的质量门使用：两个高置信域名本身不代表相互印证，
+    需由模型基于会话内全部证据裁决核心结论的一致性。
+    """
+    domains_text = ", ".join(high_conf_domains[:12]) if high_conf_domains else "N/A"
+    return (
+        "这是研究收敛前的最后一次质量门：请裁决当前证据的一致性。\n\n"
+        "严格要求：\n"
+        "1. 不允许调用任何工具，只能基于当前会话中已获取的全部信息。\n"
+        "2. 核心结论指对回答原问题起支撑作用的关键事实、数字、时间与结论；"
+        "只对这些核心结论做一致性裁决。\n"
+        "3. 若独立高置信来源对核心结论相互印证（方向一致，允许已解释的口径差异），裁决为 AGREE。\n"
+        "4. 若任一核心结论存在独立来源之间的直接矛盾、且会话中尚未给出冲突说明或区间处理，裁决为 CONFLICT。\n"
+        "5. 次要细节差异、单方未证实宣称、互补但不冲突的信息不属于矛盾。\n"
+        "6. 若证据不足以下判断，倾向于 CONFLICT 而不是猜测一致。\n\n"
+        f"已命中高置信域名：{domains_text}\n"
+        f'本次任务原问题："{task_description}"\n\n'
+        "输出格式：第一行必须是「VERDICT: AGREE」或「VERDICT: CONFLICT」；"
+        "随后用 3-5 条要点说明依据（每条注明来源域名与对应主张）。"
+    )
+
+
+def parse_agreement_verdict(text: str) -> str:
+    """解析裁决输出，返回 agree / conflict / unknown；解析不出按 unknown 处理。"""
+    if not text:
+        return "unknown"
+    match = _AGREEMENT_VERDICT_RE.search(text)
+    if not match:
+        return "unknown"
+    return match.group(1).lower()

@@ -71,6 +71,8 @@ DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS = 3
 DEFAULT_VERIFICATION_MIN_HIGH_CONF_SOURCES = 2
 DEFAULT_VERIFICATION_MAX_GUIDANCE_ATTEMPTS = 3
 DEFAULT_VERIFICATION_MAX_STAGNANT_GUIDANCE_ATTEMPTS = 1
+# 证据一致性裁决（无工具 LLM 调用）的最大次数；conflict 后新检索轮可复评
+MAX_EVIDENCE_AGREEMENT_CHECKS = 3
 DEFAULT_HIGH_CONF_DOMAINS = [
     "reuters.com",
     "apnews.com",
@@ -311,6 +313,10 @@ class Orchestrator:
         self.independent_source_domains: set[str] = set()
         # Trusted/high-conf domains used as a corroboration proxy for early-stop.
         self.early_stop_high_conf_domains: set[str] = set()
+        # 证据一致性裁决状态：agree 才允许早停；conflict/unknown 均 fail-closed
+        self.evidence_agreement = "unknown"
+        self.evidence_agreement_attempts = 0
+        self.evidence_agreement_last_eval_rounds = 0
         self.deep_early_stop_triggered = False
         self.deep_early_stop_turn = 0
         self._deep_convergence_nudge_sent = False
@@ -662,16 +668,8 @@ class Orchestrator:
             tool_result["_scrape_slot_reserved"] = True
         return tool_result
 
-    def _should_early_stop_clue_chase(self) -> bool:
-        """Round 6: stop extra lead follow-ups once corroborating sources exist.
-
-        Raw unique-domain count is NOT agreement — opposing sources still
-        diversify domains. Early-stop requires min search rounds plus either:
-
-        - ≥N trusted/high-confidence domains (corroboration proxy), or
-        - tool-side retrieval confidence already passed **and** ≥1 trusted
-          domain (confidence gate already scored multi-signal quality).
-        """
+    def _numeric_early_stop_conditions_met(self) -> bool:
+        """数值门（检索轮次 + 高置信域名 / confidence），与证据一致性无关。"""
         if not self.deep_early_stop_enabled:
             return False
         search_rounds = int(self.task_log.run_metrics.search_rounds or 0)
@@ -689,6 +687,78 @@ class Orchestrator:
             return True
         return False
 
+    def _should_early_stop_clue_chase(self) -> bool:
+        """Round 6: stop extra lead follow-ups once corroborating sources exist.
+
+        Raw unique-domain count is NOT agreement — opposing sources still
+        diversify domains, and two trusted domains can contradict each other.
+        Numeric gates (min rounds + trusted domains / confidence) must hold
+        AND the evidence-agreement adjudication must have returned "agree";
+        conflict and unknown are fail-closed (no early stop).
+        """
+        if not self._numeric_early_stop_conditions_met():
+            return False
+        return self.evidence_agreement == "agree"
+
+    async def _maybe_evaluate_evidence_agreement(
+        self,
+        system_prompt: str,
+        message_history: List[Dict[str, Any]],
+        turn_count: int,
+        task_description: str,
+    ) -> None:
+        """数值门满足时裁决证据一致性（无工具、不写回主历史）。
+
+        只在原本就会早停的时刻触发；conflict 后出现新检索轮可复评
+        （矛盾可能被化解），agree 后不再复评。裁决失败/不可解析按
+        unknown 处理，同样不早停。
+        """
+        if not self._numeric_early_stop_conditions_met():
+            return
+        if self.evidence_agreement == "agree":
+            return
+        if self.evidence_agreement_attempts >= MAX_EVIDENCE_AGREEMENT_CHECKS:
+            return
+        search_rounds = int(self.task_log.run_metrics.search_rounds or 0)
+        if (
+            self.evidence_agreement_attempts > 0
+            and search_rounds <= self.evidence_agreement_last_eval_rounds
+        ):
+            return
+        self.evidence_agreement_attempts += 1
+        self.evidence_agreement_last_eval_rounds = search_rounds
+
+        verdict = await self.answer_generator.generate_agreement_check(
+            system_prompt=system_prompt,
+            message_history=message_history,
+            turn_count=turn_count,
+            task_description=task_description,
+            high_conf_domains=sorted(self.early_stop_high_conf_domains),
+        )
+        if verdict in ("agree", "conflict"):
+            self.evidence_agreement = verdict
+
+        if verdict == "agree":
+            message = "证据一致性裁决：独立高置信来源相互印证（agree），允许提前收敛。"
+        elif verdict == "conflict":
+            message = (
+                "证据一致性裁决：高置信来源存在未处理的关键矛盾（conflict），"
+                "不提前结束研究，继续检索以化解冲突。"
+            )
+        else:
+            message = "证据一致性裁决失败（无有效输出），按未一致处理，不提前结束研究。"
+        self.task_log.log_step(
+            "warning" if verdict != "agree" else "info",
+            f"Main Agent | Turn: {turn_count} | Evidence Agreement",
+            message,
+            metadata={
+                "verdict": verdict,
+                "attempts": self.evidence_agreement_attempts,
+                "search_rounds": search_rounds,
+                "high_conf_domains": sorted(self.early_stop_high_conf_domains)[:12],
+            },
+        )
+
     def _note_deep_early_stop(self, turn_count: int, reason: str = "") -> None:
         """Record first early-stop trigger for metrics + logs."""
         if self.deep_early_stop_triggered:
@@ -704,7 +774,8 @@ class Orchestrator:
                 f"(high_conf={len(self.early_stop_high_conf_domains)}/"
                 f"{self.deep_early_stop_min_sources}, "
                 f"domains={len(self.independent_source_domains)}, "
-                f"confidence_passed={self.retrieval_confidence_passed}) and "
+                f"confidence_passed={self.retrieval_confidence_passed}, "
+                f"evidence_agreement={self.evidence_agreement}) and "
                 f"search_rounds={self.task_log.run_metrics.search_rounds}; "
                 f"stopping extra lead follow-ups"
                 + (
@@ -719,6 +790,7 @@ class Orchestrator:
                 "independent_domains": sorted(self.independent_source_domains)[:12],
                 "high_conf_domains": sorted(self.early_stop_high_conf_domains)[:12],
                 "retrieval_confidence_passed": self.retrieval_confidence_passed,
+                "evidence_agreement": self.evidence_agreement,
                 "search_rounds": self.task_log.run_metrics.search_rounds,
                 "reason": reason,
                 "exit_on_early_stop": self.deep_exit_on_early_stop,
@@ -2234,6 +2306,11 @@ class Orchestrator:
                 "message_history": message_history,
             }
             self.task_log.save()
+
+            # 数值门满足时裁决证据一致性，结果供本轮及后续早停检查使用
+            await self._maybe_evaluate_evidence_agreement(
+                system_prompt, message_history, turn_count, task_description
+            )
 
             # Round 7: after tools, exit once early-stop turn budget is spent
             force_exit = await self._maybe_nudge_and_force_summary(

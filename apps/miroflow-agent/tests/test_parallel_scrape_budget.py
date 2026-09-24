@@ -78,4 +78,9 @@ def test_early_stop_requires_high_conf_not_raw_domains():
     assert orch._should_early_stop_clue_chase() is False
 
     orch.early_stop_high_conf_domains = {"reuters.com", "apnews.com"}
+    # 高可信域名只是数值门；还需证据一致性裁决为 agree 才允许早停
+    orch.evidence_agreement = "agree"
     assert orch._should_early_stop_clue_chase() is True
+
+    orch.evidence_agreement = "conflict"
+    assert orch._should_early_stop_clue_chase() is False

@@ -24,8 +24,8 @@ from ..io.output_formatter import OutputFormatter
 from ..io.report_structure import ReportStructureValidator
 from ..llm.base_client import (
     INTERNAL_MESSAGE_TYPE_KEY,
-    SUMMARY_AGENT_TYPES,
     OMITTED_TOOL_RESULT_TEXT,
+    SUMMARY_AGENT_TYPES,
     TOOL_RESULT_MESSAGE_TYPE,
     BaseClient,
 )
@@ -38,8 +38,10 @@ from ..utils.prompt_utils import (
     FAILURE_SUMMARY_ASSISTANT_PREFIX,
     FAILURE_SUMMARY_PROMPT,
     FORMAT_ERROR_MESSAGE,
-    generate_cross_verification_prompt,
     generate_agent_summarize_prompt,
+    generate_agreement_check_prompt,
+    generate_cross_verification_prompt,
+    parse_agreement_verdict,
 )
 from ..utils.wrapper_utils import ErrorBox, ResponseBox
 from .deep_efficiency import (
@@ -697,6 +699,47 @@ class AnswerGenerator:
             "交叉校验未生成有效内容，回退到原始历史继续总结。",
         )
         return message_history
+
+    async def generate_agreement_check(
+        self,
+        system_prompt: str,
+        message_history: List[Dict[str, Any]],
+        turn_count: int,
+        task_description: str,
+        high_conf_domains: List[str],
+    ) -> str:
+        """裁决已收集证据是否支持同一结论（无工具、不写回主历史）。
+
+        返回 "agree" / "conflict" / "unknown"（unknown = 调用失败或输出不可解析，
+        调用方按 fail-closed 处理：不允许提前结束研究）。
+        """
+        check_prompt = generate_agreement_check_prompt(
+            task_description=task_description,
+            high_conf_domains=high_conf_domains,
+        )
+        check_history = message_history.copy()
+        check_history.append({"role": "user", "content": check_prompt})
+
+        await self._emit_stage_heartbeat(
+            "校验",
+            turn=turn_count,
+            detail="证据一致性裁决中（无工具）",
+            agent_name="main",
+        )
+        (
+            check_text,
+            _,
+            _,
+            _,
+        ) = await self.handle_llm_call(
+            system_prompt=system_prompt,
+            message_history=check_history,
+            tool_definitions=[],
+            step_id=turn_count + 30,
+            purpose="Main Agent | Evidence Agreement",
+            agent_type="main",
+        )
+        return parse_agreement_verdict(check_text or "")
 
     async def handle_llm_call(
         self,
