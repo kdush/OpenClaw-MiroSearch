@@ -71,7 +71,7 @@ DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS = 3
 DEFAULT_VERIFICATION_MIN_HIGH_CONF_SOURCES = 2
 DEFAULT_VERIFICATION_MAX_GUIDANCE_ATTEMPTS = 3
 DEFAULT_VERIFICATION_MAX_STAGNANT_GUIDANCE_ATTEMPTS = 1
-# 证据一致性裁决（无工具 LLM 调用）的最大次数；conflict 后新检索轮可复评
+# 证据一致性裁决（无工具 LLM 调用）的最大次数；新证据使旧裁决失效后可复评
 MAX_EVIDENCE_AGREEMENT_CHECKS = 3
 DEFAULT_HIGH_CONF_DOMAINS = [
     "reuters.com",
@@ -313,10 +313,13 @@ class Orchestrator:
         self.independent_source_domains: set[str] = set()
         # Trusted/high-conf domains used as a corroboration proxy for early-stop.
         self.early_stop_high_conf_domains: set[str] = set()
-        # 证据一致性裁决状态：agree 才允许早停；conflict/unknown 均 fail-closed
+        # 证据一致性裁决：agree 且已裁决当前证据版本才允许早停；
+        # conflict/unknown/次数耗尽均 fail-closed。新证据递增
+        # evidence_revision 使旧裁决失效（见 _bump_evidence_revision）。
         self.evidence_agreement = "unknown"
         self.evidence_agreement_attempts = 0
-        self.evidence_agreement_last_eval_rounds = 0
+        self.evidence_revision = 0
+        self.agreement_checked_revision = 0
         self.deep_early_stop_triggered = False
         self.deep_early_stop_turn = 0
         self._deep_convergence_nudge_sent = False
@@ -527,6 +530,7 @@ class Orchestrator:
             return
         # 无论是否启用验证门控，都递增全局检索轮次
         self.task_log.run_metrics.search_rounds += 1
+        self._bump_evidence_revision()
         for link in links:
             domain = self._normalize_domain(link)
             if domain:
@@ -609,10 +613,11 @@ class Orchestrator:
         if isinstance(tool_result, dict):
             reserved = bool(tool_result.pop("_scrape_slot_reserved", False))
 
+        result_text = str(tool_result.get("result") or "")
         if (
             tool_name not in SCRAPE_TOOL_NAMES
             or "error" in tool_result
-            or "[scrape_budget]" in str(tool_result.get("result") or "")
+            or "[scrape_budget]" in result_text
         ):
             if reserved:
                 self._release_scrape_slot()
@@ -622,6 +627,8 @@ class Orchestrator:
             self._commit_scrape_slot()
         else:
             self.task_log.run_metrics.record_scrape(count=1)
+        if result_text.strip():
+            self._bump_evidence_revision()
         self.task_log.log_step(
             "debug",
             f"Main Agent | Turn: {turn_count} | Metrics",
@@ -692,13 +699,59 @@ class Orchestrator:
 
         Raw unique-domain count is NOT agreement — opposing sources still
         diversify domains, and two trusted domains can contradict each other.
-        Numeric gates (min rounds + trusted domains / confidence) must hold
-        AND the evidence-agreement adjudication must have returned "agree";
-        conflict and unknown are fail-closed (no early stop).
+        Numeric gates (min rounds + trusted domains / confidence) must hold,
+        the evidence-agreement adjudication must have returned "agree", and
+        that verdict must be bound to the current evidence revision — a stale
+        AGREE from before newer evidence fails closed.
         """
         if not self._numeric_early_stop_conditions_met():
             return False
-        return self.evidence_agreement == "agree"
+        return (
+            self.evidence_agreement == "agree"
+            and self.agreement_checked_revision == self.evidence_revision
+        )
+
+    def _bump_evidence_revision(self) -> None:
+        """主会话新增有效证据后递增版本号，使既有裁决失效。"""
+        self.evidence_revision += 1
+
+    def _revoke_stale_early_stop_countdown(
+        self, turn_count: int, message_history: List[Dict[str, Any]]
+    ) -> None:
+        """旧 AGREE 因新证据失效：撤销其支撑的早停倒计时与收敛提示。
+
+        运行指标（run_metrics.record_early_stop）保留“曾触发”记录不回滚。
+        若“立即写报告”提示已进入会话，追加覆盖指令以免模型照旧收敛。
+        """
+        self.evidence_agreement = "unknown"
+        if self.deep_early_stop_triggered:
+            self.deep_early_stop_triggered = False
+            self.deep_early_stop_turn = 0
+            self.task_log.log_step(
+                "warning",
+                f"Main Agent | Turn: {turn_count} | Evidence Agreement",
+                (
+                    "新证据使先前的 agree 裁决失效，撤销提前结束倒计时；"
+                    "需基于最新证据重新裁决后才可早停。"
+                ),
+            )
+        if self._deep_convergence_nudge_sent:
+            self._deep_convergence_nudge_sent = False
+            message_history.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "注意：随后出现了与此前结论相冲突的新证据，"
+                        "之前“立即写报告”的指示作废；"
+                        "请优先核查新证据并化解冲突，暂不要撰写最终报告。"
+                    ),
+                }
+            )
+            self.task_log.log_step(
+                "info",
+                f"Main Agent | Turn: {turn_count} | Deep Convergence",
+                "已撤销收敛提示：新证据与继续核查指令覆盖此前的“立即写报告”。",
+            )
 
     async def _maybe_evaluate_evidence_agreement(
         self,
@@ -707,27 +760,28 @@ class Orchestrator:
         turn_count: int,
         task_description: str,
     ) -> None:
-        """数值门满足时裁决证据一致性（无工具、不写回主历史）。
+        """数值门满足时对最新证据做一致性裁决（无工具、不写回主历史）。
 
-        只在原本就会早停的时刻触发；conflict 后出现新检索轮可复评
-        （矛盾可能被化解），agree 后不再复评。裁决失败/不可解析按
-        unknown 处理，同样不早停。
+        裁决结果绑定 evidence_revision：搜索/抓取/子代理带来新证据会递增
+        版本并使旧裁决失效（撤销倒计时与收敛提示后重新裁决）；已裁决当前
+        版本则跳过，每轮最多一次。失败/不可解析按 unknown 处理，连同
+        conflict、次数耗尽一起 fail-closed，不沿用旧 AGREE。
         """
-        if not self._numeric_early_stop_conditions_met():
-            return
-        if self.evidence_agreement == "agree":
+        if (
+            self.evidence_agreement == "agree"
+            and self.agreement_checked_revision != self.evidence_revision
+        ):
+            self._revoke_stale_early_stop_countdown(turn_count, message_history)
+
+        if self.agreement_checked_revision >= self.evidence_revision:
             return
         if self.evidence_agreement_attempts >= MAX_EVIDENCE_AGREEMENT_CHECKS:
             return
-        search_rounds = int(self.task_log.run_metrics.search_rounds or 0)
-        if (
-            self.evidence_agreement_attempts > 0
-            and search_rounds <= self.evidence_agreement_last_eval_rounds
-        ):
+        if not self._numeric_early_stop_conditions_met():
             return
-        self.evidence_agreement_attempts += 1
-        self.evidence_agreement_last_eval_rounds = search_rounds
 
+        self.evidence_agreement_attempts += 1
+        self.agreement_checked_revision = self.evidence_revision
         verdict = await self.answer_generator.generate_agreement_check(
             system_prompt=system_prompt,
             message_history=message_history,
@@ -735,8 +789,7 @@ class Orchestrator:
             task_description=task_description,
             high_conf_domains=sorted(self.early_stop_high_conf_domains),
         )
-        if verdict in ("agree", "conflict"):
-            self.evidence_agreement = verdict
+        self.evidence_agreement = verdict
 
         if verdict == "agree":
             message = "证据一致性裁决：独立高置信来源相互印证（agree），允许提前收敛。"
@@ -754,7 +807,8 @@ class Orchestrator:
             metadata={
                 "verdict": verdict,
                 "attempts": self.evidence_agreement_attempts,
-                "search_rounds": search_rounds,
+                "evidence_revision": self.evidence_revision,
+                "search_rounds": int(self.task_log.run_metrics.search_rounds or 0),
                 "high_conf_domains": sorted(self.early_stop_high_conf_domains)[:12],
             },
         )
@@ -2144,6 +2198,8 @@ class Orchestrator:
                                 "tool_name": tool_name,
                                 "result": sub_agent_result,
                             }
+                            if sub_agent_result:
+                                self._bump_evidence_revision()
                             self.current_agent_id = await self.stream.start_agent(
                                 "main", display_name="Summarizing"
                             )

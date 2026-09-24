@@ -75,9 +75,15 @@ Env overrides: `LLM_TIMEOUT_FAIL_FAST`, `LLM_TIMEOUT_DEGRADE_KEEP_TOOL_RESULTS`,
    (`generate_agreement_check`) must return `VERDICT: AGREE` before early-stop
    fires. `conflict` (sources contradict on a load-bearing claim) and `unknown`
    (call failed / unparseable) are fail-closed — research continues and the
-   Round 7 turn cap stays inactive. After a `conflict` verdict the check is
-   re-run when new search rounds arrive (a later round may resolve the
-   contradiction); at most 3 adjudication calls per run. Observable in logs as
+   Round 7 turn cap stays inactive. Each verdict is bound to an
+   `evidence_revision`: every successful search, full-page scrape, or
+   evidence-bearing sub-agent result bumps the revision, invalidating any
+   previous verdict. When a stale `AGREE` is invalidated the orchestrator
+   revokes the early-stop countdown and convergence nudge (appending an
+   override user message if the nudge already entered the conversation), then
+   re-adjudicates against the latest evidence before any
+   skip-follow-ups/force-summary decision — at most once per turn and at most
+   3 adjudication calls per run. Observable in logs as
    `Main Agent | ... | Evidence Agreement` and `evidence_agreement=` in the
    early-stop metadata.
 3. **Round 7/8 exit** turns early-stop into a hard turn cap: after

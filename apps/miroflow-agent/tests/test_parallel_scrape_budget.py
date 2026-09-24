@@ -27,6 +27,8 @@ def _bare_orchestrator(*, max_scrape: int = 8, scrape_count: int = 7) -> Orchest
     obj.task_log = MagicMock()
     obj.task_log.run_metrics = RunMetrics()
     obj.task_log.run_metrics.scrape_count = scrape_count
+    obj.evidence_revision = 0
+    obj.agreement_checked_revision = 0
     obj.main_agent_tool_manager = MagicMock()
     return obj
 
@@ -78,7 +80,7 @@ def test_early_stop_requires_high_conf_not_raw_domains():
     assert orch._should_early_stop_clue_chase() is False
 
     orch.early_stop_high_conf_domains = {"reuters.com", "apnews.com"}
-    # 高可信域名只是数值门；还需证据一致性裁决为 agree 才允许早停
+    # 高可信域名只是数值门；还需当前证据版本的 agree 裁决才允许早停
     orch.evidence_agreement = "agree"
     assert orch._should_early_stop_clue_chase() is True
 
