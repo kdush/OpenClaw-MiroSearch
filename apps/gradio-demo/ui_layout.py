@@ -554,6 +554,8 @@ def build_demo():
             # Gradio 默认会在流式组件顶部画一条脉冲边框线；进行中状态改由正文里的
             # 状态行表达，这里关掉那条线以免看起来像一条多余的分隔线。
             show_progress="hidden",
+            # 停止/取消后仍允许再次触发同一事件（默认 once 会把后续点击吞掉）。
+            trigger_mode="multiple",
         )
         # Enter 键同样触发研究
         submit_event = inp.submit(
@@ -562,6 +564,7 @@ def build_demo():
             outputs=run_outputs,
             api_name=False,
             show_progress="hidden",
+            trigger_mode="multiple",
         )
 
         # ui_state 任意一次更新都同步 task_id 到隐藏 textbox（JS 据此写 URL）

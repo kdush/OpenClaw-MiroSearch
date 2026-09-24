@@ -268,3 +268,20 @@ def test_stop_current_ui_signals_running_pipeline_cancel(monkeypatch):
     assert cancel_event.is_set()
     assert demo_main._CANCEL_FLAGS["task-stop"] is True
     assert "task-stop" not in demo_main._ACTIVE_CANCEL_EVENTS
+
+
+def test_pack_ui_stream_can_skip_control_updates(monkeypatch):
+    """中间流式帧不得改写开始/停止按钮，避免停止后又被覆盖成不可点。"""
+    demo_main = _load_demo_main()
+    monkeypatch.setenv("BACKEND_MODE", "local")
+    packed = demo_main._pack_ui_stream(
+        "## hi",
+        demo_main.gr.update(interactive=False),
+        demo_main.gr.update(interactive=True),
+        {"task_id": "t1"},
+        show_output=True,
+        update_controls=False,
+    )
+    # gr.skip() → empty update sentinel (no interactive key)
+    assert "interactive" not in packed[1]
+    assert "interactive" not in packed[2]

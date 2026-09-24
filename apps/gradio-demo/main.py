@@ -1787,24 +1787,30 @@ async def stream_events_optimized(
             "data": {"workflow_id": workflow_id, "error": f"Stream error: {str(e)}"},
         }
     finally:
+        # 停止按钮已把 cancel_event 置位时不再等 pipeline 线程收尾：该线程可能正卡在
+        # 一次同步 LLM/抓取调用里，等它会把这个事件挂住几十秒并占住队列并发位，
+        # 表现为「停止后再点开始研究没反应」。线程自身有 finally，置位后会在下一个
+        # await 点退出，这里提前返回不会漏掉清理。
+        cancellation_requested = cancel_event.is_set()
         cancel_event.set()
         with _CANCEL_LOCK:
             _ACTIVE_CANCEL_EVENTS.pop(workflow_id, None)
         stream_queue.close()
-        # concurrent.futures.Future.result() 会阻塞当前 Gradio 事件循环；
-        # 包装为 asyncio Future 后等待，既保证线程完成清理，也不冻结其他请求。
-        wrapped_future = asyncio.wrap_future(future)
         cancellation_received = False
-        while True:
-            try:
-                await asyncio.shield(wrapped_future)
-                break
-            except asyncio.CancelledError:
-                cancellation_received = True
-                if wrapped_future.done():
+        if not cancellation_requested:
+            # concurrent.futures.Future.result() 会阻塞当前 Gradio 事件循环；
+            # 包装为 asyncio Future 后等待，既保证线程完成清理，也不冻结其他请求。
+            wrapped_future = asyncio.wrap_future(future)
+            while True:
+                try:
+                    await asyncio.shield(wrapped_future)
                     break
-            except Exception:
-                break
+                except asyncio.CancelledError:
+                    cancellation_received = True
+                    if wrapped_future.done():
+                        break
+                except Exception:
+                    break
         executor.shutdown(wait=False)
         if ENABLE_TIMING_DIAGNOSTICS:
             logger.info(
@@ -4207,22 +4213,33 @@ def _pack_ui_stream(
     ui_state,
     *,
     show_output: Optional[bool] = None,
+    update_controls: bool = True,
 ):
     """Pack Gradio stream outputs including output-section visibility.
 
     Returns:
         (markdown, run_btn, stop_btn, ui_state, task_id_bridge,
          output_section_update, export_bar_update)
+
+    When ``update_controls`` is False, run/stop buttons are left untouched
+    (``gr.skip``). Mid-stream frames must skip controls so a Stop click that
+    re-enables Run is not overwritten by a late "still running" yield.
     """
     if show_output is None:
         show_output = not _is_waiting_output_markdown(markdown)
     # 导出条只在「有正文且无运行中 spinner」时可见：流式过程中隐藏，
     # 终态（完成/失败/重连快照）出现。
     export_visible = show_output and 'class="runtime-spinner"' not in str(markdown)
+    if update_controls:
+        run_update = run_btn_update
+        stop_update = stop_btn_update
+    else:
+        run_update = gr.skip()
+        stop_update = gr.skip()
     return (
         markdown,
-        run_btn_update,
-        stop_btn_update,
+        run_update,
+        stop_update,
         ui_state,
         _task_id_bridge_value(ui_state),
         gr.update(visible=bool(show_output)),
@@ -4286,8 +4303,13 @@ async def _render_stream_via_api(
                 gr.update(interactive=True),
                 ui_state,
                 show_output=True,
+                update_controls=False,
             )
             await asyncio.sleep(0.01)
+    except asyncio.CancelledError:
+        # 不要在取消路径里再 yield：Gradio 取消后若生成器继续产出，
+        # 队列可能卡住，导致「停止后再点开始」无响应。
+        raise
     except api_client.TaskNotFoundError:
         cleared_ui_state = {**ui_state, "task_id": None}
         yield _pack_ui_stream(
@@ -4530,9 +4552,14 @@ async def gradio_run(
                 gr.update(interactive=True),
                 ui_state,
                 show_output=True,
+                update_controls=False,
             )
             # Small delay to allow Gradio to process the update
             await asyncio.sleep(0.01)
+        if await _disconnect_check_for_task(task_id):
+            # 停止帧已经把界面置为「已停止」，这里再补一帧会用旧任务的正文和控制台
+            # 状态覆盖用户随后发起的新任务。
+            return
         # End: enable Run, disable Stop, remove spinner
         yield _pack_ui_stream(
             _render_markdown(
@@ -4547,6 +4574,9 @@ async def gradio_run(
             ui_state,
             show_output=True,
         )
+    except asyncio.CancelledError:
+        # 见 _render_stream_via_api：取消路径禁止再 yield，避免队列卡死。
+        raise
     finally:
         _unregister_active_task(task_id)
 
@@ -4827,12 +4857,15 @@ def _mark_runtime_status_cancelled(
 
 def stop_current_ui(ui_state: Optional[dict] = None, markdown: Optional[str] = None):
     tid = (ui_state or {}).get("task_id")
-    target_ids = [tid] if tid else _get_active_task_ids()
+    # 界面里的 ui_state 可能还指向上一个已经不在活动表中的任务（例如上一帧尚未送达），
+    # 这时要取消当前仍在跑的界面任务，否则停止会静默 no-op。
+    active_ui_ids = _get_active_task_ids("")
+    target_ids = [tid] if tid in active_ui_ids else active_ui_ids
     _cancel_task_ids(target_ids)
     _signal_pipeline_cancel(target_ids)
     # API 模式：同步通知 api-server 设置取消标记，让 worker 协作式中止
-    if api_client.is_api_mode_enabled() and tid:
-        _schedule_remote_task_cancellation([tid])
+    if api_client.is_api_mode_enabled() and target_ids:
+        _schedule_remote_task_cancellation(target_ids)
     return (
         _mark_runtime_status_cancelled(
             markdown, ui_lang=(ui_state or {}).get("ui_lang")
@@ -5195,7 +5228,8 @@ def build_demo():
 if __name__ == "__main__":
     _start_stale_task_reaper()
     demo = build_demo()
-    demo.queue()
+    # Allow a new run to enqueue while a cancelled stream is still winding down.
+    demo.queue(default_concurrency_limit=2)
     host = os.getenv("HOST", "0.0.0.0")
     port = int(os.getenv("PORT", "8080"))
     launch_kwargs = _build_launch_kwargs(host, port)
