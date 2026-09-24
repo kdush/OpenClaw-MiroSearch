@@ -14,6 +14,9 @@
 - [Roadmap](ROADMAP.md): current baseline and planned milestones.
 - [Scraping iteration plan](SCRAPING_ITERATION_PLAN.md): shipped T1-T8 work and pending T9 batch scraping.
 - [Changelog](CHANGELOG.md): released changes by version.
+- [Research intensity](RESEARCH_INTENSITY.md): light / standard / deep behavior.
+- [Deep efficiency](DEEP_EFFICIENCY.md): Round 6–8 speed knobs.
+- [Report layout](REPORT_LAYOUT.md): final report section rules.
 
 ## Operations and governance
 
@@ -34,7 +37,7 @@
 
 ## Integration packages
 
-- [OpenClaw-MiroSearch skill](../skills/openclaw-mirosearch/SKILL.md)
+- [Diting skill](../skills/diting/SKILL.md)
 - [SearXNG skill](../skills/searxng/SKILL.md)
 
 ## Historical design records

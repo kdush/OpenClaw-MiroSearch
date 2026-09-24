@@ -27,7 +27,9 @@ SERPER_API_KEY = os.getenv("SERPER_API_KEY", "")
 
 # Key 池轮转：优先从 SERPER_API_KEYS 读取多 Key，回退到单 Key
 try:
-    _serper_key_pool = KeyPool.from_env("SERPER_API_KEYS", fallback_key=SERPER_API_KEY or None)
+    _serper_key_pool = KeyPool.from_env(
+        "SERPER_API_KEYS", fallback_key=SERPER_API_KEY or None
+    )
 except ValueError:
     _serper_key_pool = None
 
@@ -138,7 +140,9 @@ def google_search(
             payload["autocorrect"] = autocorrect
 
         # Set up headers
-        active_key = _serper_key_pool.current_key() if _serper_key_pool else SERPER_API_KEY
+        active_key = (
+            _serper_key_pool.current_key() if _serper_key_pool else SERPER_API_KEY
+        )
         headers = {"X-API-KEY": active_key, "Content-Type": "application/json"}
 
         # Make the API request

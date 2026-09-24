@@ -12,6 +12,7 @@ import asyncio
 import gc
 import json
 import logging
+import threading
 import time
 import uuid
 from collections import defaultdict
@@ -25,16 +26,26 @@ from omegaconf import DictConfig
 from ..config.settings import expose_sub_agents_as_tools
 from ..io.input_handler import process_input
 from ..io.output_formatter import OutputFormatter
+from ..io.report_presentation import prepare_user_facing_report
 from ..llm.base_client import BaseClient
 from ..logging.task_logger import TaskLog, get_utc_plus_8_time
 from ..utils.parsing_utils import extract_llm_response_text
 from ..utils.prompt_utils import (
+    FORMAT_ERROR_MESSAGE,
     generate_agent_specific_system_prompt,
     generate_agent_summarize_prompt,
     mcp_tags,
     refusal_keywords,
 )
 from .answer_generator import AnswerGenerator
+from .deep_efficiency import (
+    resolve_early_stop_config,
+    resolve_exit_on_early_stop,
+    resolve_max_scrape_per_task,
+    resolve_parallel_tool_calls,
+    scrape_skip_message,
+)
+from .lead_tracker import LeadTrackingManager, resolve_lead_tracking_config
 from .stream_handler import StreamHandler
 from .tool_executor import ToolExecutor
 
@@ -60,6 +71,8 @@ DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS = 3
 DEFAULT_VERIFICATION_MIN_HIGH_CONF_SOURCES = 2
 DEFAULT_VERIFICATION_MAX_GUIDANCE_ATTEMPTS = 3
 DEFAULT_VERIFICATION_MAX_STAGNANT_GUIDANCE_ATTEMPTS = 1
+# 证据一致性裁决（无工具 LLM 调用）的最大次数；新证据使旧裁决失效后可复评
+MAX_EVIDENCE_AGREEMENT_CHECKS = 3
 DEFAULT_HIGH_CONF_DOMAINS = [
     "reuters.com",
     "apnews.com",
@@ -75,6 +88,19 @@ DEFAULT_HIGH_CONF_DOMAINS = [
     "worldbank.org",
 ]
 SEARCH_TOOL_NAMES = {"google_search", "sogou_search"}
+# Scraping tools that fetch and parse web page content
+SCRAPE_TOOL_NAMES = {
+    "jina_reader",
+    "firecrawl",
+    "fetch_page",
+    "scrape_webpage",
+    "search_and_scrape_webpage",
+    "jina_scrape_llm_summary",
+    "browser_navigate",
+    "browser_screenshot",
+    "scrape_url",
+    "scrape_and_extract_info",
+}
 
 
 def _list_tools(sub_agent_tool_managers: Dict[str, ToolManager]):
@@ -248,6 +274,8 @@ class Orchestrator:
         self.verification_search_rounds = 0
         self.verification_guidance_attempts = 0
         self.verification_high_conf_source_domains: set[str] = set()
+        # 工具侧 confidence 门控通过后，不再为补齐高置信来源追加检索指令
+        self.retrieval_confidence_passed = False
         self.verification_guidance_anchor_search_rounds = 0
         self.verification_guidance_anchor_high_conf_sources = 0
         self.verification_stagnant_guidance_attempts = 0
@@ -260,6 +288,45 @@ class Orchestrator:
                 )
             ),
         )
+
+        # Lead tracking for deep research (Phase 4)
+        # Resolve from agent root OR main_agent (CLI harness), and auto-enable
+        # when research_intensity == deep (see resolve_lead_tracking_config).
+        enable_lead_tracking, max_follow_ups = resolve_lead_tracking_config(cfg)
+        self.lead_tracker = LeadTrackingManager(
+            enabled=enable_lead_tracking,
+            max_follow_ups=max_follow_ups,
+        )
+
+        # Round 6–7 deep efficiency knobs
+        self.max_scrape_per_task = resolve_max_scrape_per_task(cfg)
+        self.parallel_tool_calls = resolve_parallel_tool_calls(cfg)
+        (
+            self.deep_early_stop_enabled,
+            self.deep_early_stop_min_sources,
+        ) = resolve_early_stop_config(cfg)
+        (
+            self.deep_exit_on_early_stop,
+            self.deep_post_early_stop_turns,
+        ) = resolve_exit_on_early_stop(cfg)
+        # Unique domains seen in search results (coverage only — not agreement).
+        self.independent_source_domains: set[str] = set()
+        # Trusted/high-conf domains used as a corroboration proxy for early-stop.
+        self.early_stop_high_conf_domains: set[str] = set()
+        # 证据一致性裁决：agree 且已裁决当前证据版本才允许早停；
+        # conflict/unknown/次数耗尽均 fail-closed。新证据递增
+        # evidence_revision 使旧裁决失效（见 _bump_evidence_revision）。
+        self.evidence_agreement = "unknown"
+        self.evidence_agreement_attempts = 0
+        self.evidence_revision = 0
+        self.agreement_checked_revision = 0
+        self.deep_early_stop_triggered = False
+        self.deep_early_stop_turn = 0
+        self._deep_convergence_nudge_sent = False
+        # Parallel scrape budget: reserve slots before execute so concurrent
+        # scrapes cannot oversubscribe max_scrape_per_task.
+        self._scrape_budget_lock = threading.Lock()
+        self._scrape_slots_reserved = 0
 
     async def _emit_stage_heartbeat(
         self,
@@ -399,27 +466,528 @@ class Orchestrator:
                 links.append(link.strip())
         return links
 
+    def _parse_search_tool_payload(self, tool_result: dict) -> dict:
+        """Parse google_search / sogou_search tool payload into a dict."""
+        raw_result = (
+            tool_result.get("result") if isinstance(tool_result, dict) else None
+        )
+        if not raw_result:
+            return {}
+        if isinstance(raw_result, str):
+            try:
+                parsed = json.loads(raw_result)
+            except json.JSONDecodeError:
+                return {}
+        elif isinstance(raw_result, dict):
+            parsed = raw_result
+        else:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+
+    def _record_search_provider_metrics(self, parsed: dict) -> None:
+        """Record which providers were attempted / returned results."""
+        metrics = self.task_log.run_metrics
+        params = parsed.get("searchParameters") or {}
+        if not isinstance(params, dict):
+            params = {}
+
+        route_trace = parsed.get("route_trace") or params.get("route_trace") or []
+        recorded = False
+        if isinstance(route_trace, list):
+            for entry in route_trace:
+                if not isinstance(entry, dict):
+                    continue
+                provider = entry.get("provider")
+                if not provider:
+                    continue
+                metrics.record_search_provider_hit(str(provider))
+                recorded = True
+
+        if recorded:
+            return
+
+        provider = parsed.get("provider") or params.get("provider")
+        if provider and provider != "multi-route":
+            metrics.record_search_provider_hit(str(provider))
+            return
+
+        order = params.get("provider_order") or []
+        if isinstance(order, list):
+            for name in order:
+                if name:
+                    metrics.record_search_provider_hit(str(name))
+
     def _record_search_evidence(self, tool_name: str, tool_result: dict):
+        # Always count the tool invocation for route comparison (Case D).
+        self.task_log.run_metrics.record_search_attempt()
+        parsed = self._parse_search_tool_payload(tool_result)
+        if parsed:
+            self._record_search_provider_metrics(parsed)
+            self._record_retrieval_confidence(parsed)
+
         links = self._extract_search_links(tool_name, tool_result)
         if not links:
             return
         # 无论是否启用验证门控，都递增全局检索轮次
         self.task_log.run_metrics.search_rounds += 1
+        self._bump_evidence_revision()
+        for link in links:
+            domain = self._normalize_domain(link)
+            if domain:
+                self.independent_source_domains.add(domain)
+                if self._is_high_conf_domain(domain):
+                    self.early_stop_high_conf_domains.add(domain)
+                    if self.verification_enabled:
+                        self.verification_high_conf_source_domains.add(domain)
+
         if not self.verification_enabled:
             return
 
         self.verification_search_rounds += 1
-        for link in links:
-            domain = self._normalize_domain(link)
-            if self._is_high_conf_domain(domain):
-                self.verification_high_conf_source_domains.add(domain)
+
+    def _record_retrieval_confidence(self, parsed: dict) -> None:
+        """记录工具侧 confidence 门控结果（通过了就不再凑高置信来源）。"""
+        if self.retrieval_confidence_passed:
+            return
+        confidence = parsed.get("confidence")
+        if not isinstance(confidence, dict):
+            params = parsed.get("searchParameters")
+            confidence = params.get("confidence") if isinstance(params, dict) else None
+        # enabled=false 表示用户不要置信度门控，此时不拿它当检索质量背书
+        if not isinstance(confidence, dict):
+            return
+        if not (confidence.get("enabled") and confidence.get("passed")):
+            return
+
+        self.retrieval_confidence_passed = True
+        self.task_log.run_metrics.retrieval_confidence_passed = True
+        self.task_log.log_step(
+            "info",
+            "Main Agent | Search Confidence",
+            "检索质量门控通过（工具侧 confidence passed=yes），"
+            "不再为补齐来源追加检索指令。",
+            metadata={
+                "confidence_score": confidence.get("score"),
+                "confidence_metrics": confidence.get("metrics"),
+            },
+        )
+
+    def _reserve_scrape_slot(self) -> bool:
+        """Atomically reserve one scrape slot before execution.
+
+        Counts in-flight reservations so parallel scrapes cannot all pass a
+        pre-check against the same completed ``scrape_count``.
+        """
+        if self.max_scrape_per_task <= 0:
+            return True
+        with self._scrape_budget_lock:
+            used = self.task_log.run_metrics.scrape_count + self._scrape_slots_reserved
+            if used >= self.max_scrape_per_task:
+                return False
+            self._scrape_slots_reserved += 1
+            return True
+
+    def _release_scrape_slot(self) -> None:
+        """Drop a reservation that did not become a counted scrape."""
+        if self.max_scrape_per_task <= 0:
+            return
+        with self._scrape_budget_lock:
+            if self._scrape_slots_reserved > 0:
+                self._scrape_slots_reserved -= 1
+
+    def _commit_scrape_slot(self) -> None:
+        """Convert a reservation into a counted successful scrape."""
+        if self.max_scrape_per_task <= 0:
+            self.task_log.run_metrics.record_scrape(count=1)
+            return
+        with self._scrape_budget_lock:
+            if self._scrape_slots_reserved > 0:
+                self._scrape_slots_reserved -= 1
+            self.task_log.run_metrics.record_scrape(count=1)
+
+    def _record_scrape_metric(
+        self, tool_name: str, tool_result: dict, turn_count: int
+    ) -> None:
+        """Count only real full-page scrapes (budget-skip results excluded)."""
+        reserved = False
+        if isinstance(tool_result, dict):
+            reserved = bool(tool_result.pop("_scrape_slot_reserved", False))
+
+        result_text = str(tool_result.get("result") or "")
+        if (
+            tool_name not in SCRAPE_TOOL_NAMES
+            or "error" in tool_result
+            or "[scrape_budget]" in result_text
+        ):
+            if reserved:
+                self._release_scrape_slot()
+            return
+
+        if reserved:
+            self._commit_scrape_slot()
+        else:
+            self.task_log.run_metrics.record_scrape(count=1)
+        if result_text.strip():
+            self._bump_evidence_revision()
+        self.task_log.log_step(
+            "debug",
+            f"Main Agent | Turn: {turn_count} | Metrics",
+            f"Recorded scrape for tool: {tool_name}",
+        )
+
+    async def _execute_regular_tool_call(
+        self,
+        server_name: str,
+        tool_name: str,
+        arguments: dict,
+        turn_count: int,
+    ) -> dict:
+        """Execute one non-subagent tool, honoring scrape budget."""
+        reserved = False
+        if tool_name in SCRAPE_TOOL_NAMES:
+            if not self._reserve_scrape_slot():
+                skip_msg = scrape_skip_message(
+                    self.max_scrape_per_task, self.task_log.run_metrics.scrape_count
+                )
+                self.task_log.log_step(
+                    "info",
+                    f"Main Agent | Turn: {turn_count} | Scrape Budget",
+                    skip_msg,
+                )
+                return {
+                    "server_name": server_name,
+                    "tool_name": tool_name,
+                    "result": skip_msg,
+                }
+            reserved = True
+        try:
+            tool_result = await self.main_agent_tool_manager.execute_tool_call(
+                server_name=server_name,
+                tool_name=tool_name,
+                arguments=arguments,
+            )
+        except Exception:
+            if reserved:
+                self._release_scrape_slot()
+            raise
+        if reserved and isinstance(tool_result, dict):
+            tool_result = dict(tool_result)
+            tool_result["_scrape_slot_reserved"] = True
+        return tool_result
+
+    def _numeric_early_stop_conditions_met(self) -> bool:
+        """数值门（检索轮次 + 高置信域名 / confidence），与证据一致性无关。"""
+        if not self.deep_early_stop_enabled:
+            return False
+        search_rounds = int(self.task_log.run_metrics.search_rounds or 0)
+        min_rounds = max(2, int(self.verification_min_search_rounds or 2))
+        if search_rounds < min_rounds:
+            return False
+        high_conf = len(self.early_stop_high_conf_domains)
+        if high_conf >= self.deep_early_stop_min_sources:
+            return True
+        if (
+            self.retrieval_confidence_passed
+            and high_conf >= 1
+            and len(self.independent_source_domains) >= self.deep_early_stop_min_sources
+        ):
+            return True
+        return False
+
+    def _should_early_stop_clue_chase(self) -> bool:
+        """Round 6: stop extra lead follow-ups once corroborating sources exist.
+
+        Raw unique-domain count is NOT agreement — opposing sources still
+        diversify domains, and two trusted domains can contradict each other.
+        Numeric gates (min rounds + trusted domains / confidence) must hold,
+        the evidence-agreement adjudication must have returned "agree", and
+        that verdict must be bound to the current evidence revision — a stale
+        AGREE from before newer evidence fails closed.
+        """
+        if not self._numeric_early_stop_conditions_met():
+            return False
+        return (
+            self.evidence_agreement == "agree"
+            and self.agreement_checked_revision == self.evidence_revision
+        )
+
+    def _bump_evidence_revision(self) -> None:
+        """主会话新增有效证据后递增版本号，使既有裁决失效。"""
+        self.evidence_revision += 1
+
+    def _revoke_stale_early_stop_countdown(
+        self, turn_count: int, message_history: List[Dict[str, Any]]
+    ) -> None:
+        """旧 AGREE 因新证据失效：撤销其支撑的早停倒计时与收敛提示。
+
+        运行指标（run_metrics.record_early_stop）保留“曾触发”记录不回滚。
+        若“立即写报告”提示已进入会话，追加覆盖指令以免模型照旧收敛。
+        """
+        self.evidence_agreement = "unknown"
+        if self.deep_early_stop_triggered:
+            self.deep_early_stop_triggered = False
+            self.deep_early_stop_turn = 0
+            self.task_log.log_step(
+                "warning",
+                f"Main Agent | Turn: {turn_count} | Evidence Agreement",
+                (
+                    "新证据使先前的 agree 裁决失效，撤销提前结束倒计时；"
+                    "需基于最新证据重新裁决后才可早停。"
+                ),
+            )
+        if self._deep_convergence_nudge_sent:
+            self._deep_convergence_nudge_sent = False
+            message_history.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "注意：随后出现了与此前结论相冲突的新证据，"
+                        "之前“立即写报告”的指示作废；"
+                        "请优先核查新证据并化解冲突，暂不要撰写最终报告。"
+                    ),
+                }
+            )
+            self.task_log.log_step(
+                "info",
+                f"Main Agent | Turn: {turn_count} | Deep Convergence",
+                "已撤销收敛提示：新证据与继续核查指令覆盖此前的“立即写报告”。",
+            )
+
+    async def _maybe_evaluate_evidence_agreement(
+        self,
+        system_prompt: str,
+        message_history: List[Dict[str, Any]],
+        turn_count: int,
+        task_description: str,
+    ) -> None:
+        """数值门满足时对最新证据做一致性裁决（无工具、不写回主历史）。
+
+        裁决结果绑定 evidence_revision：搜索/抓取/子代理带来新证据会递增
+        版本并使旧裁决失效（撤销倒计时与收敛提示后重新裁决）；已裁决当前
+        版本则跳过，每轮最多一次。失败/不可解析按 unknown 处理，连同
+        conflict、次数耗尽一起 fail-closed，不沿用旧 AGREE。
+        """
+        if (
+            self.evidence_agreement == "agree"
+            and self.agreement_checked_revision != self.evidence_revision
+        ):
+            self._revoke_stale_early_stop_countdown(turn_count, message_history)
+
+        if self.agreement_checked_revision >= self.evidence_revision:
+            return
+        if self.evidence_agreement_attempts >= MAX_EVIDENCE_AGREEMENT_CHECKS:
+            return
+        if not self._numeric_early_stop_conditions_met():
+            return
+
+        self.evidence_agreement_attempts += 1
+        self.agreement_checked_revision = self.evidence_revision
+        verdict = await self.answer_generator.generate_agreement_check(
+            system_prompt=system_prompt,
+            message_history=message_history,
+            turn_count=turn_count,
+            task_description=task_description,
+            high_conf_domains=sorted(self.early_stop_high_conf_domains),
+        )
+        self.evidence_agreement = verdict
+
+        if verdict == "agree":
+            message = "证据一致性裁决：独立高置信来源相互印证（agree），允许提前收敛。"
+        elif verdict == "conflict":
+            message = (
+                "证据一致性裁决：高置信来源存在未处理的关键矛盾（conflict），"
+                "不提前结束研究，继续检索以化解冲突。"
+            )
+        else:
+            message = "证据一致性裁决失败（无有效输出），按未一致处理，不提前结束研究。"
+        self.task_log.log_step(
+            "warning" if verdict != "agree" else "info",
+            f"Main Agent | Turn: {turn_count} | Evidence Agreement",
+            message,
+            metadata={
+                "verdict": verdict,
+                "attempts": self.evidence_agreement_attempts,
+                "evidence_revision": self.evidence_revision,
+                "search_rounds": int(self.task_log.run_metrics.search_rounds or 0),
+                "high_conf_domains": sorted(self.early_stop_high_conf_domains)[:12],
+            },
+        )
+
+    def _note_deep_early_stop(self, turn_count: int, reason: str = "") -> None:
+        """Record first early-stop trigger for metrics + logs."""
+        if self.deep_early_stop_triggered:
+            return
+        self.deep_early_stop_triggered = True
+        self.deep_early_stop_turn = max(0, int(turn_count))
+        self.task_log.run_metrics.record_early_stop(self.deep_early_stop_turn)
+        self.task_log.log_step(
+            "info",
+            f"Main Agent | Turn: {turn_count} | Deep Early-Stop",
+            (
+                "corroborating sources ready "
+                f"(high_conf={len(self.early_stop_high_conf_domains)}/"
+                f"{self.deep_early_stop_min_sources}, "
+                f"domains={len(self.independent_source_domains)}, "
+                f"confidence_passed={self.retrieval_confidence_passed}, "
+                f"evidence_agreement={self.evidence_agreement}) and "
+                f"search_rounds={self.task_log.run_metrics.search_rounds}; "
+                f"stopping extra lead follow-ups"
+                + (
+                    f"; will exit after ≤{self.deep_post_early_stop_turns} more turns"
+                    if self.deep_exit_on_early_stop
+                    else ""
+                )
+                + (f" ({reason})" if reason else "")
+                + "."
+            ),
+            metadata={
+                "independent_domains": sorted(self.independent_source_domains)[:12],
+                "high_conf_domains": sorted(self.early_stop_high_conf_domains)[:12],
+                "retrieval_confidence_passed": self.retrieval_confidence_passed,
+                "evidence_agreement": self.evidence_agreement,
+                "search_rounds": self.task_log.run_metrics.search_rounds,
+                "reason": reason,
+                "exit_on_early_stop": self.deep_exit_on_early_stop,
+                "post_early_stop_turns": self.deep_post_early_stop_turns,
+            },
+        )
+
+    def _should_force_summary_after_early_stop(self, turn_count: int) -> bool:
+        """Round 7: cap remaining turns once early-stop evidence is enough."""
+        if not self.deep_exit_on_early_stop:
+            return False
+        if not self._should_early_stop_clue_chase():
+            return False
+        self._note_deep_early_stop(turn_count, reason="force-summary-check")
+        return turn_count >= (
+            self.deep_early_stop_turn + self.deep_post_early_stop_turns
+        )
+
+    async def _maybe_nudge_and_force_summary(
+        self,
+        message_history: List[Dict[str, Any]],
+        turn_count: int,
+    ) -> bool:
+        """If early-stop turn budget is exhausted, nudge once then force exit.
+
+        Returns True when the main loop should break into final summary.
+        """
+        if not self._should_force_summary_after_early_stop(turn_count):
+            return False
+        if not self._deep_convergence_nudge_sent:
+            self._deep_convergence_nudge_sent = True
+            message_history.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "已有足够独立来源与检索轮次，请停止继续检索/抓取，"
+                        "立即基于现有证据撰写完整研究报告。"
+                        "必须包含 Conflicts、Timeline、Evidence、Confirmed vs Unconfirmed；"
+                        "不确定处标明不可确认，勿编造确定性。"
+                    ),
+                }
+            )
+            self.task_log.log_step(
+                "info",
+                f"Main Agent | Turn: {turn_count} | Deep Convergence",
+                (
+                    f"Early-stop turn budget exhausted "
+                    f"(triggered@turn={self.deep_early_stop_turn}, "
+                    f"post_turns={self.deep_post_early_stop_turns}); "
+                    "nudging model to write the report on the next turn."
+                ),
+            )
+            # Allow one more LLM turn to consume the nudge.
+            return False
+        self.task_log.log_step(
+            "info",
+            f"Main Agent | Turn: {turn_count} | Deep Convergence Exit",
+            "Exiting main loop after early-stop turn cap to avoid LLM timeout burn.",
+        )
+        return True
+
+    async def _parallel_execute_regular_main_tools(
+        self,
+        tool_calls: List[Dict[str, Any]],
+        turn_count: int,
+    ) -> List[Dict[str, Any]]:
+        """Run multiple regular (non-subagent) tool calls concurrently.
+
+        Returns a list of dicts with keys: call, tool_result, duration_ms,
+        tool_call_id, error (optional).
+        """
+        await self._emit_stage_heartbeat(
+            "并行工具",
+            turn=turn_count,
+            detail=f"并行执行 {len(tool_calls)} 个工具调用",
+            agent_name="main",
+        )
+        self.task_log.log_step(
+            "info",
+            f"Main Agent | Turn: {turn_count} | Parallel Tools",
+            f"Executing {len(tool_calls)} tool calls in parallel",
+        )
+
+        prepared: List[Dict[str, Any]] = []
+        for call in tool_calls:
+            arguments = self.tool_executor.fix_tool_call_arguments(
+                call["tool_name"], call["arguments"]
+            )
+            tool_call_id = await self.stream.tool_call(call["tool_name"], arguments)
+            prepared.append(
+                {
+                    "call": call,
+                    "arguments": arguments,
+                    "tool_call_id": tool_call_id,
+                }
+            )
+
+        async def _one(item: Dict[str, Any]) -> Dict[str, Any]:
+            call = item["call"]
+            start = time.time()
+            try:
+                tool_result = await self._execute_regular_tool_call(
+                    call["server_name"],
+                    call["tool_name"],
+                    item["arguments"],
+                    turn_count,
+                )
+                duration_ms = int((time.time() - start) * 1000)
+                return {
+                    "call": call,
+                    "arguments": item["arguments"],
+                    "tool_call_id": item["tool_call_id"],
+                    "tool_result": tool_result,
+                    "duration_ms": duration_ms,
+                    "error": None,
+                }
+            except Exception as exc:  # noqa: BLE001 — surface per-tool failure
+                duration_ms = int((time.time() - start) * 1000)
+                return {
+                    "call": call,
+                    "arguments": item["arguments"],
+                    "tool_call_id": item["tool_call_id"],
+                    "tool_result": {
+                        "server_name": call["server_name"],
+                        "tool_name": call["tool_name"],
+                        "error": str(exc),
+                    },
+                    "duration_ms": duration_ms,
+                    "error": str(exc),
+                }
+
+        return list(await asyncio.gather(*[_one(item) for item in prepared]))
 
     def _verification_requirements_met(self) -> bool:
         if not self.verification_enabled:
             return True
+        if self.verification_search_rounds < self.verification_min_search_rounds:
+            return False
+        # 工具侧 confidence 已达标：检索质量由 search 门控背书，不再追加检索
+        if self.retrieval_confidence_passed:
+            return True
         return (
-            self.verification_search_rounds >= self.verification_min_search_rounds
-            and len(self.verification_high_conf_source_domains)
+            len(self.verification_high_conf_source_domains)
             >= self.verification_min_high_conf_sources
         )
 
@@ -440,6 +1008,55 @@ class Orchestrator:
         self.verification_guidance_anchor_high_conf_sources = len(
             self.verification_high_conf_source_domains
         )
+
+    async def _inject_lead_followup(
+        self,
+        message_history: List[Dict[str, Any]],
+        turn_count: int,
+        reason: str = "",
+    ) -> bool:
+        """Inject a lead follow-up user message if tracking is active.
+
+        Returns True when a follow-up was injected (caller should ``continue``).
+        """
+        if not self.lead_tracker.enabled or not self.lead_tracker.trail:
+            return False
+        if not self.lead_tracker.trail.should_continue_following():
+            return False
+
+        # Round 6 early-stop: enough independent sources → skip extra clue chases
+        if self._should_early_stop_clue_chase():
+            self._note_deep_early_stop(turn_count, reason=reason or "lead-followup")
+            return False
+
+        top_leads = self.lead_tracker.trail.get_top_unfollowed_leads(k=1)
+        if not top_leads:
+            return False
+
+        lead = top_leads[0]
+        lead_followup_prompt = (
+            f"继续深入研究以下线索：\n\n{lead.question}\n\n"
+            f"请执行检索工具查找相关信息，并在发现后记录结果。"
+            f"优先使用搜索摘要；仅对冲突关键 URL 做全文抓取。"
+            f"若同一观点已有≥2个独立来源支撑且冲突点已可成文，可停止追线索并开始写报告。"
+        )
+        message_history.append({"role": "user", "content": lead_followup_prompt})
+        self.lead_tracker.trail.mark_followed_up(
+            lead, turn=turn_count, findings="正在追踪中..."
+        )
+        self.task_log.run_metrics.record_follow_up_search()
+        self.task_log.log_step(
+            "info",
+            f"Main Agent | Turn: {turn_count} | Lead Follow-up",
+            f"追踪线索（{reason}）：{lead.question[:100]}",
+        )
+        await self._emit_stage_heartbeat(
+            "线索追踪",
+            turn=turn_count,
+            detail="追踪研究线索",
+            agent_name="main",
+        )
+        return True
 
     def _should_issue_verification_guidance(
         self, turn_count: int, max_turns: int
@@ -519,11 +1136,17 @@ class Orchestrator:
             if self.verification_high_conf_source_domains
             else "无"
         )
+        confidence_note = (
+            "- 检索质量门控：已通过（工具侧 confidence passed=yes，不再追加检索）\n"
+            if self.retrieval_confidence_passed
+            else ""
+        )
         return (
             "交叉校验状态汇总：\n"
             f"- 检索轮次：{self.verification_search_rounds}/{self.verification_min_search_rounds}\n"
             f"- 高置信来源数：{len(self.verification_high_conf_source_domains)}/{self.verification_min_high_conf_sources}\n"
             f"- 已命中高置信域名：{domains}\n"
+            f"{confidence_note}"
             "请在最终答案中明确写出时间锚点、关键指标口径、对象边界与分组规则，并处理数字冲突。\n"
             "最终答案必须包含“关键数字速览”：至少 3 条“数字+时间+来源”；若不足，明确缺失项与已尝试检索口径。"
         )
@@ -1221,6 +1844,15 @@ class Orchestrator:
             agent_name="main",
         )
 
+        # Initialize lead tracking for this task
+        self.task_log.log_step(
+            "info",
+            "Orchestrator | Lead Tracking Config",
+            f"enabled={self.lead_tracker.enabled}, "
+            f"max_follow_ups={self.lead_tracker.max_follow_ups}",
+        )
+        self.lead_tracker.initialize(task_description)
+
         while turn_count < max_turns and total_attempts < max_attempts:
             turn_count += 1
             total_attempts += 1
@@ -1274,6 +1906,18 @@ class Orchestrator:
                             "show_text", {"text": text_response}
                         )
 
+                    # Extract leads from assistant response (Phase 4)
+                    if self.lead_tracker.enabled:
+                        lead_questions = self.lead_tracker.process_turn_response(
+                            assistant_response_text, turn=turn_count
+                        )
+                        if lead_questions:
+                            self.task_log.log_step(
+                                "info",
+                                f"Main Agent | Turn: {turn_count} | Lead Tracking",
+                                f"Extracted {len(lead_questions)} lead(s) for follow-up",
+                            )
+
                 # Extract boxed content
                 if assistant_response_text:
                     boxed_content = self.output_formatter._extract_boxed_content(
@@ -1283,6 +1927,11 @@ class Orchestrator:
                         self.intermediate_boxed_answers.append(boxed_content)
 
                 if should_break and tool_calls:
+                    # Before ending, allow lead follow-up injection when enabled
+                    if await self._inject_lead_followup(
+                        message_history, turn_count, reason="pre-break-with-tools"
+                    ):
+                        continue
                     self.task_log.log_step(
                         "info",
                         f"Main Agent | Turn: {turn_count} | LLM Call",
@@ -1300,6 +1949,15 @@ class Orchestrator:
                         "max_consecutive_llm_failures": self.max_consecutive_llm_failures,
                     },
                 )
+                # Round 7: if early-stop nudge already fired, do not burn more
+                # identical timeout turns — exit to final summary immediately.
+                if self._deep_convergence_nudge_sent:
+                    self.task_log.log_step(
+                        "info",
+                        f"Main Agent | Turn: {turn_count} | Deep Convergence Exit",
+                        "LLM failed after convergence nudge; exiting to summary.",
+                    )
+                    break
                 if consecutive_llm_failures >= self.max_consecutive_llm_failures:
                     # 尝试激活 failback 模型；成功则重置计数器继续，否则终止
                     if self.llm_client.activate_fallback():
@@ -1349,6 +2007,24 @@ class Orchestrator:
                         )
                         continue
 
+                # Check for lead-based follow-ups (Phase 4)
+                if await self._inject_lead_followup(
+                    message_history, turn_count, reason="no-tool-calls"
+                ):
+                    continue
+
+                force_exit = await self._maybe_nudge_and_force_summary(
+                    message_history, turn_count
+                )
+                if force_exit:
+                    break
+                if (
+                    self._deep_convergence_nudge_sent
+                    and self._should_force_summary_after_early_stop(turn_count)
+                ):
+                    # Nudge just appended; give the model one more turn.
+                    continue
+
                 if should_break:
                     self.task_log.log_step(
                         "info",
@@ -1394,195 +2070,272 @@ class Orchestrator:
             should_rollback_turn = False
             main_agent_last_call_tokens = self.llm_client.last_call_tokens
 
-            for call in tool_calls:
-                server_name = call["server_name"]
-                tool_name = call["tool_name"]
-                arguments = call["arguments"]
-                call_id = call["id"]
-                await self._emit_stage_heartbeat(
-                    "检索" if tool_name in SEARCH_TOOL_NAMES else "工具调用",
-                    turn=turn_count,
-                    detail=f"执行工具 {tool_name}",
-                    agent_name="main",
-                    tool_name=tool_name,
+            # Round 6: parallel multi-search / multi-scrape in one turn when safe
+            can_parallel = (
+                self.parallel_tool_calls
+                and len(tool_calls) > 1
+                and all(
+                    not str(c.get("server_name", "")).startswith("agent-")
+                    for c in tool_calls
                 )
-
-                # Fix common parameter name mistakes
-                arguments = self.tool_executor.fix_tool_call_arguments(
-                    tool_name, arguments
+            )
+            if can_parallel:
+                parallel_results = await self._parallel_execute_regular_main_tools(
+                    tool_calls, turn_count
                 )
+                for item in parallel_results:
+                    call = item["call"]
+                    tool_name = call["tool_name"]
+                    arguments = item["arguments"]
+                    tool_result = item["tool_result"]
+                    call_id = call["id"]
+                    cache_name = "main_" + tool_name
 
-                call_start_time = time.time()
-                try:
-                    if server_name.startswith("agent-") and self.cfg.agent.sub_agents:
-                        # Sub-agent execution
-                        cache_name = "main_" + tool_name
-                        (
-                            is_duplicate,
-                            should_rollback,
-                            turn_count,
-                            consecutive_rollbacks,
-                            message_history,
-                        ) = await self._check_duplicate_query(
-                            tool_name,
-                            arguments,
-                            cache_name,
-                            consecutive_rollbacks,
-                            turn_count,
-                            total_attempts,
-                            max_attempts,
-                            message_history,
-                            "Main Agent",
-                        )
-                        if should_rollback:
-                            should_rollback_turn = True
-                            break
-
-                        # Stream events
-                        await self.stream.end_llm("main")
-                        await self.stream.end_agent("main", self.current_agent_id)
-
-                        # Execute sub-agent
-                        sub_agent_result = await self.run_sub_agent(
-                            server_name,
-                            arguments["subtask"],
-                        )
-
-                        # Update query count
+                    if "error" not in tool_result:
                         await self._record_query(cache_name, tool_name, arguments)
 
-                        tool_result = {
-                            "server_name": server_name,
-                            "tool_name": tool_name,
-                            "result": sub_agent_result,
-                        }
-                        self.current_agent_id = await self.stream.start_agent(
-                            "main", display_name="Summarizing"
-                        )
-                        await self.stream.start_llm("main", display_name="Summarizing")
-                    else:
-                        # Regular tool execution
-                        cache_name = "main_" + tool_name
-                        (
-                            is_duplicate,
-                            should_rollback,
-                            turn_count,
-                            consecutive_rollbacks,
-                            message_history,
-                        ) = await self._check_duplicate_query(
-                            tool_name,
-                            arguments,
-                            cache_name,
-                            consecutive_rollbacks,
-                            turn_count,
-                            total_attempts,
-                            max_attempts,
-                            message_history,
-                            "Main Agent",
-                        )
-                        if should_rollback:
-                            should_rollback_turn = True
-                            break
+                    tool_result = self.tool_executor.post_process_tool_call_result(
+                        tool_name, tool_result
+                    )
+                    self._record_search_evidence(tool_name, tool_result)
+                    self._record_scrape_metric(tool_name, tool_result, turn_count)
 
-                        # Send stream event
-                        tool_call_id = await self.stream.tool_call(tool_name, arguments)
-
-                        # Execute tool call
-                        tool_result = (
-                            await self.main_agent_tool_manager.execute_tool_call(
-                                server_name=server_name,
-                                tool_name=tool_name,
-                                arguments=arguments,
-                            )
-                        )
-
-                        # Update query count if successful
-                        if "error" not in tool_result:
-                            await self._record_query(cache_name, tool_name, arguments)
-
-                        # Post-process result
-                        tool_result = self.tool_executor.post_process_tool_call_result(
-                            tool_name, tool_result
-                        )
-                        self._record_search_evidence(tool_name, tool_result)
-                        result = (
-                            tool_result.get("result")
-                            if tool_result.get("result")
-                            else tool_result.get("error")
-                        )
-
-                        # Check for errors that should trigger rollback
-                        if self.tool_executor.should_rollback_result(
-                            tool_name, result, tool_result
-                        ):
-                            if (
-                                consecutive_rollbacks
-                                < self.MAX_CONSECUTIVE_ROLLBACKS - 1
-                            ):
-                                message_history.pop()
-                                turn_count -= 1
-                                consecutive_rollbacks += 1
-                                should_rollback_turn = True
-                                self.task_log.log_step(
-                                    "warning",
-                                    f"Main Agent | Turn: {turn_count} | Rollback",
-                                    f"Tool result error - tool: {tool_name}, result: '{str(result)[:200]}'",
-                                )
-                                break
-
-                        await self.stream.tool_call(
-                            tool_name, {"result": result}, tool_call_id=tool_call_id
-                        )
-
-                    call_end_time = time.time()
-                    call_duration_ms = int((call_end_time - call_start_time) * 1000)
-
+                    result = (
+                        tool_result.get("result")
+                        if tool_result.get("result")
+                        else tool_result.get("error")
+                    )
+                    await self.stream.tool_call(
+                        tool_name,
+                        {"result": result},
+                        tool_call_id=item["tool_call_id"],
+                    )
                     tool_calls_data.append(
                         {
-                            "server_name": server_name,
+                            "server_name": call["server_name"],
                             "tool_name": tool_name,
                             "arguments": arguments,
                             "result": tool_result,
-                            "duration_ms": call_duration_ms,
+                            "duration_ms": item["duration_ms"],
                             "call_time": get_utc_plus_8_time(),
+                            "parallel": True,
                         }
                     )
                     self.task_log.log_step(
                         "info",
                         f"Main Agent | Turn: {turn_count} | Tool Call",
-                        f"Tool {tool_name} completed in {call_duration_ms}ms",
+                        f"Tool {tool_name} completed in {item['duration_ms']}ms (parallel)",
+                    )
+                    tool_result_for_llm = (
+                        self.output_formatter.format_tool_result_for_user(tool_result)
+                    )
+                    all_tool_results_content_with_id.append(
+                        (call_id, tool_result_for_llm)
+                    )
+            else:
+                for call in tool_calls:
+                    server_name = call["server_name"]
+                    tool_name = call["tool_name"]
+                    arguments = call["arguments"]
+                    call_id = call["id"]
+                    await self._emit_stage_heartbeat(
+                        "检索" if tool_name in SEARCH_TOOL_NAMES else "工具调用",
+                        turn=turn_count,
+                        detail=f"执行工具 {tool_name}",
+                        agent_name="main",
+                        tool_name=tool_name,
                     )
 
-                except Exception as e:
-                    call_end_time = time.time()
-                    call_duration_ms = int((call_end_time - call_start_time) * 1000)
+                    # Fix common parameter name mistakes
+                    arguments = self.tool_executor.fix_tool_call_arguments(
+                        tool_name, arguments
+                    )
 
-                    tool_calls_data.append(
-                        {
+                    call_start_time = time.time()
+                    try:
+                        if (
+                            server_name.startswith("agent-")
+                            and self.cfg.agent.sub_agents
+                        ):
+                            # Sub-agent execution
+                            cache_name = "main_" + tool_name
+                            (
+                                is_duplicate,
+                                should_rollback,
+                                turn_count,
+                                consecutive_rollbacks,
+                                message_history,
+                            ) = await self._check_duplicate_query(
+                                tool_name,
+                                arguments,
+                                cache_name,
+                                consecutive_rollbacks,
+                                turn_count,
+                                total_attempts,
+                                max_attempts,
+                                message_history,
+                                "Main Agent",
+                            )
+                            if should_rollback:
+                                should_rollback_turn = True
+                                break
+
+                            # Stream events
+                            await self.stream.end_llm("main")
+                            await self.stream.end_agent("main", self.current_agent_id)
+
+                            # Execute sub-agent
+                            sub_agent_result = await self.run_sub_agent(
+                                server_name,
+                                arguments["subtask"],
+                            )
+
+                            # Update query count
+                            await self._record_query(cache_name, tool_name, arguments)
+
+                            tool_result = {
+                                "server_name": server_name,
+                                "tool_name": tool_name,
+                                "result": sub_agent_result,
+                            }
+                            if sub_agent_result:
+                                self._bump_evidence_revision()
+                            self.current_agent_id = await self.stream.start_agent(
+                                "main", display_name="Summarizing"
+                            )
+                            await self.stream.start_llm(
+                                "main", display_name="Summarizing"
+                            )
+                        else:
+                            # Regular tool execution
+                            cache_name = "main_" + tool_name
+                            (
+                                is_duplicate,
+                                should_rollback,
+                                turn_count,
+                                consecutive_rollbacks,
+                                message_history,
+                            ) = await self._check_duplicate_query(
+                                tool_name,
+                                arguments,
+                                cache_name,
+                                consecutive_rollbacks,
+                                turn_count,
+                                total_attempts,
+                                max_attempts,
+                                message_history,
+                                "Main Agent",
+                            )
+                            if should_rollback:
+                                should_rollback_turn = True
+                                break
+
+                            # Send stream event
+                            tool_call_id = await self.stream.tool_call(
+                                tool_name, arguments
+                            )
+
+                            tool_result = await self._execute_regular_tool_call(
+                                server_name, tool_name, arguments, turn_count
+                            )
+
+                            # Update query count if successful
+                            if "error" not in tool_result:
+                                await self._record_query(
+                                    cache_name, tool_name, arguments
+                                )
+
+                            # Post-process result
+                            tool_result = (
+                                self.tool_executor.post_process_tool_call_result(
+                                    tool_name, tool_result
+                                )
+                            )
+                            self._record_search_evidence(tool_name, tool_result)
+                            self._record_scrape_metric(
+                                tool_name, tool_result, turn_count
+                            )
+
+                            result = (
+                                tool_result.get("result")
+                                if tool_result.get("result")
+                                else tool_result.get("error")
+                            )
+
+                            # Check for errors that should trigger rollback
+                            if self.tool_executor.should_rollback_result(
+                                tool_name, result, tool_result
+                            ):
+                                if (
+                                    consecutive_rollbacks
+                                    < self.MAX_CONSECUTIVE_ROLLBACKS - 1
+                                ):
+                                    message_history.pop()
+                                    turn_count -= 1
+                                    consecutive_rollbacks += 1
+                                    should_rollback_turn = True
+                                    self.task_log.log_step(
+                                        "warning",
+                                        f"Main Agent | Turn: {turn_count} | Rollback",
+                                        f"Tool result error - tool: {tool_name}, result: '{str(result)[:200]}'",
+                                    )
+                                    break
+
+                            await self.stream.tool_call(
+                                tool_name, {"result": result}, tool_call_id=tool_call_id
+                            )
+
+                        call_end_time = time.time()
+                        call_duration_ms = int((call_end_time - call_start_time) * 1000)
+
+                        tool_calls_data.append(
+                            {
+                                "server_name": server_name,
+                                "tool_name": tool_name,
+                                "arguments": arguments,
+                                "result": tool_result,
+                                "duration_ms": call_duration_ms,
+                                "call_time": get_utc_plus_8_time(),
+                            }
+                        )
+                        self.task_log.log_step(
+                            "info",
+                            f"Main Agent | Turn: {turn_count} | Tool Call",
+                            f"Tool {tool_name} completed in {call_duration_ms}ms",
+                        )
+
+                    except Exception as e:
+                        call_end_time = time.time()
+                        call_duration_ms = int((call_end_time - call_start_time) * 1000)
+
+                        tool_calls_data.append(
+                            {
+                                "server_name": server_name,
+                                "tool_name": tool_name,
+                                "arguments": arguments,
+                                "error": str(e),
+                                "duration_ms": call_duration_ms,
+                                "call_time": get_utc_plus_8_time(),
+                            }
+                        )
+                        tool_result = {
                             "server_name": server_name,
                             "tool_name": tool_name,
-                            "arguments": arguments,
                             "error": str(e),
-                            "duration_ms": call_duration_ms,
-                            "call_time": get_utc_plus_8_time(),
                         }
-                    )
-                    tool_result = {
-                        "server_name": server_name,
-                        "tool_name": tool_name,
-                        "error": str(e),
-                    }
-                    self.task_log.log_step(
-                        "error",
-                        f"Main Agent | Turn: {turn_count} | Tool Call",
-                        f"Tool {tool_name} failed to execute: {str(e)}",
-                    )
+                        self.task_log.log_step(
+                            "error",
+                            f"Main Agent | Turn: {turn_count} | Tool Call",
+                            f"Tool {tool_name} failed to execute: {str(e)}",
+                        )
 
-                # Format results for LLM
-                tool_result_for_llm = self.output_formatter.format_tool_result_for_user(
-                    tool_result
-                )
-                all_tool_results_content_with_id.append((call_id, tool_result_for_llm))
+                    # Format results for LLM
+                    tool_result_for_llm = (
+                        self.output_formatter.format_tool_result_for_user(tool_result)
+                    )
+                    all_tool_results_content_with_id.append(
+                        (call_id, tool_result_for_llm)
+                    )
 
             if should_rollback_turn:
                 continue
@@ -1609,6 +2362,24 @@ class Orchestrator:
                 "message_history": message_history,
             }
             self.task_log.save()
+
+            # 数值门满足时裁决证据一致性，结果供本轮及后续早停检查使用
+            await self._maybe_evaluate_evidence_agreement(
+                system_prompt, message_history, turn_count, task_description
+            )
+
+            # Round 7: after tools, exit once early-stop turn budget is spent
+            force_exit = await self._maybe_nudge_and_force_summary(
+                message_history, turn_count
+            )
+            if force_exit:
+                break
+            if (
+                self._deep_convergence_nudge_sent
+                and self._should_force_summary_after_early_stop(turn_count)
+            ):
+                # Nudge just appended after tools; next loop iteration runs LLM.
+                continue
 
             # Check context length
             temp_summary_prompt = generate_agent_summarize_prompt(
@@ -1703,11 +2474,49 @@ class Orchestrator:
             save_callback=self._save_message_history,
         )
 
+        # Append lead trail section to final summary (Phase 4)
+        if self.lead_tracker.enabled:
+            lead_trail_section = self.lead_tracker.get_trail_section()
+            if lead_trail_section:
+                final_summary += "\n\n" + lead_trail_section
+                self.task_log.log_step(
+                    "info",
+                    "Main Agent | Lead Trail",
+                    f"Appended lead trail section ({len(lead_trail_section)} chars)",
+                )
+                # Log lead tracking stats
+                lead_stats = self.lead_tracker.get_stats()
+                if lead_stats.get("enabled"):
+                    self.task_log.log_step(
+                        "info",
+                        "Main Agent | Lead Tracking Stats",
+                        f"Total leads: {lead_stats['total_leads']}, "
+                        f"Followed up: {lead_stats['followed_up']}, "
+                        f"Unfollowed: {lead_stats['unfollowed']}",
+                    )
+
+        # User-facing cleanup: strip diagnostics, fix truncated refs, compact
+        # pending leads, and add analysis/topology when useful.
+        detail = getattr(self.answer_generator, "output_detail_level", "detailed")
+        try:
+            final_summary = prepare_user_facing_report(
+                final_summary, detail_level=str(detail)
+            )
+        except Exception as exc:  # never block final emit on presentation
+            self.task_log.log_step(
+                "warning",
+                "Main Agent | Report Presentation",
+                f"prepare_user_facing_report failed: {exc}",
+            )
+
         final_output_emitted = await self._emit_final_output(
             final_summary,
             result_quality,
         )
-        if final_output_emitted:
+        # 只有真实答案才作为正文块展示：占位串（未输出 \boxed{}）会被前端改写成
+        # 「未收敛」提示，与已交付的报告相互矛盾。
+        has_real_answer = final_boxed_answer not in (None, FORMAT_ERROR_MESSAGE)
+        if final_output_emitted and has_real_answer:
             await self.stream.tool_call("show_text", {"text": final_boxed_answer})
         await self.stream.end_llm("Final Summary")
         await self.stream.end_agent("Final Summary", self.current_agent_id)

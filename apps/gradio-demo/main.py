@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import sys
 import tempfile
 import threading
 import time
@@ -22,12 +23,30 @@ from dotenv import load_dotenv
 from hydra import compose, initialize_config_dir
 from omegaconf import DictConfig
 from prompt_patch import apply_prompt_patch
+from src.config.search_policy import (
+    apply_explicit_budget_overrides,
+    apply_user_search_env_precedence,
+)
 from src.config.settings import expose_sub_agents_as_tools
 from src.cache.result_cache import ResultCache
+from src.core.deep_efficiency import resolve_research_intensity
 from src.core.pipeline import create_pipeline_components, execute_task_pipeline
+from src.io.report_presentation import prepare_user_facing_report
 from utils import replace_chinese_punctuation
 
 import api_client
+import static_assets
+
+from ui_i18n import (
+    DEFAULT_LANG,
+    I18N,
+    RESEARCH_MODE_LABELS,
+    SEARCH_PROFILE_LABELS,
+    _UI_LANG,
+    _label_for,
+    _label_map,
+    _progress_copy,
+)
 
 # Create global cleanup thread pool for operations that won't be affected by asyncio.cancel
 cleanup_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="cleanup")
@@ -111,9 +130,9 @@ def _env_non_empty(name: str, default_value: str) -> str:
     return default_value
 
 
-def _load_logo_data_uri() -> str:
+def _load_logo_data_uri(logo_name: str = "diting_logo.png") -> str:
     """加载本地 Logo 并转换为 data URI，避免依赖外部静态资源服务。"""
-    logo_path = Path(__file__).resolve().parents[2] / "assets" / "mirologo.png"
+    logo_path = Path(__file__).resolve().parents[2] / "assets" / logo_name
     if not logo_path.exists():
         logger.warning("未找到本地 logo 文件: %s", logo_path)
         return ""
@@ -211,7 +230,7 @@ def _collect_gradio_allowed_paths() -> List[str]:
 # 控制是否启用 demo prompt patch
 ENABLE_PROMPT_PATCH = _env_flag("ENABLE_PROMPT_PATCH", True)
 if ENABLE_PROMPT_PATCH:
-    # 应用自定义系统提示补丁（注入 OpenClaw-MiroSearch 身份）
+    # 应用自定义系统提示补丁（注入谛听身份）
     apply_prompt_patch()
 
 # 允许通过环境变量控制 DEMO_MODE，默认开启
@@ -286,31 +305,18 @@ LOCAL_FONT_FAMILY_STACK = (
     "'Microsoft YaHei', -apple-system, BlinkMacSystemFont, sans-serif"
 )
 SKILLS_PACKAGE_SAFE_DIR = Path(__file__).resolve().parents[2] / "skills"
-SKILLS_PACKAGE_DEFAULT_FILENAME = "openclaw-mirosearch.zip"
+SKILLS_PACKAGE_DEFAULT_FILENAME = "diting.zip"
 DEFAULT_SKILLS_PACKAGE_PATH = os.getenv(
     "SKILLS_PACKAGE_PATH",
     str(SKILLS_PACKAGE_SAFE_DIR / SKILLS_PACKAGE_DEFAULT_FILENAME),
 )
 DEFAULT_SKILLS_PACKAGE_URL = os.getenv("SKILLS_PACKAGE_URL", "").strip()
-SKILLS_DOWNLOAD_FALLBACK_HINT_EN = "No download URL detected. Please configure SKILLS_PACKAGE_URL environment variable."
-SKILLS_DOWNLOAD_BUTTON_TEXT_EN = "Download Skills"
-SKILLS_DOWNLOAD_COPIED_TEXT_EN = "Link Copied"
-SKILLS_DOWNLOAD_FALLBACK_HINT_CN = (
-    "未检测到可用下载地址，请配置环境变量 SKILLS_PACKAGE_URL。"
-)
-SKILLS_DOWNLOAD_BUTTON_TEXT_CN = "skills下载"
-SKILLS_DOWNLOAD_COPIED_TEXT_CN = "已复制链接"
-EXPORT_FORMAT_CHOICES = [
-    ("Markdown (.md)", "md"),
-    ("PDF (.pdf)", "pdf"),
-    ("Word (.docx)", "docx"),
-]
 EXPORT_FORMAT_EXTENSIONS = {"md": ".md", "pdf": ".pdf", "docx": ".docx"}
-EXPORT_FILENAME_PREFIX = os.getenv("EXPORT_FILENAME_PREFIX", "mirosearch-conclusion")
+EXPORT_FILENAME_PREFIX = os.getenv("EXPORT_FILENAME_PREFIX", "diting-conclusion")
 EXPORT_OUTPUT_DIR = Path(
     os.getenv(
         "EXPORT_OUTPUT_DIR",
-        str(Path(tempfile.gettempdir()) / "openclaw-mirosearch-exports"),
+        str(Path(tempfile.gettempdir()) / "diting-exports"),
     )
 )
 EXPORT_PDF_PAGE_WIDTH = 595
@@ -322,84 +328,6 @@ EXPORT_PDF_LINE_HEIGHT = 14
 EXPORT_PDF_LINES_PER_PAGE = 52
 EXPORT_PDF_LINE_CHARS = 58
 
-LANG_EN = "en"
-LANG_CN = "cn"
-DEFAULT_LANG = LANG_EN
-
-I18N = {
-    LANG_EN: {
-        "page_title": "OpenClaw-MiroSearch - Deep Research",
-        "nav_brand_text": "OpenClaw-MiroSearch Deep Research",
-        "hero_title": "Deep Research, Insight into the Future",
-        "hero_subtitle": "Beyond chat, complete research tasks with verifiable search and reasoning.",
-        "input_placeholder": "Enter your research question...",
-        "btn_stop": "⏹ Stop",
-        "btn_run": "Start Research ➤",
-        "output_label": "Research Progress",
-        "output_waiting": "*Waiting to start research...*",
-        "options_title": "Options / Advanced Settings",
-        "mode_label": "Search Mode",
-        "mode_info": "verified=multi-round verification(high-quality sources) / research=quality first / balanced=recommended default / quota=quota priority / thinking=pure reasoning / production-web=production style",
-        "search_profile_label": "Search Source Strategy",
-        "search_profile_info": "searxng-first=default / serp-first=Serp priority / multi-route=serial aggregation / parallel=parallel aggregation / parallel-trusted=parallel+confidence fallback / searxng-only=SearXNG only",
-        "search_result_num_label": "Results per Search",
-        "search_result_num_info": "Maximum results returned per google_search aggregation. Recommended: 20 or 30 for cross-verification.",
-        "verification_rounds_label": "Min Search Rounds (verified mode)",
-        "verification_rounds_info": "Only effective in verified mode to enforce minimum search rounds threshold.",
-        "output_detail_label": "Output Length",
-        "output_detail_info": "Compact=short / Balanced=core conclusions + necessary details / Detailed=full report (default)",
-        "footer_text": "Generated by AI. Please verify key information.",
-        "lang_toggle_btn": "中文",
-        "export_format_label": "Export Format",
-        "export_btn": "Export Conclusion",
-        "export_file_label": "Download exported conclusion",
-        "export_hint": "Markdown / PDF / Word export is available. Long screenshot and community sharing are planned.",
-        "skills_download_fallback": SKILLS_DOWNLOAD_FALLBACK_HINT_EN,
-        "skills_download_btn": SKILLS_DOWNLOAD_BUTTON_TEXT_EN,
-        "skills_download_copied": SKILLS_DOWNLOAD_COPIED_TEXT_EN,
-        "output_detail_labels": {
-            "compact": "Compact",
-            "balanced": "Balanced",
-            "detailed": "Detailed",
-        },
-    },
-    LANG_CN: {
-        "page_title": "OpenClaw-MiroSearch - 深度研究",
-        "nav_brand_text": "OpenClaw-MiroSearch 深度研究",
-        "hero_title": "深度研究，洞察未来",
-        "hero_subtitle": "不止于聊天，用可验证的检索与推理完成研究任务。",
-        "input_placeholder": "请输入你的研究问题...",
-        "btn_stop": "⏹ 停止",
-        "btn_run": "开始研究 ➤",
-        "output_label": "研究进度",
-        "output_waiting": "*等待开始研究...*",
-        "options_title": "Options / 高级配置",
-        "mode_label": "检索模式",
-        "mode_info": "verified=多轮校验(高质量源) / research=质量优先 / balanced=推荐默认 / quota=额度优先 / thinking=纯思考 / production-web=生产风格",
-        "search_profile_label": "检索源策略",
-        "search_profile_info": "searxng-first=默认 / serp-first=Serp优先 / multi-route=串行聚合 / parallel=并发聚合 / parallel-trusted=并发+置信不足串行高信源补检 / searxng-only=仅SearXNG",
-        "search_result_num_label": "单轮检索条数",
-        "search_result_num_info": "每次 google_search 聚合返回的结果上限，建议 20 或 30 用于交叉验证。",
-        "verification_rounds_label": "最少检索轮次（verified 生效）",
-        "verification_rounds_info": "仅在 verified 模式下用于强制多轮检索门槛。",
-        "output_detail_label": "输出篇幅",
-        "output_detail_info": "精简=当前短篇幅 / 适中=核心结论+必要非核心信息 / 详细=超长报告（默认）",
-        "footer_text": "由 AI 生成，请对关键信息进行复核。",
-        "lang_toggle_btn": "English",
-        "export_format_label": "导出格式",
-        "export_btn": "导出结论",
-        "export_file_label": "下载导出文件",
-        "export_hint": "已支持 Markdown / PDF / Word 导出；长截图与社区分享已纳入规划。",
-        "skills_download_fallback": SKILLS_DOWNLOAD_FALLBACK_HINT_CN,
-        "skills_download_btn": SKILLS_DOWNLOAD_BUTTON_TEXT_CN,
-        "skills_download_copied": SKILLS_DOWNLOAD_COPIED_TEXT_CN,
-        "output_detail_labels": {
-            "compact": "精简",
-            "balanced": "适中",
-            "detailed": "详细",
-        },
-    },
-}
 SKILLS_DOWNLOAD_ALLOWED_RELATIVE_PREFIX = "/gradio_api/file="
 SKILLS_DOWNLOAD_ALLOWED_SCHEMES = {"https", "http"}
 
@@ -514,47 +442,83 @@ DETAIL_DETAILED_MAIN_AGENT_MAX_TURNS = max(
     1, _env_int("DETAIL_DETAILED_MAIN_AGENT_MAX_TURNS", 20)
 )
 
-RESEARCH_MODE_CHOICES = [
-    "production-web",
-    "verified",
-    "research",
-    "balanced",
-    "quota",
-    "thinking",
-]
 
-SEARCH_PROFILE_CHOICES = [
-    "searxng-first",
-    "serp-first",
-    "multi-route",
-    "parallel",
-    "parallel-trusted",
-    "searxng-only",
-]
+# (chinese, english) per option key — the settings modal is the only consumer,
+# so labels travel with the language toggle instead of staying Chinese-only.
+def _build_setting_infos(lang: str) -> dict:
+    """Field hints that quote the values actually in effect, not literals."""
+    i18n = I18N[lang]
+    return {
+        "mode_info": i18n["mode_info"],
+        "search_profile_info": i18n["search_profile_info"].format(
+            profile=_label_for(
+                SEARCH_PROFILE_LABELS,
+                _normalize_search_profile(DEFAULT_SEARCH_PROFILE),
+                lang,
+            )
+        ),
+        "search_result_num_info": i18n["search_result_num_info"].format(
+            n=_normalize_search_result_num(DEFAULT_SEARCH_RESULT_NUM)
+        ),
+        "verification_rounds_info": i18n["verification_rounds_info"],
+        "output_detail_info": i18n["output_detail_info"].format(
+            level=i18n["output_detail_labels"][
+                _normalize_output_detail_level(DEFAULT_OUTPUT_DETAIL_LEVEL)
+            ]
+        ),
+    }
+
+
+def _build_settings_summary(
+    lang: str,
+    mode: str,
+    output_detail_level: str,
+    search_profile: str,
+    search_result_num: int,
+) -> str:
+    i18n = I18N[lang]
+    return i18n["settings_summary_join"].join(
+        [
+            _label_for(RESEARCH_MODE_LABELS, _normalize_research_mode(mode), lang),
+            i18n["output_detail_labels"][
+                _normalize_output_detail_level(output_detail_level)
+            ],
+            _label_for(
+                SEARCH_PROFILE_LABELS,
+                _normalize_search_profile(search_profile),
+                lang,
+            ),
+            i18n["settings_summary_rounds"].format(
+                n=_normalize_search_result_num(search_result_num)
+            ),
+        ]
+    )
+
 
 SEARCH_STAGE_TOOL_NAMES = {
     "google_search",
     "sogou_search",
+    "scrape_url",
     "scrape",
     "scrape_website",
     "scrape_webpage",
     "scrape_and_extract_info",
 }
 
+
 # 工具名 → 前端友好显示名
-TOOL_DISPLAY_NAMES: dict[str, str] = {
-    "google_search": "网络搜索",
-    "sogou_search": "搜狗搜索",
-    "scrape": "网页抓取",
-    "scrape_website": "网页抓取",
-    "scrape_webpage": "网页抓取",
-    "scrape_and_extract_info": "信息提取",
-    "show_text": "文本展示",
-}
+def _tool_display_name(raw_name: str, ui_lang: Optional[str] = None) -> str:
+    return str(_label_map("tool_display_names", lang=ui_lang).get(raw_name, raw_name))
 
 
-def _tool_display_name(raw_name: str) -> str:
-    return TOOL_DISPLAY_NAMES.get(raw_name, raw_name)
+def _agent_display_name(raw_name: str) -> str:
+    names = _label_map("agent_display_names")
+    raw = str(raw_name or "").strip()
+    if raw in names:
+        return str(names[raw])
+    if "Search" in raw:
+        return str(names.get("Search Agent", raw))
+    return raw
 
 
 RENDER_MODE_CHOICES = {"full", "summary_with_details", "summary_only"}
@@ -602,6 +566,7 @@ SEARCH_PROFILE_ENV_MAP: Dict[str, Dict[str, str]] = {
     "searxng-only": {
         "SEARCH_PROVIDER_ORDER": "searxng",
         "SEARCH_PROVIDER_MODE": "fallback",
+        "SEARCH_PROVIDER_ORDER_STRICT": "1",
     },
 }
 
@@ -822,7 +787,26 @@ def _normalize_output_detail_level(level: Optional[str]) -> str:
         resolved_default = "detailed"
     if level is None:
         return resolved_default
-    normalized_level = str(level).strip().lower()
+    raw = str(level).strip()
+    alias = {
+        "compact": "compact",
+        "balanced": "balanced",
+        "detailed": "detailed",
+        "精简": "compact",
+        "适中": "balanced",
+        "详细": "detailed",
+        "详细（默认）": "detailed",
+    }
+    for key, label in (OUTPUT_DETAIL_LEVEL_LABELS or {}).items():
+        alias[str(label).strip()] = key
+        alias[str(label).strip().lower()] = key
+    # i18n dropdown may pass localized labels too
+    for lang_map in (I18N or {}).values():
+        labels = (lang_map or {}).get("output_detail_labels") or {}
+        for key, label in labels.items():
+            alias[str(label).strip()] = key
+            alias[str(label).strip().lower()] = key
+    normalized_level = alias.get(raw) or alias.get(raw.lower())
     if normalized_level in OUTPUT_DETAIL_LEVEL_CHOICES:
         return normalized_level
     logger.warning("未知输出篇幅档位 %s，回退到 %s", level, resolved_default)
@@ -1065,6 +1049,8 @@ def load_miroflow_config(config_overrides: Optional[object] = None) -> DictConfi
                 else:
                     overrides.append(f"{key}={value}")
 
+    overrides = apply_explicit_budget_overrides(overrides)
+
     try:
         cfg = compose(config_name="config", overrides=overrides)
         return cfg
@@ -1089,7 +1075,7 @@ def _build_search_environment(
     search_result_num: int,
 ) -> Dict[str, str]:
     """构建创建检索 MCP 参数时使用的临时环境。"""
-    search_env = dict(
+    search_env = apply_user_search_env_precedence(
         SEARCH_PROFILE_ENV_MAP.get(
             search_profile,
             SEARCH_PROFILE_ENV_MAP["searxng-first"],
@@ -1486,11 +1472,12 @@ async def stream_events_optimized(
     stream_queue.set_loop(asyncio.get_event_loop())
 
     cancel_event = threading.Event()
+    with _CANCEL_LOCK:
+        _ACTIVE_CANCEL_EVENTS[workflow_id] = cancel_event
     first_non_heartbeat_logged = False
     event_counts: Dict[str, int] = {}
     stage_state: Dict[str, Any] = {
         "phase": "初始化",
-        "turn": 0,
         "search_round": 0,
         "agent_name": "",
         "detail": "等待开始",
@@ -1501,7 +1488,6 @@ async def stream_events_optimized(
     def _touch_stage(
         phase: Optional[str] = None,
         *,
-        turn: Optional[int] = None,
         detail: Optional[str] = None,
         agent_name: Optional[str] = None,
         last_tool: Optional[str] = None,
@@ -1509,8 +1495,6 @@ async def stream_events_optimized(
     ) -> None:
         if phase:
             stage_state["phase"] = phase
-        if turn is not None:
-            stage_state["turn"] = max(0, int(turn))
         if detail is not None:
             stage_state["detail"] = str(detail)
         if agent_name is not None:
@@ -1527,12 +1511,9 @@ async def stream_events_optimized(
         if event_type == "stage_heartbeat":
             _touch_stage(
                 data.get("phase"),
-                turn=data.get("turn"),
                 detail=data.get("detail"),
                 agent_name=data.get("agent_name"),
             )
-            if data.get("search_round") is not None:
-                stage_state["search_round"] = int(data.get("search_round") or 0)
             return
         if event_type == "start_of_agent":
             current_agent = str(data.get("agent_name") or "")
@@ -1561,7 +1542,7 @@ async def stream_events_optimized(
             phase = "检索" if tool_name in SEARCH_STAGE_TOOL_NAMES else "工具调用"
             _touch_stage(
                 phase,
-                detail=f"{_tool_display_name(tool_name)} 执行中",
+                detail=f"{tool_name} 执行中",
                 last_tool=tool_name,
                 search_round_increment=is_search_output,
             )
@@ -1686,6 +1667,18 @@ async def stream_events_optimized(
                         sub_agent_tool_definitions=profile_cache[
                             "sub_agent_tool_definitions"
                         ],
+                        effective_config={
+                            "mode": resolved_mode,
+                            "search_profile": resolved_search_profile,
+                            "search_result_num": resolved_search_result_num,
+                            "verification_min_search_rounds": (
+                                resolved_verification_min_rounds
+                            ),
+                            "output_detail_level": resolved_output_detail_level,
+                            "research_intensity": resolve_research_intensity(
+                                profile_cache["cfg"]
+                            ),
+                        },
                     )
                 )
 
@@ -1794,22 +1787,30 @@ async def stream_events_optimized(
             "data": {"workflow_id": workflow_id, "error": f"Stream error: {str(e)}"},
         }
     finally:
+        # 停止按钮已把 cancel_event 置位时不再等 pipeline 线程收尾：该线程可能正卡在
+        # 一次同步 LLM/抓取调用里，等它会把这个事件挂住几十秒并占住队列并发位，
+        # 表现为「停止后再点开始研究没反应」。线程自身有 finally，置位后会在下一个
+        # await 点退出，这里提前返回不会漏掉清理。
+        cancellation_requested = cancel_event.is_set()
         cancel_event.set()
+        with _CANCEL_LOCK:
+            _ACTIVE_CANCEL_EVENTS.pop(workflow_id, None)
         stream_queue.close()
-        # concurrent.futures.Future.result() 会阻塞当前 Gradio 事件循环；
-        # 包装为 asyncio Future 后等待，既保证线程完成清理，也不冻结其他请求。
-        wrapped_future = asyncio.wrap_future(future)
         cancellation_received = False
-        while True:
-            try:
-                await asyncio.shield(wrapped_future)
-                break
-            except asyncio.CancelledError:
-                cancellation_received = True
-                if wrapped_future.done():
+        if not cancellation_requested:
+            # concurrent.futures.Future.result() 会阻塞当前 Gradio 事件循环；
+            # 包装为 asyncio Future 后等待，既保证线程完成清理，也不冻结其他请求。
+            wrapped_future = asyncio.wrap_future(future)
+            while True:
+                try:
+                    await asyncio.shield(wrapped_future)
                     break
-            except Exception:
-                break
+                except asyncio.CancelledError:
+                    cancellation_received = True
+                    if wrapped_future.done():
+                        break
+                except Exception:
+                    break
         executor.shutdown(wait=False)
         if ENABLE_TIMING_DIAGNOSTICS:
             logger.info(
@@ -1833,37 +1834,103 @@ def _init_render_state():
         "errors": [],
         "runtime_stage": {
             "phase": "初始化",
-            "turn": 0,
             "search_round": 0,
             "detail": "等待开始",
             "agent_name": "",
             "last_tool": "",
+            "started_at": time.time(),
             "updated_at": 0.0,
         },
     }
 
 
-def _format_runtime_status_label(
-    state: dict, heartbeat_ts: Optional[float] = None
-) -> str:
+# agent 心跳里的内部措辞 → 用户可读文案；返回 "" 表示与阶段重复、不展示
+_RUNTIME_DETAIL_DROP = {
+    "等待开始",
+    "模型推理中",
+    "主模型推理中",
+    "内容生成中",
+    "交叉校验中（无工具）",
+    "进入最终总结阶段",
+    "最终总结生成中",
+    "输出前交叉校验汇总中",
+    "执行出现错误",
+    "任务执行失败",
+    "任务已取消",
+    "任务已完成",
+    "最终结果已生成",
+    "主流程已启动",
+    "追踪研究线索",
+}
+
+# 与阶段标签重复的模板化措辞：{agent} 已启动 / 执行工具 X / 并行执行 N 个工具调用
+_RUNTIME_DETAIL_DROP_RE = re.compile(
+    r"^(?:.+ 已启动|执行工具 \S+|并行执行 \d+ 个工具调用)$"
+)
+
+
+def _clean_runtime_detail(detail: str, ui_lang: Optional[str] = None) -> str:
+    text = str(detail or "").strip()
+    if not text:
+        return ""
+    retry_match = re.match(r"^最终总结生成中（第 (\d+)/(\d+) 次）$", text)
+    if retry_match:
+        if retry_match.group(1) == "1":
+            return ""
+        return _progress_copy(
+            "runtime_detail_summary_retry", lang=ui_lang, n=retry_match.group(1)
+        )
+    if text in _RUNTIME_DETAIL_DROP or _RUNTIME_DETAIL_DROP_RE.match(text):
+        return ""
+    if text == "交叉校验降级重试":
+        return _progress_copy("runtime_detail_degraded_retry", lang=ui_lang)
+    if text == "命中交叉校验门槛，追加检索指令":
+        return _progress_copy("runtime_detail_verify_recheck", lang=ui_lang)
+    tool_running = re.match(r"^(.+?) 执行中$", text)
+    if tool_running:
+        return _tool_display_name(tool_running.group(1), ui_lang)
+    return text
+
+
+def _format_runtime_status_label(state: dict, ui_lang: Optional[str] = None) -> str:
     runtime_stage = state.get("runtime_stage") or {}
     phase = str(runtime_stage.get("phase") or "执行中")
-    turn = int(runtime_stage.get("turn") or 0)
     search_round = int(runtime_stage.get("search_round") or 0)
-    detail = str(runtime_stage.get("detail") or "").strip()
-    parts = [f"生成中 · 阶段:{phase}"]
-    if turn > 0:
-        parts.append(f"回合:{turn}")
+    detail = _clean_runtime_detail(
+        str(runtime_stage.get("detail") or ""), ui_lang=ui_lang
+    )
+    parts = [str(_label_map("runtime_phase_labels", lang=ui_lang).get(phase, phase))]
     if search_round > 0:
-        parts.append(f"检索轮次:{search_round}")
-    if heartbeat_ts:
         parts.append(
-            f"最近心跳 {time.strftime('%H:%M:%S', time.localtime(float(heartbeat_ts)))}"
+            _progress_copy("runtime_search_rounds", lang=ui_lang, n=search_round)
         )
-    label = " | ".join(parts)
     if detail:
-        label = f"{label} | {detail}"
-    return label
+        parts.append(detail)
+    return " · ".join(parts)
+
+
+def _format_elapsed_value(started_at: float) -> str:
+    seconds = max(0, int(time.time() - float(started_at or 0)))
+    return f"{seconds // 60}:{seconds % 60:02d}"
+
+
+def _runtime_status_markup(state: dict, ui_lang: Optional[str] = None) -> str:
+    """运行态状态卡：状态文案 + 耗时（耗时由前端每秒自增）。"""
+    started_at = float((state.get("runtime_stage") or {}).get("started_at") or 0.0)
+    elapsed_html = ""
+    if started_at > 0:
+        # 起始时间放进 style 自定义属性：Markdown 净化会剥掉 data-*，
+        # 只有 class/style 能活着到达前端，供每秒自增的计时脚本读取。
+        elapsed_html = (
+            f'<span class="runtime-elapsed">'
+            f'{_progress_copy("runtime_elapsed", lang=ui_lang)} '
+            '<span class="runtime-elapsed-value" '
+            f'style="--start-ts:{int(started_at)}">'
+            f"{_format_elapsed_value(started_at)}</span></span>"
+        )
+    return _spinner_markup(
+        _format_runtime_status_label(state, ui_lang=ui_lang), elapsed_html
+    )
 
 
 def _format_think_content(text: str) -> str:
@@ -1986,27 +2053,34 @@ def _format_search_results(
     if query:
         lines.append('<div class="search-header">')
         lines.append('<span class="search-icon">🔍</span>')
-        lines.append(f'<span class="search-query">Search: "{query}"</span>')
+        lines.append(
+            f'<span class="search-query">{_progress_copy("progress_search")}: "{query}"</span>'
+        )
         lines.append("</div>")
 
     # Results count
     if results:
-        lines.append(f'<div class="search-count">≡ Found {len(results)} results</div>')
+        lines.append(
+            f'<div class="search-count">≡ {_progress_copy("progress_found", n=len(results))}</div>'
+        )
         if provider_mode:
             lines.append(
-                f'<div class="search-count">检索模式: <strong>{provider_mode}</strong></div>'
+                f'<div class="search-count">{_progress_copy("progress_provider_mode")}: <strong>{provider_mode}</strong></div>'
             )
         if providers_with_results:
             providers_text = ", ".join(providers_with_results)
             lines.append(
-                f'<div class="search-count">命中搜索源: <strong>{providers_text}</strong></div>'
+                f'<div class="search-count">{_progress_copy("progress_sources_hit")}: <strong>{providers_text}</strong></div>'
             )
         if confidence_info:
             score = confidence_info.get("score")
             threshold = confidence_info.get("threshold")
             passed = confidence_info.get("passed")
             lines.append(
-                f'<div class="search-count">置信度: <strong>{score}</strong> / 阈值 {threshold} / 通过={passed}</div>'
+                '<div class="search-count">'
+                f'{_progress_copy("search_confidence")}: <strong>{score}</strong>'
+                f' / {_progress_copy("search_threshold")} {threshold}'
+                f' / {_progress_copy("search_passed")}={passed}</div>'
             )
         if route_trace:
             route_items = []
@@ -2019,11 +2093,11 @@ def _format_search_results(
                 route_items.append(f"{phase}:{provider}:{status}{suffix}")
             if route_items:
                 lines.append(
-                    f'<div class="search-count">链路跟踪: {" | ".join(route_items)}</div>'
+                    f'<div class="search-count">{_progress_copy("search_route_trace")}: {" | ".join(route_items)}</div>'
                 )
         if fallback_errors:
             lines.append(
-                f'<div class="search-count">补检异常: {"; ".join(fallback_errors[:3])}</div>'
+                f'<div class="search-count">{_progress_copy("search_fallback_errors")}: {"; ".join(fallback_errors[:3])}</div>'
             )
 
         # Results list
@@ -2035,7 +2109,7 @@ def _format_search_results(
             )
         visible_count = min(len(results), safe_display_limit)
         for item in results[:visible_count]:
-            title = item.get("title", "Untitled")
+            title = item.get("title") or _progress_copy("progress_untitled")
             link = item.get("link", "#")
 
             lines.append(f"""<a href="{link}" target="_blank" class="search-result-item">
@@ -2045,15 +2119,17 @@ def _format_search_results(
         lines.append("</div>")
         if len(results) > visible_count:
             lines.append(
-                f'<div class="search-count">仅展示前 {visible_count} 条，完整结果共 {len(results)} 条。</div>'
+                f'<div class="search-count">'
+                f'{_progress_copy("search_display_truncated", visible=visible_count, total=len(results))}</div>'
             )
     elif not search_success:
         lines.append(
-            f'<div class="search-count">⚠️ 检索失败: <strong>{search_error or "搜索源未返回有效结果"}</strong></div>'
+            f'<div class="search-count">⚠️ {_progress_copy("search_failed")}: '
+            f'<strong>{search_error or _progress_copy("search_no_valid_results")}</strong></div>'
         )
         if fallback_errors:
             lines.append(
-                f'<div class="search-count">搜索源异常: {"; ".join(fallback_errors[:3])}</div>'
+                f'<div class="search-count">{_progress_copy("search_provider_errors")}: {"; ".join(fallback_errors[:3])}</div>'
             )
         if route_trace:
             route_items = []
@@ -2064,7 +2140,7 @@ def _format_search_results(
                 route_items.append(f"{phase}:{provider}:{status}")
             if route_items:
                 lines.append(
-                    f'<div class="search-count">链路跟踪: {" | ".join(route_items)}</div>'
+                    f'<div class="search-count">{_progress_copy("search_route_trace")}: {" | ".join(route_items)}</div>'
                 )
 
     lines.append("</div>")
@@ -2133,17 +2209,23 @@ def _extract_google_search_step_summary(tool_input: dict, tool_output: dict) -> 
     line_parts: List[str] = []
     if query:
         truncated_query = _truncate_single_line(query, SEARCH_STEP_QUERY_PREVIEW_CHARS)
-        line_parts.append(f'Search: "{html.escape(truncated_query)}"')
+        line_parts.append(
+            f'{_progress_copy("progress_search")}: "{html.escape(truncated_query)}"'
+        )
     if result_count is not None:
-        line_parts.append(f"Found {result_count} results")
+        line_parts.append(_progress_copy("progress_found", n=result_count))
     if provider_mode:
-        line_parts.append(f"检索模式: {html.escape(provider_mode)}")
+        line_parts.append(
+            f'{_progress_copy("progress_provider_mode")}: {html.escape(provider_mode)}'
+        )
     if providers_with_results:
         provider_text = ",".join(providers_with_results)
         provider_text = _truncate_single_line(
             provider_text, SEARCH_STEP_SOURCE_PREVIEW_CHARS
         )
-        line_parts.append(f"命中源: {html.escape(provider_text)}")
+        line_parts.append(
+            f"{_progress_copy('progress_sources_hit')}: {html.escape(provider_text)}"
+        )
     if not line_parts:
         return ""
     return f"🔍 {' | '.join(line_parts)}"
@@ -2185,17 +2267,21 @@ def _format_sogou_search_results(tool_input: dict, tool_output: dict) -> str:
     if query:
         lines.append('<div class="search-header">')
         lines.append('<span class="search-icon">🔍</span>')
-        lines.append(f'<span class="search-query">Search: "{query}"</span>')
+        lines.append(
+            f'<span class="search-query">{_progress_copy("progress_search")}: "{query}"</span>'
+        )
         lines.append("</div>")
 
     # Results count
     if results:
-        lines.append(f'<div class="search-count">≡ Found {len(results)} results</div>')
+        lines.append(
+            f'<div class="search-count">≡ {_progress_copy("progress_found", n=len(results))}</div>'
+        )
 
         # Results list
         lines.append('<div class="search-results">')
         for item in results[:10]:  # Limit to 10 results
-            title = item.get("title", "Untitled")
+            title = item.get("title") or _progress_copy("progress_untitled")
             link = item.get("url", item.get("link", "#"))
 
             lines.append(f"""<a href="{link}" target="_blank" class="search-result-item">
@@ -2238,9 +2324,11 @@ def _extract_sogou_search_step_summary(tool_input: dict, tool_output: dict) -> s
     line_parts: List[str] = []
     if query:
         truncated_query = _truncate_single_line(query, SEARCH_STEP_QUERY_PREVIEW_CHARS)
-        line_parts.append(f'Search: "{html.escape(truncated_query)}"')
+        line_parts.append(
+            f'{_progress_copy("progress_search")}: "{html.escape(truncated_query)}"'
+        )
     if result_count is not None:
-        line_parts.append(f"Found {result_count} results")
+        line_parts.append(_progress_copy("progress_found", n=result_count))
     return f"🔍 {' | '.join(line_parts)}" if line_parts else ""
 
 
@@ -2300,7 +2388,9 @@ def _format_scrape_results(
             f'<span class="scrape-url">{url[:60]}{"..." if len(url) > 60 else ""}</span>'
         )
         lines.append("</div>")
-        lines.append('<div class="scrape-status error">❌ Failed</div>')
+        lines.append(
+            f'<div class="scrape-status error">{_progress_copy("scrape_status_failed")}</div>'
+        )
         lines.append("</div>")
         return "\n".join(lines)
 
@@ -2313,7 +2403,9 @@ def _format_scrape_results(
             f'<span class="scrape-url">{url[:60]}{"..." if len(url) > 60 else ""}</span>'
         )
         lines.append("</div>")
-        lines.append('<div class="scrape-status success">✓ Done</div>')
+        lines.append(
+            f'<div class="scrape-status success">{_progress_copy("scrape_status_done")}</div>'
+        )
     preview_text = _extract_scrape_preview_text(tool_output, preview_chars)
     if preview_text:
         lines.append("</div>")
@@ -2355,15 +2447,36 @@ def _merge_final_summary_blocks(
 
 _REFERENCES_HEADING_RE = re.compile(
     r"(?im)^[ \t]*(?:#{1,6}[ \t]+)?(?:\*+[ \t]*)?"
-    r"(?:参考文献|参考资料|引用|references?|sources?)"
+    r"(?:参考文献|参考资料|参考来源|引用|references?|sources?)"
     r"(?:[ \t]*\*+)?[ \t]*$"
 )
 _REFERENCE_ENTRY_RE = re.compile(r"\[(\d{1,4})\][^\n]*?(https?://\S+)")
+# 有序列表形态的参考文献条目（``3. 标题 …`` / ``3) 标题 …``）：LLM 通常按此写 References
+_REFERENCE_LIST_ENTRY_RE = re.compile(r"(?m)^[ \t]*(\d{1,4})[.)][ \t]+(\S[^\n]*)$")
+# 无 scheme 的裸域名：仅用于参考文献区补 https 链接，限定常见 TLD，
+# 避免把 DOI（10.1007/…）、arXiv 号（2507.09911）当成域名。
+_BARE_DOMAIN_RE = re.compile(
+    r"(?<![\w./-])((?:www\.)?(?:[a-z0-9-]+\.)+"
+    r"(?:com|org|net|edu|gov|io|ai|co|uk|de|jp|fr|cn|au|ca|us|info|me|dev|app|tech|work|xyz|tv|news)"
+    r"\b(?:/[^\s，；）)】\]]*)?)",
+    re.I,
+)
 # 规范化参考文献条目之间的换行：确保每条 [N] 前有双换行，Markdown 渲染时才能正确分行
 _REFERENCE_NEWLINE_RE = re.compile(r"(?<!\n)\n(\[\d{1,4}\])")
 _CITATION_RE = re.compile(r"\[(\d{1,4})\]")
 _CODE_SEGMENT_RE = re.compile(r"```[\s\S]*?```|`[^`\n]+`")
 _REFERENCE_URL_TRAILING = ".,;:)]>。，、；：）】》」’”"
+
+
+def _reference_url_in_entry(body: str) -> str:
+    """条目里的来源 URL：优先完整 http(s)，否则把裸域名补成 https。"""
+    full = re.search(r"https?://\S+", body or "")
+    if full:
+        return full.group(0).rstrip(_REFERENCE_URL_TRAILING)
+    bare = _BARE_DOMAIN_RE.search(body or "")
+    if bare:
+        return "https://" + bare.group(1).rstrip(_REFERENCE_URL_TRAILING)
+    return ""
 
 
 def _linkify_reference_citations(markdown_text: str) -> str:
@@ -2375,14 +2488,31 @@ def _linkify_reference_citations(markdown_text: str) -> str:
         return markdown_text
 
     body = markdown_text[: heading_match.start()]
-    references_section = markdown_text[heading_match.start() :]
+    head_part = markdown_text[heading_match.start() : heading_match.end()]
+    references_tail = markdown_text[heading_match.end() :]
+    # References 之后常还有兄弟章节（如 深入了解）：只有标题到下一个标题之间
+    # 才是来源条目区，否则后续编号列表、裸域名会被误当成来源。
+    next_heading = re.search(r"(?m)^#{1,6}[ \t]", references_tail)
+    if next_heading:
+        references_block = references_tail[: next_heading.start()]
+        rest = references_tail[next_heading.start() :]
+    else:
+        references_block, rest = references_tail, ""
 
     id_to_url: Dict[str, str] = {}
-    for entry in _REFERENCE_ENTRY_RE.finditer(references_section):
+    for entry in _REFERENCE_ENTRY_RE.finditer(references_block):
         ref_id = entry.group(1)
         raw_url = entry.group(2).rstrip(_REFERENCE_URL_TRAILING)
         if ref_id and raw_url and ref_id not in id_to_url:
             id_to_url[ref_id] = raw_url
+    # 有序列表条目按序号入表，正文 [N] 才能指向对应来源
+    for entry in _REFERENCE_LIST_ENTRY_RE.finditer(references_block):
+        ref_id = entry.group(1)
+        if ref_id in id_to_url:
+            continue
+        url = _reference_url_in_entry(entry.group(2))
+        if url:
+            id_to_url[ref_id] = url
 
     if not id_to_url:
         return markdown_text
@@ -2407,9 +2537,15 @@ def _linkify_reference_citations(markdown_text: str) -> str:
         cursor = end
     pieces.append(_CITATION_RE.sub(_replace_citation, body[cursor:]))
 
-    # 规范化参考文献条目之间的换行，确保 Markdown 渲染时每条 [N] 独占一行
-    references_section = _REFERENCE_NEWLINE_RE.sub(r"\n\n\1", references_section)
-    return "".join(pieces) + references_section
+    # 裸域名补成 Markdown 链接，来源条目才有可点的落点
+    def _link_bare_domain(match: "re.Match[str]") -> str:
+        token = match.group(1)
+        return f"[{token}](https://{token.rstrip(_REFERENCE_URL_TRAILING)})"
+
+    references_block = _BARE_DOMAIN_RE.sub(_link_bare_domain, references_block)
+    # 规范化参考文献条目之间的换行，确保每条 [N] 独占一行
+    references_block = _REFERENCE_NEWLINE_RE.sub(r"\n\n\1", references_block)
+    return "".join(pieces) + head_part + references_block + rest
 
 
 FORMAT_ERROR_MARKERS = (
@@ -2642,37 +2778,394 @@ _DIAGNOSTIC_FINAL_ANSWER_HEADER_RE = re.compile(
 
 
 def _strip_diagnostic_markers(text: str) -> str:
-    """剥离最终总结里来自 OutputFormatter 的调试分段（Final Answer / Extracted / Token Usage）。"""
+    """剥离最终总结里来自 OutputFormatter 的调试分段（Final Answer / Extracted / Token Usage）。
+
+    Also drops truncated ``https://www`` stub reference lines so Web export
+    does not look mid-cut.
+    """
     if not text:
         return text
     cleaned = _DIAGNOSTIC_FINAL_ANSWER_HEADER_RE.sub("", text, count=1)
     cleaned = _DIAGNOSTIC_TRUNCATE_RE.sub("", cleaned)
+    # Pricing / token dump variants that lack the exact header
+    cleaned = re.sub(
+        r"(?ms)\n?-{5,}.*?\b(?:Pricing is disabled|Total Input Tokens)\b.*",
+        "",
+        cleaned,
+    )
+    # Drop dangling incomplete URL stubs in References
+    kept = []
+    for line in cleaned.splitlines():
+        s = line.strip()
+        if re.fullmatch(r"(?:\d+\.\s*)?https?://(?:www\.)?", s):
+            continue
+        if re.search(r"https?://[\w\-]+$", s) and s.rstrip("/").count(".") == 0:
+            # e.g. https://www with no TLD
+            continue
+        kept.append(line)
+    cleaned = "\n".join(kept)
     return cleaned.rstrip()
 
 
-def _build_summary_section(final_summary_blocks: List[str]) -> List[str]:
+def _prepare_user_facing_report_safe(
+    text: str, detail_level: Optional[str] = None
+) -> str:
+    """Prefer agent presentation pipeline; never fail the Gradio stream.
+
+    Threads the stream's output_detail_level into prepare_user_facing_report so
+    compact mode stays compact (no auto 内容分析 / Mermaid topology). The
+    pipeline is a no-op for reports the orchestrator already prepared.
+    """
+    raw = str(text or "")
+    resolved_detail = _normalize_output_detail_level(detail_level)
+    try:
+        return prepare_user_facing_report(raw, detail_level=resolved_detail)
+    except Exception:
+        return _strip_diagnostic_markers(raw)
+
+
+def _decorate_report_for_web(
+    markdown_text: str, detail_level: Optional[str] = None
+) -> str:
+    """Add lightweight HTML wrappers so Gradio renders clearer report chrome.
+
+    Keeps Markdown headings intact (avoid replacing ``##`` with raw ``<h2>``)
+    so Gradio's Markdown renderer does not drop subsequent body formatting.
+    Citation chip class is applied after linkify (caller order).
+    """
+    text = str(markdown_text or "")
+    if not text.strip():
+        return text
+
+    resolved_detail = _normalize_output_detail_level(detail_level)
+    if resolved_detail == "compact":
+        # Hard guard: never show deep-dive folds on compact even if upstream leaked them.
+        text = re.sub(
+            r"(?ms)^##\s*[^\n]*(?:深入了解|深入分析)[^\n]*\n+.*?(?=^##\s|\Z)",
+            "",
+            text,
+        )
+
+    # 1) Glance card for consumer ## 结论
+    def _wrap_glance(match: "re.Match[str]") -> str:
+        body = (match.group(1) or "").strip()
+        conf_m = re.search(r"<!--\s*confidence:(high|mid|low)\s*-->", body)
+        level = conf_m.group(1) if conf_m else "mid"
+        body = re.sub(r"<!--\s*confidence:(?:high|mid|low)\s*-->\s*", "", body)
+        label_m = re.search(r"\*\*?置信度：([高中低])[。.]?\*\*?", body)
+        if label_m:
+            label = f"置信度：{label_m.group(1)}"
+        else:
+            label = {
+                "high": "置信度：高",
+                "mid": "置信度：中",
+                "low": "置信度：低",
+            }.get(level, "置信度：中")
+        conf = (
+            f'<span class="confidence-badge confidence-{level}">'
+            f"{html.escape(label, quote=False)}</span>"
+        )
+        # Strip every leftover confidence label (bold/plain, whole line or inline),
+        # then keep the answer in ONE escaped <div>: Gradio Markdown drops bare
+        # text / <p> siblings inside HTML blocks.
+        body = re.sub(
+            r"(?m)^[ \t]*\*{0,2}置信度：[高中低][。.]?\*{0,2}[ \t]*$"
+            r"|\*{0,2}置信度：[高中低][。.]?\*{0,2}",
+            "",
+            body,
+        ).strip()
+        answer = body.strip() if body.strip() else "（结论正文缺失，请展开过程或重试）"
+        # Collapse excessive blank lines but keep readable line breaks as <br>.
+        answer_html = html.escape(answer, quote=False).replace("\n", "<br>")
+        return (
+            f'<div class="report-glance">'
+            f'<div class="report-glance-meta">'
+            f'<span class="report-glance-kicker">结论</span>'
+            f"{conf}"
+            f"</div>"
+            f'<p class="report-glance-body">{answer_html}</p>'
+            f"</div>\n\n"
+        )
+
+    text = re.sub(
+        r"(?ms)^##\s*结论\s*\n+(.*?)(?=^##\s|\Z)",
+        _wrap_glance,
+        text,
+        count=1,
+    )
+
+    # 2) Legacy TL;DR callout (skip if already glance-wrapped; exclude bare 结论)
+    def _wrap_tldr(match: "re.Match[str]") -> str:
+        title = html.escape(match.group(1).strip(), quote=False)
+        body = (match.group(2) or "").strip()
+        conf = ""
+        conf_m = re.search(
+            r"(高|中|低)\s*置信|confidence\s*[:=]?\s*(high|medium|low|\d+%?)",
+            match.group(1) + "\n" + body,
+            re.I,
+        )
+        if conf_m:
+            label = html.escape(conf_m.group(0), quote=False)
+            level = "mid"
+            if re.search(r"高|high", label, re.I):
+                level = "high"
+            elif re.search(r"低|low", label, re.I):
+                level = "low"
+            conf = f'<span class="confidence-badge confidence-{level}">{label}</span>'
+        return (
+            f'<div class="report-tldr">\n\n'
+            f'<div class="report-tldr-head"><strong>{title}</strong>{conf}</div>\n\n'
+            f"{body}\n\n"
+            f"</div>\n\n"
+        )
+
+    if 'class="report-glance"' not in text:
+        text = re.sub(
+            r"(?ms)^##\s*([^\n]*(?:TL;?DR|总览|Executive Summary)[^\n]*)\n+(.*?)(?=^##\s|\Z)",
+            _wrap_tldr,
+            text,
+            count=1,
+        )
+
+    # 3) Conflict tag on heading (keep open, short)
+    text = re.sub(
+        r"(?m)^(##\s*[^\n]*(?:争议与不确定|冲突|不确定|Conflicts?|Uncertainties?)[^\n]*)$",
+        r'\1 <span class="conflict-tag">冲突/不确定</span>',
+        text,
+        count=1,
+    )
+
+    # 4) Fold heavy sections (evidence / deep dive). Nested headings are ###.
+    def _fold_section(match: "re.Match[str]") -> str:
+        heading = match.group(1).strip()
+        body = (match.group(2) or "").strip()
+        if not body:
+            return ""  # never show an empty fold
+        n_links = len(re.findall(r"https?://", body))
+        n_items = len(re.findall(r"(?m)^\s*(?:\d+\.|[-*•])\s+", body))
+        n = n_links or n_items
+        count_hint = f"（{n}）" if n else ""
+        title = html.escape(re.sub(r"^##\s*", "", heading), quote=False)
+        # Mermaid card inside fold body
+        body = re.sub(
+            r"(?ms)(###\s*[^\n]*(?:关系拓扑|Relationship Map|拓扑)[^\n]*\n+)(```mermaid\n.*?```)",
+            r'<div class="mermaid-card">\n\n\1\2\n\n</div>\n\n',
+            body,
+            count=1,
+        )
+        return (
+            f'<details class="report-fold">\n'
+            f"<summary>{title}{count_hint}</summary>\n\n"
+            f"{body}\n\n"
+            f"</details>\n\n"
+        )
+
+    text = re.sub(
+        r"(?ms)^(##\s*[^\n]*(?:证据与来源|证据和来源|深入了解|深入分析)[^\n]*)\n+(.*?)(?=^##\s|\Z)",
+        _fold_section,
+        text,
+    )
+
+    text = text.replace('class="ref-citation"', 'class="ref-citation ref-chip"')
+    return text
+
+
+def _keep_last_report_glance(decorated_blocks: List[str]) -> List[str]:
+    """Keep a single consumer glance card when streamed summaries differ only by confidence.
+
+    Balanced/detailed merge uses ``all_unique``, so an early mid-confidence reshape and a
+    later high-confidence reshape can both survive. Rendering both produces duplicate
+    「结论 / 置信度」 chrome in the a11y tree. Prefer the latest glance-bearing block.
+    """
+    if len(decorated_blocks) <= 1:
+        return decorated_blocks
+    glance_indexes = [
+        idx
+        for idx, block in enumerate(decorated_blocks)
+        if 'class="report-glance"' in str(block or "")
+    ]
+    if len(glance_indexes) <= 1:
+        return decorated_blocks
+    drop = set(glance_indexes[:-1])
+    return [block for idx, block in enumerate(decorated_blocks) if idx not in drop]
+
+
+_REPORT_SOURCE_TOOL_NAMES = {"google_search", "sogou_search"}
+_REPORT_SCRAPE_TOOL_NAMES = {
+    "scrape_url",
+    "scrape",
+    "scrape_website",
+    "scrape_webpage",
+    "scrape_and_extract_info",
+}
+# 参考来源上限：论文式文末列表，太多反而淹没阅读
+MAX_REPORT_SOURCES = 30
+
+
+def _normalize_source_url(url: Any) -> str:
+    candidate = str(url or "").strip()
+    if not candidate:
+        return ""
+    if not candidate.lower().startswith(("http://", "https://")):
+        return ""
+    return candidate
+
+
+def _source_display_title(title: Any, url: str) -> str:
+    # 搜索结果标题常带 <b> 等高亮标签，剥掉避免破坏 Markdown 链接文本
+    text = re.sub(r"<[^>]+>", "", str(title or ""))
+    text = re.sub(r"\s+", " ", text).strip()
+    if text:
+        return text[:120]
+    host = urlparse(url).netloc or url
+    return host
+
+
+def _collect_report_sources(state: dict) -> List[Dict[str, str]]:
+    """汇总本轮研究实际命中/访问过的来源，按首次出现顺序去重。"""
+    sources: List[Dict[str, str]] = []
+    seen_urls = set()
+
+    def _add(url: Any, title: Any = "") -> None:
+        normalized = _normalize_source_url(url)
+        if not normalized or normalized in seen_urls:
+            return
+        seen_urls.add(normalized)
+        sources.append(
+            {"url": normalized, "title": _source_display_title(title, normalized)}
+        )
+
+    for agent_id in (state or {}).get("agent_order", []):
+        agent = (state or {}).get("agents", {}).get(agent_id, {})
+        for call_id in agent.get("tool_call_order", []):
+            call = agent.get("tools", {}).get(call_id, {})
+            tool_name = call.get("tool_name", "")
+            tool_input = call.get("input", {})
+            tool_output = call.get("output", {})
+            if tool_name in _REPORT_SOURCE_TOOL_NAMES:
+                result_data: Dict[str, Any] = {}
+                result_payload = (
+                    tool_output.get("result", "")
+                    if isinstance(tool_output, dict)
+                    else ""
+                )
+                if isinstance(result_payload, str) and result_payload.strip():
+                    try:
+                        parsed = json.loads(result_payload)
+                        if isinstance(parsed, dict):
+                            result_data = parsed
+                    except json.JSONDecodeError:
+                        result_data = {}
+                elif isinstance(result_payload, dict):
+                    result_data = result_payload
+                if not result_data and isinstance(tool_output, dict):
+                    result_data = tool_output
+                organic = result_data.get("organic")
+                if not isinstance(organic, list):
+                    organic = result_data.get("Pages")
+                if isinstance(organic, list):
+                    for item in organic:
+                        if not isinstance(item, dict):
+                            continue
+                        _add(
+                            item.get("link") or item.get("url"),
+                            item.get("title") or item.get("siteName"),
+                        )
+            elif tool_name in _REPORT_SCRAPE_TOOL_NAMES and isinstance(
+                tool_input, dict
+            ):
+                _add(tool_input.get("url") or tool_input.get("link"))
+            if len(sources) >= MAX_REPORT_SOURCES:
+                return sources
+    return sources
+
+
+def _build_references_section(sources: List[Dict[str, str]]) -> List[str]:
+    if not sources:
+        return []
+    heading = _progress_copy("references_heading")
+    lines = ["", "\n---\n", f"### {heading}\n"]
+    for idx, src in enumerate(sources, 1):
+        title = str(src.get("title") or src["url"]).replace("[", "(").replace("]", ")")
+        lines.append(f"[{idx}] [{title}]({src['url']})")
+        # 条目间空行：相邻行会被 Markdown 合并成一段，来源挤在一起无法逐条阅读
+        lines.append("")
+    return lines
+
+
+def _build_summary_section(
+    final_summary_blocks: List[str],
+    output_detail_level: Optional[str] = None,
+) -> List[str]:
     if not final_summary_blocks:
         return []
     # 前置空字符串项：确保和上一个 HTML block（如 search-step-board 的 </div>）之间
     # 有一个空行，否则 CommonMark 会把 `## 📋 研究总结` 视为 HTML block 的延续，
     # 导致 `## ` 字面显示而非作为标题渲染。
-    lines = ["", "## 📋 研究总结\n\n"]
+    # Glance card already leads with 结论; keep a quieter label.
+    lines = ["", "### 研究报告\n\n"]
+    resolved_detail = _normalize_output_detail_level(output_detail_level)
     # 先剥离 OutputFormatter 注入的调试分段标记，再做 LaTeX → Markdown 规范化
-    sanitized = (_strip_diagnostic_markers(block) for block in final_summary_blocks)
+    sanitized = (
+        _prepare_user_facing_report_safe(block, detail_level=resolved_detail)
+        for block in final_summary_blocks
+    )
     normalized = (_normalize_latex_like_markup(block) for block in sanitized)
     rewritten = (_humanize_pipeline_fallback(block) for block in normalized)
-    lines.extend(_linkify_reference_citations(block) for block in rewritten)
+    # linkify first, then decorate so ref-chip class lands on citation anchors
+    linkified = [_linkify_reference_citations(block) for block in rewritten]
+    decorated = [
+        _decorate_report_for_web(block, detail_level=resolved_detail)
+        for block in linkified
+    ]
+    lines.extend(_keep_last_report_glance(decorated))
     return lines
 
 
-def _build_process_details_section(process_lines: List[str]) -> List[str]:
+def _set_thought_cards_expanded(
+    process_lines: List[str], *, expanded: bool
+) -> List[str]:
+    """Streaming: keep thoughts open. Finished: fold them shut inside process panel."""
+    out: List[str] = []
+    for line in process_lines:
+        text = str(line or "")
+        if expanded:
+            text = text.replace(
+                '<details class="thought-card">',
+                '<details class="thought-card" open>',
+            )
+        else:
+            text = text.replace(
+                '<details class="thought-card" open>',
+                '<details class="thought-card">',
+            )
+        out.append(text)
+    return out
+
+
+def _build_process_details_section(
+    process_lines: List[str],
+    *,
+    step_count: Optional[int] = None,
+) -> List[str]:
     if not process_lines:
         return []
+    label = _progress_copy("progress_process_summary")
+    if step_count and step_count > 0:
+        label = f"{label} · {step_count}"
+    # data-collapsed + fingerprint: Gradio markdown morph can preserve a stale
+    # [open] from an earlier stream tick; fingerprint remounts and JS force-closes once.
+    fingerprint = (
+        abs(hash((label, len(process_lines), step_count or 0))) % 1_000_000_007
+    )
     lines = [
-        "\n\n---\n\n",
-        '<details class="process-details">\n<summary>🧭 查看检索过程（中间步骤）</summary>\n\n',
+        "\n\n",
+        (
+            f'<details class="process-details" data-collapsed="1" data-fp="{fingerprint}">\n'
+            f"<summary>🧭 {html.escape(label, quote=False)}</summary>\n\n"
+        ),
     ]
-    lines.extend(process_lines)
+    lines.extend(_set_thought_cards_expanded(process_lines, expanded=False))
     lines.append("\n</details>\n")
     return lines
 
@@ -2685,6 +3178,12 @@ def _build_search_steps_section(search_step_lines: List[str]) -> List[str]:
         normalized_line = str(step_line or "").strip()
         if not normalized_line:
             continue
+        # Builders already html.escape query/provider fragments; still neutralize
+        # any raw angle brackets that slipped through without double-escaping entities.
+        if "<" in normalized_line or ">" in normalized_line:
+            # Only escape if it looks like raw tags (not already entity-encoded)
+            if "&lt;" not in normalized_line and "&gt;" not in normalized_line:
+                normalized_line = html.escape(normalized_line, quote=False)
         lines.append(f'<div class="search-step-item">{normalized_line}</div>')
     lines.append("</div>")
     return lines
@@ -2711,8 +3210,125 @@ def _build_export_filename(export_format: str, task_id: Optional[str] = None) ->
     return f"{EXPORT_FILENAME_PREFIX}{suffix}-{timestamp}-{unique_suffix}{extension}"
 
 
+def _find_details_block_end(text: str, block_start: int) -> int:
+    open_tag_len = len("<details")
+    close_tag = "</details>"
+    depth = 1
+    cursor = block_start + open_tag_len
+    while depth > 0:
+        next_open = text.find("<details", cursor)
+        next_close = text.find(close_tag, cursor)
+        if next_close == -1:
+            return len(text)
+        if next_open != -1 and next_open < next_close:
+            depth += 1
+            cursor = next_open + open_tag_len
+            continue
+        depth -= 1
+        cursor = next_close + len(close_tag)
+    return cursor
+
+
+def _split_details_block(
+    text: str, class_name: str
+) -> Optional[Tuple[str, str, str, str]]:
+    """Return (before, summary, inner, after) for the first details block of a class."""
+    opening = f'<details class="{class_name}"'
+    block_start = text.find(opening)
+    if block_start == -1:
+        return None
+    tag_end = text.find(">", block_start)
+    body_start = (
+        text.find("\n", tag_end) + 1 if tag_end != -1 else block_start + len(opening)
+    )
+    summary_match = re.match(
+        r"\s*<summary>(.*?)</summary>\s*", text[body_start:], re.DOTALL
+    )
+    summary = summary_match.group(1) if summary_match else ""
+    inner_start = body_start + (summary_match.end() if summary_match else 0)
+    block_end = _find_details_block_end(text, block_start)
+    inner = text[inner_start : block_end - len("</details>")].strip()
+    return text[:block_start], summary.strip(), inner, text[block_end:]
+
+
+def _strip_details_blocks(text: str, class_name: str) -> str:
+    while True:
+        parts = _split_details_block(text, class_name)
+        if parts is None:
+            return text
+        before, _summary, _inner, after = parts
+        text = f"{before.rstrip()}\n\n{after.lstrip()}"
+
+
+def _unwrap_report_folds(text: str) -> str:
+    while True:
+        parts = _split_details_block(text, "report-fold")
+        if parts is None:
+            return text
+        before, summary, inner, after = parts
+        title = html.unescape(re.sub(r"（\d+）\s*$", "", summary)).strip()
+        text = f"{before.rstrip()}\n\n## {title}\n\n{inner}\n\n{after.lstrip()}"
+
+
+def _plainify_report_html(text: str) -> str:
+    """Turn web-only report chrome back into plain Markdown for exported files."""
+
+    # Glance card body is HTML-escaped for the browser; restore it as the 结论 section.
+    def _restore_glance(glance_match: "re.Match[str]") -> str:
+        block = glance_match.group(0)
+        body = html.unescape(glance_match.group(1) or "")
+        body = re.sub(r"(?i)<br\s*/?>", "\n", body).strip()
+        confidence_match = re.search(
+            r'class="confidence-badge[^"]*">([^<]*)</span>', block
+        )
+        confidence = confidence_match.group(1).strip() if confidence_match else ""
+        head = f"## 结论\n\n**{confidence}**\n\n" if confidence else "## 结论\n\n"
+        return f"{head}{body}\n\n"
+
+    text = re.sub(
+        r'(?ms)<div class="report-glance">.*?'
+        r'<p class="report-glance-body">(.*?)</p>\s*</div>',
+        _restore_glance,
+        text,
+    )
+    text = re.sub(
+        r'(?ms)<div class="report-tldr">\s*'
+        r'<div class="report-tldr-head"><strong>(.*?)</strong>(.*?)</div>\s*(.*?)\n</div>',
+        lambda m: (
+            f"## {html.unescape(m.group(1).strip())}\n\n"
+            f"{html.unescape(re.sub(r'(?s)<[^>]*>', '', m.group(2)).strip())}\n\n"
+            f"{m.group(3).strip()}\n\n"
+        ),
+        text,
+    )
+    text = _unwrap_report_folds(text)
+    text = re.sub(
+        r'(?ms)<div class="mermaid-card">(.*?)</div>',
+        lambda m: f"{m.group(1).strip()}\n\n",
+        text,
+    )
+    text = re.sub(r'(?ms)\s*<span class="conflict-tag">.*?</span>', "", text)
+    text = re.sub(
+        r'(?ms)<a href="([^"]*)"[^>]*class="ref-citation[^"]*"[^>]*>(.*?)</a>',
+        lambda m: f"{m.group(2)}({html.unescape(m.group(1))})",
+        text,
+    )
+    return re.sub(r"(?m)</?(?:div|span|p)[^>]*>\s*", "", text)
+
+
+def _extract_conclusion_markdown(rendered_markdown: str) -> str:
+    """Keep only the research report: the process panel and live progress are UI-only."""
+    text = str(rendered_markdown or "")
+    heading_match = re.search(r"(?m)^###\s*研究报告[^\n]*\n", text)
+    if heading_match:
+        text = text[heading_match.start() :]
+    text = _strip_details_blocks(text, "process-details")
+    return _plainify_report_html(text)
+
+
 def _prepare_export_markdown(markdown_text: str) -> str:
-    normalized_markdown = _strip_diagnostic_markers(str(markdown_text or "")).strip()
+    conclusion = _extract_conclusion_markdown(markdown_text)
+    normalized_markdown = _strip_diagnostic_markers(conclusion).strip()
     if not normalized_markdown:
         normalized_markdown = "当前没有可导出的研究结论。"
     return normalized_markdown + "\n"
@@ -2894,8 +3510,40 @@ def _render_markdown(
     state: dict,
     render_mode: Optional[str] = None,
     final_summary_merge_strategy: Optional[str] = None,
+    output_detail_level: Optional[str] = None,
+    ui_lang: Optional[str] = None,
+) -> str:
+    resolved_lang = (
+        ui_lang
+        if ui_lang in I18N
+        else (
+            (state or {}).get("ui_lang")
+            if (state or {}).get("ui_lang") in I18N
+            else DEFAULT_LANG
+        )
+    )
+    _lang_token = _UI_LANG.set(resolved_lang)
+    try:
+        return _render_markdown_inner(
+            state,
+            render_mode=render_mode,
+            final_summary_merge_strategy=final_summary_merge_strategy,
+            output_detail_level=output_detail_level,
+            ui_lang=resolved_lang,
+        )
+    finally:
+        _UI_LANG.reset(_lang_token)
+
+
+def _render_markdown_inner(
+    state: dict,
+    render_mode: Optional[str] = None,
+    final_summary_merge_strategy: Optional[str] = None,
+    output_detail_level: Optional[str] = None,
+    ui_lang: Optional[str] = None,
 ) -> str:
     resolved_render_mode = _normalize_render_mode(render_mode, DEFAULT_UI_RENDER_MODE)
+    resolved_output_detail_level = _normalize_output_detail_level(output_detail_level)
     if resolved_render_mode == "full":
         search_display_limit = SEARCH_RESULT_DISPLAY_MAX
         scrape_preview_chars = 2200
@@ -2913,7 +3561,9 @@ def _render_markdown(
     # Render errors first if any
     if state.get("errors"):
         for err in state["errors"]:
-            error_lines.append(f'<div class="error-block">❌ {err}</div>')
+            error_lines.append(
+                f'<div class="error-block">❌ {html.escape(str(err), quote=False)}</div>'
+            )
 
     # Render all agents' content
     for agent_id in state.get("agent_order", []):
@@ -2932,18 +3582,17 @@ def _render_markdown(
                     if is_final_summary:
                         final_summary_blocks.append(content)
                     else:
-                        display_name = agent_name
-                        if display_name == "Main Agent":
-                            display_name = "主智能体 (Main Agent)"
-                        elif display_name == "Sub Agent":
-                            display_name = "子智能体 (Sub Agent)"
-                        elif "Search" in display_name:
-                            display_name = "检索智能体 (Search Agent)"
+                        display_name = _agent_display_name(agent_name)
 
+                        safe_name = html.escape(str(display_name), quote=False)
+                        # Escape HTML so agent text cannot break the card shell;
+                        # Markdown emphasis/links still render after entity decode.
+                        safe_content = html.escape(str(content), quote=False)
                         formatted_thought = (
-                            f'<details class="thought-card" open>\n'
-                            f"  <summary>💭 {display_name} 思考与规划</summary>\n"
-                            f'  <div class="thought-content">\n\n{content}\n\n</div>\n'
+                            f'<details class="thought-card">\n'
+                            f"  <summary>💭 {safe_name} "
+                            f"{_progress_copy('thought_card_label')}</summary>\n"
+                            f'  <div class="thought-content">\n\n{safe_content}\n\n</div>\n'
                             f"</details>\n"
                         )
                         process_lines.append(formatted_thought)
@@ -2983,6 +3632,7 @@ def _render_markdown(
                 continue
 
             # Special formatting for scrape/webpage tools
+            # scrape_url 不在此列：其结果是带 metrics 的嵌套 JSON，预览函数会原样吐出 JSON 串
             if tool_name in (
                 "scrape",
                 "scrape_website",
@@ -3002,7 +3652,9 @@ def _render_markdown(
             if tool_name in ("python", "run_python_code") and (has_input or has_output):
                 # Use pure Markdown to avoid HTML wrapper blocking Markdown rendering
                 process_lines.append("\n---\n")
-                process_lines.append("#### 💻 Code Execution\n")
+                process_lines.append(
+                    f"#### 💻 {_progress_copy('progress_code_exec')}\n"
+                )
                 # Show code input - try multiple possible keys
                 code = ""
                 if isinstance(tool_input, dict):
@@ -3024,25 +3676,32 @@ def _render_markdown(
                     elif isinstance(tool_output, str):
                         output = tool_output
                     if isinstance(output, str) and output.strip():
-                        process_lines.append("\n**Output:**\n")
+                        process_lines.append(
+                            f"\n**{_progress_copy('progress_output')}:**\n"
+                        )
                         process_lines.append(
                             f'\n```text\n{output[:1000]}{"..." if len(output) > 1000 else ""}\n```\n'
                         )
-                process_lines.append("\n✅ Executed\n")
+                process_lines.append(f"\n✅ {_progress_copy('progress_executed')}\n")
                 continue
 
             # Other tools - show as compact card
             if has_input or has_output:
+                safe_tool = html.escape(_tool_display_name(str(tool_name)), quote=False)
                 process_lines.append('<div class="tool-card">')
-                process_lines.append(f'<div class="tool-header">🔧 {tool_name}</div>')
+                process_lines.append(f'<div class="tool-header">🔧 {safe_tool}</div>')
                 if has_input and isinstance(tool_input, dict):
                     brief = ", ".join(
                         f"{k}: {str(v)[:30]}..." if len(str(v)) > 30 else f"{k}: {v}"
                         for k, v in list(tool_input.items())[:2]
                     )
-                    process_lines.append(f'<div class="tool-brief">{brief}</div>')
+                    process_lines.append(
+                        f'<div class="tool-brief">{html.escape(brief, quote=False)}</div>'
+                    )
                 if has_output:
-                    process_lines.append('<div class="tool-status">✓ Done</div>')
+                    process_lines.append(
+                        f'<div class="tool-status">✓ {_progress_copy("tool_status_done")}</div>'
+                    )
                 process_lines.append("</div>")
 
     merged_final_summary_blocks = _merge_final_summary_blocks(
@@ -3053,39 +3712,88 @@ def _render_markdown(
     has_final_summary = bool(merged_final_summary_blocks)
 
     if has_final_summary and COLLAPSE_PROCESS_AFTER_SUMMARY:
-        lines.extend(_build_search_steps_section(search_step_lines))
-        lines.extend(_build_summary_section(merged_final_summary_blocks))
-        lines.extend(_build_process_details_section(process_lines))
+        # Answer-first (ChatGPT/Claude style): final report on top, process folded below.
+        lines.extend(
+            _build_summary_section(
+                merged_final_summary_blocks,
+                output_detail_level=resolved_output_detail_level,
+            )
+        )
+        folded_process: List[str] = []
+        folded_process.extend(_build_search_steps_section(search_step_lines))
+        folded_process.extend(process_lines)
+        lines.extend(
+            _build_process_details_section(
+                folded_process,
+                step_count=len(search_step_lines) or None,
+            )
+        )
     elif resolved_render_mode == "full":
-        lines.extend(process_lines)
+        # Live / no-collapse: expand thoughts while work is streaming.
+        live_process = (
+            _set_thought_cards_expanded(process_lines, expanded=True)
+            if not has_final_summary
+            else process_lines
+        )
+        lines.extend(live_process)
         if has_final_summary:
             lines.append("\n\n---\n\n")
-            lines.extend(_build_summary_section(merged_final_summary_blocks))
+            lines.extend(
+                _build_summary_section(
+                    merged_final_summary_blocks,
+                    output_detail_level=resolved_output_detail_level,
+                )
+            )
     elif resolved_render_mode == "summary_only":
         if has_final_summary:
-            lines.extend(_build_summary_section(merged_final_summary_blocks))
+            lines.extend(
+                _build_summary_section(
+                    merged_final_summary_blocks,
+                    output_detail_level=resolved_output_detail_level,
+                )
+            )
         else:
-            lines.extend(process_lines)
+            lines.extend(_set_thought_cards_expanded(process_lines, expanded=True))
     else:
         if has_final_summary:
-            lines.extend(_build_search_steps_section(search_step_lines))
-            lines.extend(_build_summary_section(merged_final_summary_blocks))
-            lines.extend(_build_process_details_section(process_lines))
+            lines.extend(
+                _build_summary_section(
+                    merged_final_summary_blocks,
+                    output_detail_level=resolved_output_detail_level,
+                )
+            )
+            folded_process = []
+            folded_process.extend(_build_search_steps_section(search_step_lines))
+            folded_process.extend(process_lines)
+            lines.extend(
+                _build_process_details_section(
+                    folded_process,
+                    step_count=len(search_step_lines) or None,
+                )
+            )
         else:
-            lines.extend(process_lines)
+            lines.extend(_set_thought_cards_expanded(process_lines, expanded=True))
+
+    if has_final_summary:
+        # 论文式文末来源：LLM 没自己给出参考文献时，用实际命中/访问的来源补一节
+        joined_summary = "\n".join(merged_final_summary_blocks)
+        if not _REFERENCES_HEADING_RE.search(joined_summary):
+            sources = _collect_report_sources(state)
+            if sources:
+                lines.extend(_build_references_section(sources))
+
+    runtime_stage = state.get("runtime_stage") or {}
+    if str(runtime_stage.get("phase") or "") == "已取消":
+        # 停止后最后一帧不再带状态卡，补一行终态文案说明输出为何到此为止。
+        lines.append(f"*{_format_runtime_status_label(state)}*")
 
     if lines:
         return "\n".join(lines)
 
-    runtime_stage = state.get("runtime_stage") or {}
     if float(runtime_stage.get("updated_at") or 0) > 0:
-        status_label = _format_runtime_status_label(state)
-        return (
-            f"*{status_label}*\n\n"
-            "> 当前任务已启动，暂时还没有可展示的正文或工具输出。"
-        )
+        return f"*{_progress_copy('output_running_hint')}*"
 
-    return "*等待开始研究...*"
+    return f"*{_progress_copy('output_idle_placeholder')}*"
 
 
 def _update_state_with_event(state: dict, message: dict):
@@ -3137,7 +3845,7 @@ def _update_state_with_event(state: dict, message: dict):
             "检索" if tool_name in SEARCH_STAGE_TOOL_NAMES else "工具调用"
         )
         runtime_stage["last_tool"] = tool_name
-        runtime_stage["detail"] = f"{_tool_display_name(tool_name)} 执行中"
+        runtime_stage["detail"] = f"{tool_name} 执行中"
         runtime_stage["updated_at"] = time.time()
         entry = tools[tool_call_id]
         if tool_name == "show_text" and "delta_input" in data:
@@ -3168,9 +3876,8 @@ def _update_state_with_event(state: dict, message: dict):
                         runtime_stage["search_round"] = (
                             int(runtime_stage.get("search_round", 0)) + 1
                         )
-                        runtime_stage["detail"] = (
-                            f"{_tool_display_name(tool_name)} 已完成（第 {runtime_stage['search_round']} 轮）"
-                        )
+                        # 轮次改由状态标签的「已完成 N 次检索」呈现，避免重复
+                        runtime_stage["detail"] = ""
                 else:
                     # Only update input if we don't already have valid input data, or if the new data is not empty
                     if "input" not in entry or not _is_empty_payload(ti):
@@ -3205,18 +3912,8 @@ def _update_state_with_event(state: dict, message: dict):
         phase = str((data or {}).get("phase") or "").strip()
         if phase:
             runtime_stage["phase"] = phase
-        if (data or {}).get("turn") is not None:
-            try:
-                runtime_stage["turn"] = max(0, int((data or {}).get("turn") or 0))
-            except (TypeError, ValueError):
-                pass
-        if (data or {}).get("search_round") is not None:
-            try:
-                runtime_stage["search_round"] = max(
-                    0, int((data or {}).get("search_round") or 0)
-                )
-            except (TypeError, ValueError):
-                pass
+        # 心跳里的 search_round 是 agent 侧的「校验轮次」，非本次检索次数；
+        # 检索轮次统一由检索工具的输出事件累加，避免两个口径互相覆盖。
         detail = str((data or {}).get("detail") or "").strip()
         if detail:
             runtime_stage["detail"] = detail
@@ -3242,13 +3939,22 @@ def _update_state_with_event(state: dict, message: dict):
         runtime_stage = state.setdefault("runtime_stage", {})
         if status == "cancelled":
             runtime_stage["phase"] = "已取消"
-            runtime_stage["detail"] = "任务已取消"
         elif status == "failed":
             runtime_stage["phase"] = "异常"
-            runtime_stage["detail"] = "任务执行失败"
+            reason = ""
+            if isinstance(data, dict):
+                reason = str(data.get("error") or data.get("detail") or "").strip()
+            errors = state.setdefault("errors", [])
+            label = f"研究中断：{reason}" if reason else "研究中断"
+            # 终态前通常已有 error 事件：同因就地升级为带状态标签的文案，
+            # 既保证失败态有可读的终态文案，也不重复渲染两块 ❌。
+            if reason and reason in errors:
+                errors[errors.index(reason)] = label
+            else:
+                errors.append(label)
         elif status in {"completed", "cached"}:
             runtime_stage["phase"] = "完成"
-            runtime_stage["detail"] = "任务已完成"
+        runtime_stage["detail"] = ""
         runtime_stage["updated_at"] = time.time()
     elif event == "final_output":
         markdown = ""
@@ -3289,6 +3995,9 @@ def _update_state_with_event(state: dict, message: dict):
 
 _CANCEL_FLAGS = {}
 _ACTIVE_TASK_IDS: dict[str, str] = {}  # {task_id: caller_id}
+# 本地模式运行中 pipeline 的线程内 cancel_event；停止按钮直接置位，
+# 不依赖被取消的事件流生成器被回收后才触发取消。
+_ACTIVE_CANCEL_EVENTS: dict[str, object] = {}
 _CANCEL_LOCK = threading.Lock()
 
 # 最近一次任务的结构化运行指标，由 run_research_once 在任务结束后写入
@@ -3317,6 +4026,15 @@ def _unregister_active_task(task_id: str):
     with _CANCEL_LOCK:
         _ACTIVE_TASK_IDS.pop(task_id, None)
         _CANCEL_FLAGS.pop(task_id, None)
+
+
+def _signal_pipeline_cancel(task_ids: List[str]) -> None:
+    """置位本地 pipeline 的 cancel_event 并摘除注册。"""
+    with _CANCEL_LOCK:
+        events = [_ACTIVE_CANCEL_EVENTS.pop(task_id, None) for task_id in task_ids]
+    for event in events:
+        if event is not None:
+            event.set()
 
 
 def _get_active_task_ids(
@@ -3354,14 +4072,14 @@ async def _disconnect_check_for_task(task_id: str):
         return _CANCEL_FLAGS.get(task_id, False)
 
 
-def _spinner_markup(running: bool, status_text: str = "生成中...") -> str:
-    if not running:
-        return ""
+def _spinner_markup(status_text: str, elapsed_html: str = "") -> str:
+    safe = html.escape(str(status_text), quote=False)
     return (
-        '\n\n<div class="runtime-status" style="display:flex;align-items:center;gap:8px;color:#555;margin-top:8px;">'
-        '<div style="width:16px;height:16px;border:2px solid #ddd;border-top-color:#3b82f6;border-radius:50%;animation:spin 0.8s linear infinite;"></div>'
-        f"<span>{status_text}</span>"
-        "</div>\n<style>@keyframes spin{to{transform:rotate(360deg)}}</style>\n"
+        '\n\n<div class="runtime-status">'
+        '<div class="runtime-spinner" aria-hidden="true"></div>'
+        f'<span class="runtime-status-text">{safe}</span>'
+        f"{elapsed_html}"
+        "</div>\n"
     )
 
 
@@ -3386,9 +4104,11 @@ def _build_initial_ui_state(
     output_detail_level: str,
     render_mode: str,
     summary_merge_strategy: str,
+    ui_lang: str = DEFAULT_LANG,
 ) -> dict:
     return {
         "task_id": task_id,
+        "ui_lang": ui_lang if ui_lang in I18N else DEFAULT_LANG,
         "mode": mode,
         "search_profile": search_profile,
         "search_result_num": search_result_num,
@@ -3415,6 +4135,15 @@ def _build_launch_kwargs(host: str, port: int) -> dict:
     allowed_paths = _collect_gradio_allowed_paths()
     if allowed_paths:
         launch_kwargs["allowed_paths"] = allowed_paths
+    # Optional temporary public share (set GRADIO_SHARE=1). Prefer pairing with auth.
+    if _read_env_bool("GRADIO_SHARE", False):
+        launch_kwargs["share"] = True
+    auth_user = (os.getenv("GRADIO_AUTH_USER") or "").strip()
+    auth_pass = (os.getenv("GRADIO_AUTH_PASS") or "").strip()
+    if auth_user and auth_pass:
+        launch_kwargs["auth"] = (auth_user, auth_pass)
+        # Keep the share link from being casually browsed without credentials.
+        launch_kwargs["auth_message"] = "Private demo — sign in required."
     return launch_kwargs
 
 
@@ -3431,7 +4160,6 @@ def _build_reconnect_initial_render_state(snapshot: dict) -> dict:
     runtime_stage = state.setdefault("runtime_stage", {})
     if status == "queued":
         runtime_stage["phase"] = "排队"
-        runtime_stage["detail"] = "任务排队中"
     elif status == "running":
         if (
             current_stage.startswith("search")
@@ -3453,7 +4181,6 @@ def _build_reconnect_initial_render_state(snapshot: dict) -> dict:
             runtime_stage["phase"] = "总结"
         else:
             runtime_stage["phase"] = "推理"
-        runtime_stage["detail"] = "任务恢复中"
     else:
         return state
 
@@ -3467,6 +4194,59 @@ def _build_reconnect_initial_render_state(snapshot: dict) -> dict:
     return state
 
 
+def _is_waiting_output_markdown(markdown: Optional[str]) -> bool:
+    """True when markdown is the idle waiting placeholder (EN/CN)."""
+    text = str(markdown or "").strip()
+    if not text:
+        return True
+    for lang_pack in I18N.values():
+        waiting = str(lang_pack.get("output_waiting") or "").strip()
+        if waiting and text == waiting:
+            return True
+    return False
+
+
+def _pack_ui_stream(
+    markdown,
+    run_btn_update,
+    stop_btn_update,
+    ui_state,
+    *,
+    show_output: Optional[bool] = None,
+    update_controls: bool = True,
+):
+    """Pack Gradio stream outputs including output-section visibility.
+
+    Returns:
+        (markdown, run_btn, stop_btn, ui_state, task_id_bridge,
+         output_section_update, export_bar_update)
+
+    When ``update_controls`` is False, run/stop buttons are left untouched
+    (``gr.skip``). Mid-stream frames must skip controls so a Stop click that
+    re-enables Run is not overwritten by a late "still running" yield.
+    """
+    if show_output is None:
+        show_output = not _is_waiting_output_markdown(markdown)
+    # 导出条只在「有正文且无运行中 spinner」时可见：流式过程中隐藏，
+    # 终态（完成/失败/重连快照）出现。
+    export_visible = show_output and 'class="runtime-spinner"' not in str(markdown)
+    if update_controls:
+        run_update = run_btn_update
+        stop_update = stop_btn_update
+    else:
+        run_update = gr.skip()
+        stop_update = gr.skip()
+    return (
+        markdown,
+        run_update,
+        stop_update,
+        ui_state,
+        _task_id_bridge_value(ui_state),
+        gr.update(visible=bool(show_output)),
+        gr.update(visible=export_visible),
+    )
+
+
 async def _render_stream_via_api(
     task_id: str,
     *,
@@ -3478,20 +4258,24 @@ async def _render_stream_via_api(
     """订阅 api-server SSE 流并按既有渲染管线产出 Gradio 输出元组。
 
     Yields:
-        (markdown, run_btn_update, stop_btn_update, ui_state)
+        (markdown, run_btn_update, stop_btn_update, ui_state, task_id_bridge,
+         output_section, export_bar)
     """
     state = initial_state or _init_render_state()
     initial_markdown = _render_markdown(
         state,
         render_mode=resolved_ui_render_mode,
         final_summary_merge_strategy=resolved_summary_merge_strategy,
+        output_detail_level=(ui_state or {}).get("output_detail_level"),
+        ui_lang=(ui_state or {}).get("ui_lang"),
     )
-    yield (
-        initial_markdown + _spinner_markup(True, _format_runtime_status_label(state)),
+    yield _pack_ui_stream(
+        initial_markdown
+        + _runtime_status_markup(state, ui_lang=ui_state.get("ui_lang")),
         gr.update(interactive=False),
         gr.update(interactive=True),
         ui_state,
-        _task_id_bridge_value(ui_state),
+        show_output=True,
     )
 
     # 取消检查复用本地 _CANCEL_FLAGS：stop 按钮按下后会 set 标志
@@ -3502,86 +4286,82 @@ async def _render_stream_via_api(
         async for message in api_client.stream_task_events(
             task_id, cancel_check=_cancel_check
         ):
-            event_type = message.get("event", "unknown")
-            if event_type == "done":
-                # 服务端终态信号：completed / cancelled / failed / cached
-                done_status = (message.get("data") or {}).get("status", "completed")
-                if done_status == "failed":
-                    state["errors"].append("任务执行失败")
-                break
-            if event_type == "heartbeat":
-                state = _update_state_with_event(state, message)
-                heartbeat_ts = (message.get("data") or {}).get("timestamp")
-                heartbeat_label = _format_runtime_status_label(state, heartbeat_ts)
-                heartbeat_md = _render_markdown(
-                    state,
-                    render_mode=resolved_ui_render_mode,
-                    final_summary_merge_strategy=resolved_summary_merge_strategy,
-                )
-                yield (
-                    heartbeat_md + _spinner_markup(True, heartbeat_label),
-                    gr.update(interactive=False),
-                    gr.update(interactive=True),
-                    ui_state,
-                    _task_id_bridge_value(ui_state),
-                )
-                continue
             state = _update_state_with_event(state, message)
+            if str(message.get("event") or "") == "done":
+                # 服务端终态信号：completed / cancelled / failed / cached
+                break
             md = _render_markdown(
                 state,
                 render_mode=resolved_ui_render_mode,
                 final_summary_merge_strategy=resolved_summary_merge_strategy,
+                output_detail_level=(ui_state or {}).get("output_detail_level"),
+                ui_lang=(ui_state or {}).get("ui_lang"),
             )
-            yield (
-                md + _spinner_markup(True, _format_runtime_status_label(state)),
+            yield _pack_ui_stream(
+                md + _runtime_status_markup(state, ui_lang=ui_state.get("ui_lang")),
                 gr.update(interactive=False),
                 gr.update(interactive=True),
                 ui_state,
-                _task_id_bridge_value(ui_state),
+                show_output=True,
+                update_controls=False,
             )
             await asyncio.sleep(0.01)
+    except asyncio.CancelledError:
+        # 不要在取消路径里再 yield：Gradio 取消后若生成器继续产出，
+        # 队列可能卡住，导致「停止后再点开始」无响应。
+        raise
     except api_client.TaskNotFoundError:
         cleared_ui_state = {**ui_state, "task_id": None}
-        yield (
+        yield _pack_ui_stream(
             f"任务 `{task_id}` 不存在或已过期，请重新发起检索。",
             gr.update(interactive=True),
             gr.update(interactive=False),
             cleared_ui_state,
-            _task_id_bridge_value(cleared_ui_state),
+            show_output=True,
         )
         return
     except api_client.ApiClientError as exc:
         logger.error("API SSE 订阅失败: %s", exc)
-        yield (
+        yield _pack_ui_stream(
             f"连接 api-server 失败：{exc}",
             gr.update(interactive=True),
             gr.update(interactive=False),
             ui_state,
-            _task_id_bridge_value(ui_state),
+            show_output=True,
         )
         return
     except Exception as exc:
         logger.exception("API 流处理异常")
-        yield (
+        yield _pack_ui_stream(
             f"流处理异常：{exc}",
             gr.update(interactive=True),
             gr.update(interactive=False),
             ui_state,
-            _task_id_bridge_value(ui_state),
+            show_output=True,
         )
         return
+
+    phase = str((state.get("runtime_stage") or {}).get("phase") or "")
+    cancelled_locally = await _disconnect_check_for_task(task_id)
+    if cancelled_locally and phase not in ("异常", "已取消", "完成"):
+        # 本地停止后 done 事件不会再到达，补一个终态，避免最后一帧看不到取消标记。
+        state = _update_state_with_event(
+            state, {"event": "done", "data": {"status": "cancelled"}}
+        )
 
     final_md = _render_markdown(
         state,
         render_mode=resolved_ui_render_mode,
         final_summary_merge_strategy=resolved_summary_merge_strategy,
+        output_detail_level=(ui_state or {}).get("output_detail_level"),
+        ui_lang=(ui_state or {}).get("ui_lang"),
     )
-    yield (
+    yield _pack_ui_stream(
         final_md,
         gr.update(interactive=True),
         gr.update(interactive=False),
         ui_state,
-        _task_id_bridge_value(ui_state),
+        show_output=True,
     )
 
 
@@ -3608,23 +4388,23 @@ async def _gradio_run_via_api(
         )
     except api_client.ApiClientError as exc:
         logger.error("api-server 创建任务失败: %s", exc)
-        yield (
+        yield _pack_ui_stream(
             f"提交任务到 api-server 失败：{exc}",
             gr.update(interactive=True),
             gr.update(interactive=False),
             ui_state,
-            _task_id_bridge_value(ui_state),
+            show_output=True,
         )
         return
 
     task_id = created.get("task_id")
     if not task_id:
-        yield (
+        yield _pack_ui_stream(
             "api-server 未返回 task_id，请检查后端日志。",
             gr.update(interactive=True),
             gr.update(interactive=False),
             ui_state,
-            _task_id_bridge_value(ui_state),
+            show_output=True,
         )
         return
 
@@ -3651,6 +4431,7 @@ async def gradio_run(
     search_result_num: int = DEFAULT_SEARCH_RESULT_NUM,
     verification_min_search_rounds: int = DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS,
     output_detail_level: str = DEFAULT_OUTPUT_DETAIL_LEVEL,
+    lang: str = DEFAULT_LANG,
     ui_state: Optional[dict] = None,
 ):
     query = replace_chinese_punctuation(query or "")
@@ -3671,6 +4452,7 @@ async def gradio_run(
     resolved_summary_merge_strategy = _normalize_final_summary_merge_strategy(
         _get_summary_merge_for_output_detail(resolved_output_detail_level)
     )
+    resolved_ui_lang = lang if lang in I18N else DEFAULT_LANG
 
     # ===== API 后端模式：把任务交给 api-server，刷新页面可由 task_id 重连 =====
     if api_client.is_api_mode_enabled():
@@ -3684,6 +4466,7 @@ async def gradio_run(
             output_detail_level=resolved_output_detail_level,
             render_mode=resolved_ui_render_mode,
             summary_merge_strategy=resolved_summary_merge_strategy,
+            ui_lang=resolved_ui_lang,
         )
         merged_state = {**base_state, **new_ui_state}
         async for tup in _gradio_run_via_api(
@@ -3712,6 +4495,7 @@ async def gradio_run(
             "verification_min_search_rounds": resolved_verification_min_rounds,
             "render_mode": resolved_ui_render_mode,
             "output_detail_level": resolved_output_detail_level,
+            "ui_lang": resolved_ui_lang,
             "final_summary_merge_strategy": resolved_summary_merge_strategy,
         }
     else:
@@ -3724,6 +4508,7 @@ async def gradio_run(
             "verification_min_search_rounds": resolved_verification_min_rounds,
             "render_mode": resolved_ui_render_mode,
             "output_detail_level": resolved_output_detail_level,
+            "ui_lang": resolved_ui_lang,
             "final_summary_merge_strategy": resolved_summary_merge_strategy,
         }
     state = _init_render_state()
@@ -3732,15 +4517,16 @@ async def gradio_run(
             state,
             render_mode=resolved_ui_render_mode,
             final_summary_merge_strategy=resolved_summary_merge_strategy,
+            output_detail_level=resolved_output_detail_level,
+            ui_lang=resolved_ui_lang,
         )
         # Initial: disable Run, enable Stop, and show spinner at bottom of text
-        yield (
-            initial_markdown
-            + _spinner_markup(True, _format_runtime_status_label(state)),
+        yield _pack_ui_stream(
+            initial_markdown + _runtime_status_markup(state, ui_lang=resolved_ui_lang),
             gr.update(interactive=False),
             gr.update(interactive=True),
             ui_state,
-            _task_id_bridge_value(ui_state),
+            show_output=True,
         )
         async for message in stream_events_optimized(
             task_id,
@@ -3752,52 +4538,45 @@ async def gradio_run(
             resolved_output_detail_level,
             lambda: _disconnect_check_for_task(task_id),
         ):
-            event_type = message.get("event", "unknown")
-            if event_type == "heartbeat":
-                state = _update_state_with_event(state, message)
-                heartbeat_ts = (message.get("data") or {}).get("timestamp")
-                heartbeat_label = _format_runtime_status_label(state, heartbeat_ts)
-                heartbeat_markdown = _render_markdown(
-                    state,
-                    render_mode=resolved_ui_render_mode,
-                    final_summary_merge_strategy=resolved_summary_merge_strategy,
-                )
-                yield (
-                    heartbeat_markdown + _spinner_markup(True, heartbeat_label),
-                    gr.update(interactive=False),
-                    gr.update(interactive=True),
-                    ui_state,
-                    _task_id_bridge_value(ui_state),
-                )
-                continue
-
             state = _update_state_with_event(state, message)
             md = _render_markdown(
                 state,
                 render_mode=resolved_ui_render_mode,
                 final_summary_merge_strategy=resolved_summary_merge_strategy,
+                output_detail_level=resolved_output_detail_level,
+                ui_lang=resolved_ui_lang,
             )
-            yield (
-                md + _spinner_markup(True, _format_runtime_status_label(state)),
+            yield _pack_ui_stream(
+                md + _runtime_status_markup(state, ui_lang=resolved_ui_lang),
                 gr.update(interactive=False),
                 gr.update(interactive=True),
                 ui_state,
-                _task_id_bridge_value(ui_state),
+                show_output=True,
+                update_controls=False,
             )
             # Small delay to allow Gradio to process the update
             await asyncio.sleep(0.01)
+        if await _disconnect_check_for_task(task_id):
+            # 停止帧已经把界面置为「已停止」，这里再补一帧会用旧任务的正文和控制台
+            # 状态覆盖用户随后发起的新任务。
+            return
         # End: enable Run, disable Stop, remove spinner
-        yield (
+        yield _pack_ui_stream(
             _render_markdown(
                 state,
                 render_mode=resolved_ui_render_mode,
                 final_summary_merge_strategy=resolved_summary_merge_strategy,
+                output_detail_level=resolved_output_detail_level,
+                ui_lang=resolved_ui_lang,
             ),
             gr.update(interactive=True),
             gr.update(interactive=False),
             ui_state,
-            _task_id_bridge_value(ui_state),
+            show_output=True,
         )
+    except asyncio.CancelledError:
+        # 见 _render_stream_via_api：取消路径禁止再 yield，避免队列卡死。
+        raise
     finally:
         _unregister_active_task(task_id)
 
@@ -3891,6 +4670,7 @@ async def run_research_once(
             state,
             render_mode=resolved_api_render_mode,
             final_summary_merge_strategy=resolved_summary_merge_strategy,
+            output_detail_level=resolved_output_detail_level,
         )
         # 只有明确成功且收到最终总结时才写缓存；失败、取消或流异常不能污染后续请求。
         if (
@@ -3963,19 +4743,7 @@ async def _run_research_once_via_api(
                     "api-server 终态协议错误：done.status 必须是 "
                     "completed、cached、failed 或 cancelled。"
                 )
-            detail = str(
-                done_data.get("error") or done_data.get("detail") or ""
-            ).strip()
-            if done_status == "failed":
-                message_text = "任务执行失败"
-                if detail:
-                    message_text = f"{message_text}：{detail}"
-                state.setdefault("errors", []).append(message_text)
-            elif done_status == "cancelled":
-                message_text = "任务已取消"
-                if detail:
-                    message_text = f"{message_text}：{detail}"
-                state.setdefault("errors", []).append(message_text)
+            state = _update_state_with_event(state, message)
             break
         if not done_status:
             cancelled_locally = await _disconnect_check_for_task(task_id)
@@ -3994,13 +4762,16 @@ async def _run_research_once_via_api(
         _unregister_active_task(task_id)
 
     if not done_status and cancelled_locally:
-        state.setdefault("errors", []).append("任务已取消")
+        state = _update_state_with_event(
+            state, {"event": "done", "data": {"status": "cancelled"}}
+        )
     elif not done_status:
         return "api-server 事件流已结束，但未收到终态，请稍后重试。"
     result = _render_markdown(
         state,
         render_mode=resolved_api_render_mode,
         final_summary_merge_strategy=resolved_summary_merge_strategy,
+        output_detail_level=resolved_output_detail_level,
     )
     if done_status in {"completed", "cached"} and "final-output" not in state["agents"]:
         return "api-server 已完成任务，但未返回可展示的最终结果。"
@@ -4051,14 +4822,54 @@ def _schedule_remote_task_cancellation(task_ids: List[str]) -> int:
     return len(resolved_task_ids)
 
 
-def stop_current_ui(ui_state: Optional[dict] = None):
+def _mark_runtime_status_cancelled(
+    markdown: Optional[str], ui_lang: Optional[str] = None
+) -> Optional[str]:
+    """把流式状态块改写为终态「已停止」。
+
+    停止按钮会 cancel 掉事件流，最后一帧的 spinner 不会再被覆盖，
+    因此在这里就地清掉 spinner 并换成终态文案。
+    """
+    text = str(markdown or "")
+    if 'class="runtime-status"' not in text:
+        return markdown
+    label = _format_runtime_status_label(
+        {"runtime_stage": {"phase": "已取消"}}, ui_lang=ui_lang
+    )
+    text = re.sub(r'<div class="runtime-spinner"[^>]*></div>', "", text)
+    # 终态不再自增：摘掉计时钩子，并按停止这一刻重算耗时
+    # （最后一帧是上一次服务端渲染的，直接沿用会让耗时回跳到几秒前）
+    text = re.sub(
+        r'<span class="runtime-elapsed-value" style="--start-ts:(\d+)">[^<]*</span>',
+        lambda match: (
+            '<span class="runtime-elapsed-value">'
+            f"{_format_elapsed_value(float(match.group(1)))}</span>"
+        ),
+        text,
+    )
+    text = re.sub(
+        r'(<span class="runtime-status-text">)[^<]*(</span>)',
+        lambda match: f"{match.group(1)}{label}{match.group(2)}",
+        text,
+    )
+    return text
+
+
+def stop_current_ui(ui_state: Optional[dict] = None, markdown: Optional[str] = None):
     tid = (ui_state or {}).get("task_id")
-    target_ids = [tid] if tid else _get_active_task_ids()
+    # 界面里的 ui_state 可能还指向上一个已经不在活动表中的任务（例如上一帧尚未送达），
+    # 这时要取消当前仍在跑的界面任务，否则停止会静默 no-op。
+    active_ui_ids = _get_active_task_ids("")
+    target_ids = [tid] if tid in active_ui_ids else active_ui_ids
     _cancel_task_ids(target_ids)
+    _signal_pipeline_cancel(target_ids)
     # API 模式：同步通知 api-server 设置取消标记，让 worker 协作式中止
-    if api_client.is_api_mode_enabled() and tid:
-        _schedule_remote_task_cancellation([tid])
+    if api_client.is_api_mode_enabled() and target_ids:
+        _schedule_remote_task_cancellation(target_ids)
     return (
+        _mark_runtime_status_cancelled(
+            markdown, ui_lang=(ui_state or {}).get("ui_lang")
+        ),
         gr.update(interactive=True),
         gr.update(interactive=False),
     )
@@ -4074,20 +4885,21 @@ async def reconnect_or_init(
 ):
     """页面加载时根据 URL `?task_id=...` 决定是否重连任务。
 
-    Yields 与 gradio_run 相同的 4 元组：
-        (markdown, run_btn_update, stop_btn_update, ui_state)
+    Yields 与 gradio_run 相同的 7 元组：
+        (markdown, run_btn_update, stop_btn_update, ui_state, task_id_bridge,
+         output_section, export_bar)
 
     当 URL 没有 task_id，或不在 API 模式时，仅恢复初始空闲态。
     """
     base_state = ui_state or {}
 
     # 首屏空闲态：等待用户输入
-    idle_tuple = (
+    idle_tuple = _pack_ui_stream(
         I18N[DEFAULT_LANG]["output_waiting"],
         gr.update(interactive=True),
         gr.update(interactive=False),
         base_state,
-        _task_id_bridge_value(base_state),
+        show_output=False,
     )
 
     if not api_client.is_api_mode_enabled():
@@ -4116,23 +4928,23 @@ async def reconnect_or_init(
     except api_client.ApiClientError as exc:
         cleared_ui_state = {**base_state, "task_id": None}
         logger.warning("get_task 失败 task_id=%s err=%s", task_id, exc)
-        yield (
+        yield _pack_ui_stream(
             f"无法连接 api-server：{exc}",
             gr.update(interactive=True),
             gr.update(interactive=False),
             cleared_ui_state,
-            _task_id_bridge_value(cleared_ui_state),
+            show_output=True,
         )
         return
 
     if snapshot is None:
         cleared_ui_state = {**base_state, "task_id": None}
-        yield (
+        yield _pack_ui_stream(
             f"任务 `{task_id}` 不存在或已过期，请重新发起检索。",
             gr.update(interactive=True),
             gr.update(interactive=False),
             cleared_ui_state,
-            _task_id_bridge_value(cleared_ui_state),
+            show_output=True,
         )
         return
 
@@ -4164,6 +4976,7 @@ async def reconnect_or_init(
         output_detail_level=resolved_output_detail_level,
         render_mode=resolved_ui_render_mode,
         summary_merge_strategy=resolved_summary_merge_strategy,
+        ui_lang=(base_state or {}).get("ui_lang") or DEFAULT_LANG,
     )
     new_ui_state = {**base_state, **new_ui_state}
 
@@ -4377,1565 +5190,61 @@ def _update_verification_rounds_visibility(mode: str):
     return gr.update(visible=_is_verified_mode(mode))
 
 
+# Unified outline icon set (24x24, stroke 1.75, round caps/joins).
+# Used by top-right Skills button (inline SVG) and action buttons (CSS masks).
+_ICON_SVG_ATTRS = (
+    'xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" '
+    'fill="none" stroke="currentColor" stroke-width="1.75" '
+    'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"'
+)
+_ICON_PATHS = {
+    "download": '<path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/>',
+    "settings": (
+        '<circle cx="12" cy="12" r="3"/>'
+        '<path d="M12 2v2"/><path d="M12 20v2"/>'
+        '<path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/>'
+        '<path d="M2 12h2"/><path d="M20 12h2"/>'
+        '<path d="m4.93 19.07 1.41-1.41"/><path d="m17.66 6.34 1.41-1.41"/>'
+    ),
+    "export": ('<path d="M12 21V9"/><path d="m7 14 5-5 5 5"/>' '<path d="M5 3h14"/>'),
+    "stop": '<rect x="6" y="6" width="12" height="12" rx="1.5"/>',
+    "run": '<path d="M8 5.5v13l11-6.5-11-6.5z"/>',
+    "close": '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+}
+
+
+def _icon_svg(name: str) -> str:
+    paths = _ICON_PATHS[name]
+    return f"<svg {_ICON_SVG_ATTRS}>{paths}</svg>"
+
+
 def build_demo():
-    api_client.get_backend_mode()
-    logo_data_uri = _load_logo_data_uri()
-    fallback_favicon_data_uri = _build_fallback_favicon_data_uri()
+    """Compose Gradio UI (layout lives in ``ui_layout`` / ``ui_demo``)."""
+    from ui_demo import build_gradio_blocks
 
-    custom_css = """
-    /* ========== MiroThinker - Clean Emerald Design ========== */
-    
-    /* Base */
-    .gradio-container {
-        --app-bg: #f9fafb;
-        --panel-bg: #ffffff;
-        --panel-border: rgba(0, 0, 0, 0.06);
-        --panel-shadow: 0 1px 3px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.03);
-        --ink-strong: #111827;
-        --ink-body: #374151;
-        --ink-soft: #6b7280;
-        --accent: #10b981;
-        --accent-strong: #059669;
-        --accent-soft: #d1fae5;
-        max-width: 100% !important;
-        margin: 0 !important;
-        padding: 0 !important;
-        font-family: __LOCAL_FONT_FAMILY_STACK__ !important;
-        background: #ffffff !important;
-        color: var(--ink-strong);
-        min-height: 100vh;
-        position: relative;
-    }
-
-    .gradio-container::before {
-        display: none;
-    }
-
-    /* 强力清除 Gradio 默认包装盒的丑陋背景与边框 */
-    .gradio-container .form,
-    .gradio-container fieldset,
-    #main-content-column .form,
-    #right-options-column .form,
-    #input-section .block,
-    #input-section .solid,
-    #options-panel .block,
-    #options-panel .solid {
-        background: transparent !important;
-        border: none !important;
-        box-shadow: none !important;
-    }
-
-
-
-    /* ===== Options Panel ===== */
-    #right-options-column {
-        gap: 0 !important;
-    }
-
-    #options-panel {
-        width: 100% !important;
-        background: #ffffff !important;
-        border: 1px solid rgba(0, 0, 0, 0.03) !important;
-        border-radius: 16px !important;
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.02) !important;
-        padding: 18px 16px !important;
-    }
-
-    .options-title {
-        font-size: 0.72em;
-        font-weight: 700;
-        letter-spacing: 0.12em;
-        text-transform: uppercase;
-        color: #64748b;
-        margin-bottom: 12px;
-    }
-
-    #mode-selector,
-    #search-profile-selector,
-    #search-result-num-selector,
-    #verification-rounds-selector,
-    #output-detail-level-selector {
-        border: 0 !important;
-        background: transparent !important;
-        padding: 0 !important;
-        margin-bottom: 14px !important;
-        box-shadow: none !important;
-    }
-
-    #mode-selector .container,
-    #search-profile-selector .container,
-    #search-result-num-selector .container,
-    #verification-rounds-selector .container,
-    #output-detail-level-selector .container {
-        background: transparent !important;
-        border: none !important;
-        box-shadow: none !important;
-        padding: 0 !important;
-    }
-
-    #mode-selector label,
-    #search-profile-selector label,
-    #search-result-num-selector label,
-    #verification-rounds-selector label,
-    #output-detail-level-selector label {
-        color: var(--ink-strong) !important;
-        font-weight: 600 !important;
-    }
-
-    #mode-selector [data-testid="block-info"],
-    #search-profile-selector [data-testid="block-info"],
-    #search-result-num-selector [data-testid="block-info"],
-    #verification-rounds-selector [data-testid="block-info"],
-    #output-detail-level-selector [data-testid="block-info"] {
-        color: var(--ink-strong) !important;
-        font-weight: 700 !important;
-        font-size: 0.9em !important;
-        letter-spacing: 0.01em;
-    }
-
-    #mode-selector .md p,
-    #search-profile-selector .md p,
-    #search-result-num-selector .md p,
-    #verification-rounds-selector .md p,
-    #output-detail-level-selector .md p {
-        color: #94a3b8 !important;
-        font-size: 0.7em !important;
-        line-height: 1.45 !important;
-        margin: 4px 0 8px !important;
-    }
-
-    #mode-selector .wrap,
-    #search-profile-selector .wrap,
-    #search-result-num-selector .wrap,
-    #verification-rounds-selector .wrap,
-    #output-detail-level-selector .wrap {
-        background: #ffffff !important;
-        border: 1px solid rgba(0, 0, 0, 0.1) !important;
-        border-radius: 10px !important;
-        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02) !important;
-        transition: border-color 0.2s ease;
-    }
-    
-    #mode-selector .wrap:hover,
-    #search-profile-selector .wrap:hover,
-    #search-result-num-selector .wrap:hover,
-    #verification-rounds-selector .wrap:hover,
-    #output-detail-level-selector .wrap:hover {
-        border-color: rgba(16, 185, 129, 0.4) !important;
-    }
-
-    #mode-selector input,
-    #search-profile-selector input,
-    #search-result-num-selector input,
-    #verification-rounds-selector input,
-    #output-detail-level-selector input {
-        color: var(--ink-strong) !important;
-        font-weight: 600 !important;
-    }
-
-    #mode-selector svg,
-    #search-profile-selector svg,
-    #search-result-num-selector svg,
-    #verification-rounds-selector svg,
-    #output-detail-level-selector svg {
-        fill: #475569 !important;
-    }
-    
-    #btn-row {
-        padding: 12px 24px 16px !important;
-        border-top: 1px solid rgba(0, 0, 0, 0.04);
-        gap: 12px !important;
-        background: #ffffff;
-    }
-    
-    #run-btn {
-        background: #10b981 !important;
-        color: #ffffff !important;
-        border: none !important;
-        border-radius: 12px !important;
-        padding: 12px 20px !important;
-        font-size: 0.92em !important;
-        font-weight: 600 !important;
-        letter-spacing: 0.05em !important;
-        cursor: pointer !important;
-        transition: all 0.2s ease !important;
-        box-shadow: 0 2px 4px rgba(16, 185, 129, 0.15) !important;
-    }
-    
-    #run-btn:hover {
-        background: #059669 !important;
-        transform: translateY(-1px) !important;
-        box-shadow: 0 4px 8px rgba(16, 185, 129, 0.25) !important;
-    }
-    
-    #stop-btn {
-        background: #ffffff !important;
-        color: #64748b !important;
-        border: 1px solid rgba(0, 0, 0, 0.06) !important;
-        border-radius: 12px !important;
-        padding: 12px 20px !important;
-        font-size: 0.92em !important;
-        font-weight: 500 !important;
-        cursor: pointer !important;
-        transition: all 0.2s ease !important;
-    }
-    
-    #stop-btn:hover {
-        color: #dc2626 !important;
-        border-color: rgba(220, 38, 38, 0.2) !important;
-        background: #fef2f2 !important;
-    }
-    
-    /* ===== Output Section ===== */
-    #output-section {
-        width: 100% !important;
-        max-width: 980px !important;
-        margin: 0 auto !important;
-        padding: 0 0 60px !important;
-    }
-    
-    .output-label {
-        font-size: 0.78em;
-        font-weight: 700;
-        color: var(--ink-soft);
-        text-transform: uppercase;
-        letter-spacing: 0.12em;
-        margin-bottom: 12px;
-        padding: 0 6px;
-    }
-    
-    #log-view {
-        padding: 40px 48px !important;
-        min-height: 420px;
-        height: auto !important;
-        overflow: visible !important;
-        background: #ffffff !important;
-        border: none !important;
-        border-radius: 28px !important;
-        box-shadow: 0 4px 20px -4px rgba(0, 0, 0, 0.04), 0 0 0 1px rgba(0, 0, 0, 0.03) !important;
-    }
-
-    #export-row {
-        margin-top: 14px !important;
-        gap: 12px !important;
-        align-items: flex-end !important;
-    }
-
-    #export-btn {
-        border-radius: 12px !important;
-        border: 1px solid rgba(16, 185, 129, 0.18) !important;
-        color: #047857 !important;
-        background: #ecfdf5 !important;
-        font-weight: 700 !important;
-    }
-
-    .export-hint {
-        margin: 8px 6px 0;
-        color: #64748b;
-        font-size: 0.82em;
-        line-height: 1.6;
-    }
-    
-    #log-view h3 {
-        font-size: 1.02em;
-        font-weight: 700;
-        color: var(--ink-strong);
-        margin: 28px 0 16px 0;
-        padding-bottom: 10px;
-        border-bottom: 1px solid rgba(15, 23, 42, 0.08);
-    }
-    
-    #log-view h3:first-child {
-        margin-top: 0;
-    }
-    
-    /* Error block */
-    .error-block {
-        background: linear-gradient(180deg, #fff6f6 0%, #fff0f0 100%);
-        border: 1px solid rgba(239, 68, 68, 0.18);
-        border-radius: 16px;
-        padding: 14px 16px;
-        margin: 12px 0;
-        color: #b91c1c;
-        font-size: 0.9em;
-    }
-    
-    /* Thought details card */
-    .thought-card {
-        background: linear-gradient(180deg, rgba(248, 250, 252, 0.94), rgba(255, 255, 255, 0.98));
-        border: 1px solid rgba(15, 23, 42, 0.06);
-        border-left: 3px solid #10b981;
-        border-radius: 14px;
-        padding: 12px 16px;
-        margin: 12px 0;
-        box-shadow: 0 4px 12px rgba(15, 23, 42, 0.015);
-    }
-    
-    .thought-card > summary {
-        cursor: pointer;
-        font-size: 0.9em;
-        font-weight: 600;
-        color: #475569;
-        outline: none;
-        user-select: none;
-    }
-
-    .thought-card[open] > summary {
-        margin-bottom: 10px;
-        border-bottom: 1px solid rgba(15, 23, 42, 0.05);
-        padding-bottom: 6px;
-    }
-    
-    .thought-content {
-        font-size: 0.9em;
-        color: var(--ink-body);
-        line-height: 1.7;
-    }
-    
-    /* Tool card */
-    .tool-card {
-        background: linear-gradient(180deg, rgba(246, 248, 250, 0.94), rgba(255, 255, 255, 0.98));
-        border: 1px solid rgba(15, 23, 42, 0.07);
-        border-radius: 18px;
-        padding: 14px 16px;
-        margin: 14px 0;
-        box-shadow: 0 8px 20px rgba(15, 23, 42, 0.04);
-    }
-    
-    .tool-header {
-        font-size: 0.9em;
-        font-weight: 500;
-        color: var(--ink-strong);
-        margin-bottom: 4px;
-    }
-    
-    .tool-brief {
-        font-size: 0.8em;
-        color: var(--ink-soft);
-        margin-top: 4px;
-    }
-    
-    .tool-status {
-        font-size: 0.8em;
-        color: var(--accent);
-        margin-top: 6px;
-    }
-    
-    #log-view blockquote {
-        background: rgba(209, 250, 229, 0.3);
-        border: none;
-        border-left: 3px solid var(--accent);
-        padding: 18px 22px;
-        margin: 18px 0;
-        border-radius: 0 18px 18px 0;
-        font-style: normal;
-        color: #065f46;
-        font-size: 0.95em;
-        line-height: 1.8;
-    }
-    
-    #log-view pre {
-        background: #f6f8fb !important;
-        color: #1e293b !important;
-        border-radius: 18px !important;
-        padding: 18px !important;
-        font-size: 0.85em !important;
-        line-height: 1.6 !important;
-        overflow-x: auto;
-        margin: 14px 0;
-        border: 1px solid rgba(148, 163, 184, 0.2);
-    }
-    
-    #log-view pre code {
-        background: transparent !important;
-        color: #1e293b !important;
-        font-family: 'SF Mono', 'Fira Code', 'JetBrains Mono', Consolas, monospace !important;
-        font-size: inherit !important;
-        padding: 0 !important;
-        white-space: pre-wrap;
-        word-break: break-word;
-    }
-    
-    #log-view code {
-        font-family: 'SF Mono', 'Fira Code', 'JetBrains Mono', Consolas, monospace !important;
-        background: #eef4f7 !important;
-        color: #1e293b !important;
-        padding: 3px 7px !important;
-        border-radius: 6px !important;
-        font-size: 0.9em !important;
-    }
-    
-    #log-view p {
-        line-height: 1.85;
-        color: #334155;
-        margin: 0 0 14px;
-    }
-
-    #log-view .process-details {
-        margin-top: 14px;
-        border: 1px solid rgba(15, 23, 42, 0.08);
-        border-radius: 16px;
-        background: rgba(248, 250, 252, 0.72);
-        padding: 12px 14px;
-    }
-
-    #log-view .process-details > summary {
-        cursor: pointer;
-        color: #334155;
-        font-size: 0.92em;
-        font-weight: 600;
-    }
-
-    #log-view .process-details[open] > summary {
-        margin-bottom: 10px;
-    }
-
-    #log-view .search-step-board {
-        margin: 16px 0 12px;
-        border: 1px solid #e5e7eb;
-        border-radius: 14px;
-        overflow: hidden;
-        background: #ffffff;
-    }
-
-    #log-view .search-step-item {
-        padding: 12px 16px;
-        font-size: 0.88em;
-        line-height: 1.6;
-        color: #334155;
-        border-bottom: 1px solid #eef2f7;
-        background: #f9fafb;
-    }
-
-    #log-view .search-step-item:last-child {
-        border-bottom: none;
-    }
-    
-    #log-view::-webkit-scrollbar {
-        width: 6px;
-    }
-    
-    #log-view::-webkit-scrollbar-track {
-        background: transparent;
-    }
-    
-    #log-view::-webkit-scrollbar-thumb {
-        background: #e5e5e5;
-        border-radius: 3px;
-    }
-    
-    #log-view::-webkit-scrollbar-thumb:hover {
-        background: #d4d4d8;
-    }
-    
-    /* ===== Footer ===== */
-    .app-footer {
-        text-align: center;
-        padding: 24px;
-        color: #a1a1aa;
-        font-size: 0.85em;
-        border-top: 1px solid #f0f0f0;
-    }
-    
-    /* ===== Loading Spinner ===== */
-    @keyframes spin {
-        to { transform: rotate(360deg); }
-    }
-    
-    .loading-indicator {
-        display: inline-flex;
-        align-items: center;
-        gap: 10px;
-        color: #10b981;
-        font-size: 0.9em;
-        padding: 12px 0;
-    }
-    
-    .loading-indicator::before {
-        content: '';
-        width: 16px;
-        height: 16px;
-        border: 2px solid #d1fae5;
-        border-top-color: #10b981;
-        border-radius: 50%;
-        animation: spin 0.8s linear infinite;
-    }
-    
-    /* ===== Search Results Card ===== */
-    .search-card {
-        background: #ffffff;
-        border: 1px solid #e5e5e5;
-        border-radius: 12px;
-        margin: 16px 0;
-        overflow: hidden;
-    }
-    
-    .search-header {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        padding: 14px 18px;
-        background: #fafafa;
-        border-bottom: 1px solid #f0f0f0;
-    }
-    
-    .search-icon {
-        font-size: 1em;
-        color: #10b981;
-    }
-    
-    .search-query {
-        font-size: 0.9em;
-        color: #3f3f46;
-        font-weight: 500;
-    }
-    
-    .search-count {
-        padding: 10px 18px;
-        font-size: 0.8em;
-        color: #71717a;
-        background: #fafafa;
-        border-bottom: 1px solid #f0f0f0;
-    }
-    
-    .search-results {
-        padding: 8px 0;
-    }
-    
-    .search-result-item {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        padding: 12px 18px;
-        text-decoration: none;
-        color: #3f3f46;
-        font-size: 0.9em;
-        transition: background 0.15s;
-        border-left: 3px solid transparent;
-    }
-    
-    .search-result-item:hover {
-        background: #f9fafb;
-        border-left-color: #10b981;
-    }
-    
-    .result-icon {
-        font-size: 1em;
-        flex-shrink: 0;
-        opacity: 0.6;
-    }
-    
-    .result-title {
-        flex: 1;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-    }
-    
-    /* ===== Scrape Card ===== */
-    .scrape-card {
-        background: #ffffff;
-        border: 1px solid #e5e5e5;
-        border-radius: 10px;
-        margin: 12px 0;
-        padding: 12px 16px;
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 12px;
-    }
-    
-    .scrape-card.scrape-error {
-        border-color: #fecaca;
-        background: #fef2f2;
-    }
-    
-    .scrape-header {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        flex: 1;
-        min-width: 0;
-    }
-    
-    .scrape-icon {
-        font-size: 1em;
-        opacity: 0.6;
-    }
-    
-    .scrape-url {
-        font-size: 0.85em;
-        color: #52525b;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-    }
-    
-    .scrape-status {
-        font-size: 0.8em;
-        padding: 4px 10px;
-        border-radius: 6px;
-        flex-shrink: 0;
-    }
-    
-    .scrape-status.success {
-        background: #ecfdf5;
-        color: #059669;
-    }
-    
-    .scrape-status.error {
-        background: #fef2f2;
-        color: #dc2626;
-    }
-    
-    /* ===== Final Summary Section ===== */
-    .final-summary-divider {
-        height: 1px;
-        background: linear-gradient(to right, transparent, #e5e5e5, transparent);
-        margin: 32px 0;
-    }
-    
-    .final-summary-section {
-        background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
-        border: 1px solid #e2e8f0;
-        border-radius: 16px;
-        padding: 24px;
-        margin-top: 16px;
-    }
-    
-    .final-summary-header {
-        font-size: 1.1em;
-        font-weight: 600;
-        color: #1e293b;
-        margin-bottom: 16px;
-        padding-bottom: 12px;
-        border-bottom: 2px solid #3b82f6;
-        display: inline-block;
-    }
-    
-    .final-summary-content {
-        color: #334155;
-        line-height: 1.8;
-    }
-    
-    .final-summary-content h1,
-    .final-summary-content h2,
-    .final-summary-content h3 {
-        color: #1e293b;
-        margin-top: 1.5em;
-        margin-bottom: 0.5em;
-    }
-    
-    .final-summary-content h1 { font-size: 1.4em; }
-    .final-summary-content h2 { font-size: 1.2em; }
-    .final-summary-content h3 { font-size: 1.1em; }
-    
-    .final-summary-content p {
-        margin: 0.8em 0;
-    }
-    
-    .final-summary-content ul,
-    .final-summary-content ol {
-        margin: 0.8em 0;
-        padding-left: 1.5em;
-    }
-    
-    .final-summary-content li {
-        margin: 0.4em 0;
-    }
-    
-    .final-summary-content a {
-        color: #3b82f6;
-        text-decoration: none;
-    }
-    
-    .final-summary-content a:hover {
-        text-decoration: underline;
-    }
-    
-    .final-summary-content code {
-        background: #e2e8f0;
-        padding: 2px 6px;
-        border-radius: 4px;
-        font-family: 'SF Mono', 'Fira Code', monospace;
-        font-size: 0.9em;
-    }
-    
-    .final-summary-content pre {
-        background: #1e293b;
-        color: #e2e8f0;
-        padding: 16px;
-        border-radius: 8px;
-        overflow-x: auto;
-    }
-    
-    .final-summary-content pre code {
-        background: transparent;
-        padding: 0;
-        color: inherit;
-    }
-    
-    .final-summary-content table {
-        width: 100%;
-        border-collapse: collapse;
-        margin: 1em 0;
-    }
-    
-    .final-summary-content th,
-    .final-summary-content td {
-        padding: 10px 12px;
-        border: 1px solid #e2e8f0;
-        text-align: left;
-    }
-    
-    .final-summary-content th {
-        background: #f1f5f9;
-        font-weight: 600;
-    }
-    
-    .final-summary-content blockquote {
-        border-left: 4px solid #3b82f6;
-        margin: 1em 0;
-        padding: 0.5em 1em;
-        background: #f8fafc;
-        color: #475569;
-    }
-    
-    /* ===== Code Execution Card ===== */
-    .code-card {
-        background: #1e1e2e;
-        border: 1px solid #313244;
-        border-radius: 12px;
-        margin: 12px 0;
-        padding: 16px;
-        overflow: hidden;
-    }
-    
-    .code-header {
-        font-size: 0.9em;
-        font-weight: 600;
-        color: #cdd6f4;
-        margin-bottom: 12px;
-        display: flex;
-        align-items: center;
-        gap: 8px;
-    }
-    
-    .code-card pre {
-        background: #11111b !important;
-        border-radius: 8px;
-        padding: 12px 16px;
-        margin: 8px 0;
-        overflow-x: auto;
-        font-family: 'SF Mono', 'Fira Code', 'JetBrains Mono', Consolas, monospace !important;
-        font-size: 0.85em;
-        line-height: 1.5;
-    }
-    
-    .code-card code {
-        background: transparent !important;
-        color: #cdd6f4 !important;
-        font-family: 'SF Mono', 'Fira Code', 'JetBrains Mono', Consolas, monospace !important;
-    }
-    
-    .code-output-label {
-        font-size: 0.8em;
-        color: #a6adc8;
-        margin-top: 12px;
-        margin-bottom: 4px;
-    }
-    
-    .code-status {
-        font-size: 0.8em;
-        color: #a6e3a1;
-        margin-top: 8px;
-        text-align: right;
-    }
-    
-    /* ===== Top Navigation ===== */
-    .top-nav {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 16px;
-        width: min(1560px, calc(100% - 40px));
-        margin: 12px auto 2px;
-        padding: 10px 20px 8px;
-        border: 0;
-        background: transparent;
-        box-shadow: none;
-        position: relative;
-    }
-
-    .top-nav::after {
-        content: "";
-        position: absolute;
-        bottom: 0;
-        left: 50%;
-        transform: translateX(-50%);
-        width: min(1560px, calc(100% - 40px));
-        height: 1px;
-        background: linear-gradient(90deg, transparent, rgba(16, 185, 129, 0.12), transparent);
-    }
-
-    .nav-left {
-        display: flex;
-        align-items: center;
-        gap: 20px;
-    }
-
-    #lang-toggle-btn {
-        background: #f8fafc !important;
-        color: #475569 !important;
-        border: 1px solid rgba(0, 0, 0, 0.08) !important;
-        border-radius: 8px !important;
-        padding: 8px 16px !important;
-        font-size: 0.85em !important;
-        font-weight: 500 !important;
-        cursor: pointer !important;
-        transition: all 0.2s ease !important;
-        min-width: 80px !important;
-    }
-
-    #lang-toggle-btn:hover {
-        background: #f1f5f9 !important;
-        border-color: rgba(16, 185, 129, 0.3) !important;
-        color: #10b981 !important;
-    }
-    }
-
-    .nav-brand {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        font-weight: 600;
-        font-size: 0.92em;
-        color: var(--ink-strong);
-    }
-
-    .brand-logo {
-        height: 36px !important;
-        width: auto !important;
-        max-width: 140px !important;
-        max-height: 36px !important;
-        object-fit: contain !important;
-        display: block !important;
-        flex-shrink: 0 !important;
-    }
-
-    .nav-brand-text {
-        line-height: 1.2;
-        white-space: nowrap;
-    }
-
-    .nav-right {
-        display: flex;
-        align-items: center;
-        justify-content: flex-end;
-        gap: 12px;
-    }
-
-    /* ===== Hero Section ===== */
-    .hero-section {
-        text-align: center;
-        padding: 16px 16px 32px;
-        max-width: 1040px;
-        margin: 0 auto 8px;
-        position: relative;
-    }
-
-    .hero-brand {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        gap: 10px;
-        margin-bottom: 16px;
-    }
-
-    .hero-logo {
-        width: min(160px, 36vw);
-        max-height: 64px;
-        height: auto;
-        object-fit: contain;
-        box-shadow: none;
-        border-radius: 0;
-        flex-shrink: 0;
-        opacity: 0.9;
-    }
-
-    .hero-brand-name {
-        font-size: 0.96em;
-        font-weight: 700;
-        color: #0f172a;
-        letter-spacing: 0.01em;
-    }
-
-    .hero-title {
-        font-size: clamp(1.8rem, 3.2vw, 3rem);
-        font-weight: 900;
-        background: linear-gradient(135deg, #065f46 0%, #10b981 40%, #059669 100%);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        background-clip: text;
-        margin: 0 0 10px 0;
-        letter-spacing: -0.04em;
-        line-height: 1.15;
-    }
-
-    .hero-subtitle {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        gap: 16px;
-        color: #94a3b8;
-        font-size: 0.92em;
-        font-weight: 500;
-        letter-spacing: 0.02em;
-    }
-
-    .hero-line {
-        width: 40px;
-        height: 1px;
-        background: linear-gradient(90deg, transparent, rgba(16, 185, 129, 0.3), transparent);
-    }
-
-    /* ===== Responsive ===== */
-    @media (max-width: 768px) {
-        .hero-title {
-            font-size: 2.2em;
-        }
-
-        .brand-logo {
-            height: 28px;
-            max-width: 96px;
-        }
-
-        .top-nav {
-            width: calc(100% - 24px);
-            margin: 12px auto 8px;
-            padding: 12px 14px;
-            flex-wrap: wrap;
-        }
-
-        .nav-right {
-            width: 100%;
-            min-width: 0;
-            justify-content: flex-start;
-        }
-
-        .skills-top-link {
-            padding: 6px 12px;
-            font-size: 0.78em;
-        }
-        
-        .hero-section {
-            padding: 8px 16px 16px;
-        }
-
-        .hero-brand {
-            margin-bottom: 14px;
-            gap: 8px;
-        }
-
-        .hero-logo {
-            width: min(188px, 68vw);
-            max-height: 72px;
-        }
-
-        .hero-brand-name {
-            font-size: 0.9em;
-        }
-
-        .hero-subtitle {
-            gap: 10px;
-            font-size: 0.92em;
-        }
-
-        #layout-shell {
-            padding: 0 16px 28px !important;
-            gap: 16px !important;
-        }
-
-        #main-content-column {
-            order: 1;
-            padding: 0 !important;
-        }
-
-        #right-options-column {
-            order: 2;
-            position: static;
-        }
-
-        #input-section,
-        #options-panel,
-        #log-view {
-            border-radius: 22px !important;
-        }
-
-        
-        #log-view {
-            min-height: 260px;
-            padding: 22px 20px !important;
-        }
-    }
-
-    /* task_id <-> URL 同步桥的隐藏样式：
-       Gradio 5 中 visible=False 的组件不进入 DOM，JS 无法找到，
-       因此用 CSS 隐藏一个 visible=True 的 textbox。 */
-    #gr-task-id-bridge { position: absolute !important; left: -9999px !important; top: -9999px !important; width: 1px !important; height: 1px !important; opacity: 0 !important; pointer-events: none !important; }
-    """
-    custom_css = custom_css.replace(
-        "__LOCAL_FONT_FAMILY_STACK__", LOCAL_FONT_FAMILY_STACK
-    )
-
-    # 统一使用本地 logo，避免外部资源依赖。
-    if logo_data_uri:
-        favicon_head = f'<link rel="icon" href="{logo_data_uri}">'
-        nav_logo_html = (
-            f'<img src="{logo_data_uri}" class="brand-logo" '
-            'alt="OpenClaw-MiroSearch logo" />'
-        )
-    else:
-        favicon_head = f'<link rel="icon" href="{fallback_favicon_data_uri}">'
-        nav_logo_html = ""
-    hero_logo_src = logo_data_uri or fallback_favicon_data_uri
-    hero_brand_name_html = (
-        ""
-        if logo_data_uri
-        else '<span class="hero-brand-name">OpenClaw-MiroSearch</span>'
-    )
-
-    skills_download_url, _ = _resolve_skills_package_download()
-
-    skills_bind_script = """
-    <script>
-    (() => {
-        const SELECTORS = {
-            skillsDownloadLink: '#skills-download-link',
-        };
-
-        const copyTextToClipboard = async (text) => {
-            const normalizedText = String(text || '').trim();
-            if (!normalizedText) { return false; }
-            if (navigator.clipboard && window.isSecureContext) {
-                try {
-                    await navigator.clipboard.writeText(normalizedText);
-                    return true;
-                } catch (e) { void e; }
-            }
-            const el = document.createElement('textarea');
-            el.value = normalizedText;
-            el.setAttribute('readonly', '');
-            el.style.cssText = 'position:fixed;opacity:0;pointer-events:none';
-            document.body.appendChild(el);
-            el.focus(); el.select();
-            let copied = false;
-            try { copied = document.execCommand('copy'); } catch (e) { void e; }
-            document.body.removeChild(el);
-            return copied;
-        };
-
-        const bindSkillsDownloadAction = () => {
-            const linkEl = document.querySelector(SELECTORS.skillsDownloadLink);
-            if (!linkEl || linkEl.dataset.boundCopyAction === '1') { return; }
-            linkEl.dataset.boundCopyAction = '1';
-            linkEl.addEventListener('click', () => {
-                const rawUrl = linkEl.dataset.copyUrl || linkEl.getAttribute('href') || '';
-                let absoluteUrl = '';
-                try { absoluteUrl = new URL(rawUrl, window.location.origin).toString(); } catch (e) { return; }
-                const copiedText = linkEl.dataset.copiedText || 'Link Copied';
-                const originalText = linkEl.dataset.originalText || 'Download Skills';
-                copyTextToClipboard(absoluteUrl).then((copied) => {
-                    if (!copied) { return; }
-                    linkEl.textContent = copiedText;
-                    window.setTimeout(() => { linkEl.textContent = originalText; }, 1200);
-                });
-            });
-        };
-
-        if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', bindSkillsDownloadAction, { once: true });
-        } else {
-            bindSkillsDownloadAction();
-        }
-    })();
-    </script>
-    """
-    # 任务 ID URL 同步桥：把 ?task_id=xxx 写入 / 读取 URL。
-    task_id_url_bridge_script = """
-    <script>
-    (() => {
-        // gradio_run / reconnect_or_init 通过隐藏 textbox#gr-task-id-bridge 写入当前 task_id；
-        // 我们监听其变化，把 task_id 同步到 URL，避免刷新丢失。
-        const observe = () => {
-            const wrapper = document.querySelector('#gr-task-id-bridge');
-            if (!wrapper) { return false; }
-            const input = wrapper.querySelector('textarea, input');
-            if (!input) { return false; }
-            const initialUrlTaskId = new URL(window.location.href).searchParams.get('task_id') || '';
-            if (!input.value && initialUrlTaskId) {
-                input.value = initialUrlTaskId;
-            }
-            const sync = () => {
-                const value = (input.value || '').trim();
-                const url = new URL(window.location.href);
-                const current = url.searchParams.get('task_id') || '';
-                if (value && value !== current) {
-                    url.searchParams.set('task_id', value);
-                    window.history.replaceState(null, '', url.toString());
-                } else if (!value && current) {
-                    url.searchParams.delete('task_id');
-                    window.history.replaceState(null, '', url.toString());
-                }
-            };
-            input.addEventListener('input', sync);
-            input.addEventListener('change', sync);
-            // 兼容 Gradio 内部 set value 但不触发 input 事件的情况
-            const observer = new MutationObserver(sync);
-            observer.observe(input, { attributes: true, attributeFilter: ['value'] });
-            // 初次轮询
-            let last = input.value;
-            window.setInterval(() => {
-                if (input.value !== last) {
-                    last = input.value;
-                    sync();
-                }
-            }, 500);
-            sync();
-            return true;
-        };
-        const start = () => {
-            if (observe()) { return; }
-            const t = window.setInterval(() => {
-                if (observe()) { window.clearInterval(t); }
-            }, 300);
-        };
-        if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', start, { once: true });
-        } else {
-            start();
-        }
-    })();
-    </script>
-    """
-    demo_head = f"{favicon_head}{skills_bind_script}{task_id_url_bridge_script}"
-
-    def _get_i18n(lang: str):
-        return I18N.get(lang, I18N[DEFAULT_LANG])
-
-    def _build_skills_link_html(lang: str):
-        i18n = _get_i18n(lang)
-        if skills_download_url:
-            escaped_url = html.escape(skills_download_url, quote=True)
-            return (
-                f'<a id="skills-download-link" class="skills-top-link" href="{escaped_url}" '
-                f'data-copy-url="{escaped_url}" data-original-text="{i18n["skills_download_btn"]}" '
-                f'data-copied-text="{i18n["skills_download_copied"]}" target="_blank" rel="noopener noreferrer">'
-                f'{i18n["skills_download_btn"]}</a>'
-            )
-        return (
-            f'<span class="skills-top-link skills-top-link-disabled" title="{html.escape(i18n["skills_download_fallback"], quote=True)}">'
-            f'{i18n["skills_download_btn"]}</span>'
-        )
-
-    def _build_nav_html(lang: str):
-        i18n = _get_i18n(lang)
-        skills_link = _build_skills_link_html(lang)
-        return f"""
-            <nav class="top-nav">
-                <div class="nav-left">
-                    <div class="nav-brand">
-                        {nav_logo_html}
-                        <span class="nav-brand-text">{i18n["nav_brand_text"]}</span>
-                    </div>
-                </div>
-                <div class="nav-right">
-                    {skills_link}
-                </div>
-            </nav>
-        """
-
-    def _build_hero_html(lang: str):
-        i18n = _get_i18n(lang)
-        return f"""
-            <div class="hero-section">
-                <div class="hero-brand">
-                    <img src="{hero_logo_src}" class="hero-logo" alt="OpenClaw-MiroSearch logo" />
-                    {hero_brand_name_html}
-                </div>
-                <h1 class="hero-title">{i18n["hero_title"]}</h1>
-                <div class="hero-subtitle">
-                    <span class="hero-line"></span>
-                    {i18n["hero_subtitle"]}
-                    <span class="hero-line"></span>
-                </div>
-            </div>
-        """
-
-    def _build_output_detail_choices(lang: str):
-        i18n = _get_i18n(lang)
-        labels = i18n["output_detail_labels"]
-        return [
-            (labels["compact"], "compact"),
-            (labels["balanced"], "balanced"),
-            (labels["detailed"], "detailed"),
-        ]
-
-    def toggle_language(lang: str):
-        new_lang = LANG_CN if lang == LANG_EN else LANG_EN
-        i18n = _get_i18n(new_lang)
-        return (
-            new_lang,
-            gr.HTML(_build_nav_html(new_lang)),
-            gr.HTML(_build_hero_html(new_lang)),
-            gr.Textbox(placeholder=i18n["input_placeholder"]),
-            gr.Button(value=i18n["btn_stop"]),
-            gr.Button(value=i18n["btn_run"]),
-            gr.HTML(f'<div class="output-label">{i18n["output_label"]}</div>'),
-            gr.Markdown(i18n["output_waiting"]),
-            gr.HTML(f'<div class="options-title">{i18n["options_title"]}</div>'),
-            gr.update(label=i18n["mode_label"], info=i18n["mode_info"]),
-            gr.update(
-                label=i18n["search_profile_label"], info=i18n["search_profile_info"]
-            ),
-            gr.update(
-                label=i18n["search_result_num_label"],
-                info=i18n["search_result_num_info"],
-            ),
-            gr.update(
-                label=i18n["verification_rounds_label"],
-                info=i18n["verification_rounds_info"],
-            ),
-            gr.update(
-                label=i18n["output_detail_label"],
-                choices=_build_output_detail_choices(new_lang),
-                info=i18n["output_detail_info"],
-            ),
-            gr.update(label=i18n["export_format_label"]),
-            gr.Button(value=i18n["export_btn"]),
-            gr.update(label=i18n["export_file_label"], visible=False, value=None),
-            gr.HTML(f'<div class="export-hint">{i18n["export_hint"]}</div>'),
-            gr.Button(value=i18n["lang_toggle_btn"]),
-            gr.HTML(f'<div class="app-footer">{i18n["footer_text"]}</div>'),
-        )
-
-    with gr.Blocks(
-        css=custom_css,
-        title=I18N[DEFAULT_LANG]["page_title"],
-        theme=gr.themes.Base(),
-        head=demo_head,
-    ) as demo:
-        lang_state = gr.State(DEFAULT_LANG)
-
-        nav_html = gr.HTML(_build_nav_html(DEFAULT_LANG))
-        hero_html = gr.HTML(_build_hero_html(DEFAULT_LANG))
-
-        with gr.Row(elem_id="layout-shell", equal_height=False):
-            with gr.Column(
-                scale=4,
-                min_width=720,
-                elem_id="main-content-column",
-            ):
-                with gr.Column(elem_id="input-section"):
-                    inp = gr.Textbox(
-                        lines=4,
-                        placeholder=I18N[DEFAULT_LANG]["input_placeholder"],
-                        show_label=False,
-                        elem_id="question-input",
-                    )
-                    with gr.Row(elem_id="btn-row"):
-                        stop_btn = gr.Button(
-                            I18N[DEFAULT_LANG]["btn_stop"],
-                            elem_id="stop-btn",
-                            variant="stop",
-                            interactive=False,
-                            scale=1,
-                        )
-                        run_btn = gr.Button(
-                            I18N[DEFAULT_LANG]["btn_run"],
-                            elem_id="run-btn",
-                            variant="primary",
-                            scale=2,
-                        )
-
-                with gr.Column(elem_id="output-section"):
-                    output_label_html = gr.HTML(
-                        f'<div class="output-label">{I18N[DEFAULT_LANG]["output_label"]}</div>'
-                    )
-                    out_md = gr.Markdown(
-                        I18N[DEFAULT_LANG]["output_waiting"], elem_id="log-view"
-                    )
-                    with gr.Row(elem_id="export-row"):
-                        export_format_selector = gr.Dropdown(
-                            label=I18N[DEFAULT_LANG]["export_format_label"],
-                            choices=EXPORT_FORMAT_CHOICES,
-                            value="md",
-                            elem_id="export-format-selector",
-                            scale=1,
-                        )
-                        export_btn = gr.Button(
-                            I18N[DEFAULT_LANG]["export_btn"],
-                            elem_id="export-btn",
-                            variant="secondary",
-                            scale=1,
-                        )
-                    export_file = gr.File(
-                        label=I18N[DEFAULT_LANG]["export_file_label"],
-                        visible=False,
-                        elem_id="export-file",
-                    )
-                    export_hint_html = gr.HTML(
-                        f'<div class="export-hint">{I18N[DEFAULT_LANG]["export_hint"]}</div>'
-                    )
-
-            with gr.Column(
-                scale=1,
-                min_width=220,
-                elem_id="right-options-column",
-            ):
-                with gr.Column(elem_id="options-panel"):
-                    options_title_html = gr.HTML(
-                        f'<div class="options-title">{I18N[DEFAULT_LANG]["options_title"]}</div>'
-                    )
-                    mode_selector = gr.Dropdown(
-                        label=I18N[DEFAULT_LANG]["mode_label"],
-                        choices=RESEARCH_MODE_CHOICES,
-                        value=_normalize_research_mode(DEFAULT_RESEARCH_MODE),
-                        info=I18N[DEFAULT_LANG]["mode_info"],
-                        elem_id="mode-selector",
-                    )
-                    search_profile_selector = gr.Dropdown(
-                        label=I18N[DEFAULT_LANG]["search_profile_label"],
-                        choices=SEARCH_PROFILE_CHOICES,
-                        value=_normalize_search_profile(DEFAULT_SEARCH_PROFILE),
-                        info=I18N[DEFAULT_LANG]["search_profile_info"],
-                        elem_id="search-profile-selector",
-                    )
-                    search_result_num_selector = gr.Dropdown(
-                        label=I18N[DEFAULT_LANG]["search_result_num_label"],
-                        choices=SEARCH_RESULT_NUM_CHOICES,
-                        value=_normalize_search_result_num(DEFAULT_SEARCH_RESULT_NUM),
-                        info=I18N[DEFAULT_LANG]["search_result_num_info"],
-                        elem_id="search-result-num-selector",
-                    )
-                    verification_min_rounds_selector = gr.Slider(
-                        minimum=1,
-                        maximum=MAX_VERIFICATION_MIN_SEARCH_ROUNDS,
-                        step=1,
-                        label=I18N[DEFAULT_LANG]["verification_rounds_label"],
-                        value=_normalize_verification_min_search_rounds(
-                            DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS
-                        ),
-                        info=I18N[DEFAULT_LANG]["verification_rounds_info"],
-                        visible=_is_verified_mode(DEFAULT_RESEARCH_MODE),
-                        elem_id="verification-rounds-selector",
-                    )
-                    output_detail_level_selector = gr.Dropdown(
-                        label=I18N[DEFAULT_LANG]["output_detail_label"],
-                        choices=_build_output_detail_choices(DEFAULT_LANG),
-                        value=_normalize_output_detail_level(
-                            DEFAULT_OUTPUT_DETAIL_LEVEL
-                        ),
-                        info=I18N[DEFAULT_LANG]["output_detail_info"],
-                        elem_id="output-detail-level-selector",
-                    )
-                    lang_toggle_btn = gr.Button(
-                        I18N[DEFAULT_LANG]["lang_toggle_btn"],
-                        elem_id="lang-toggle-btn",
-                        variant="secondary",
-                        scale=1,
-                    )
-
-        footer_html = gr.HTML(
-            f'<div class="app-footer">{I18N[DEFAULT_LANG]["footer_text"]}</div>'
-        )
-
-        # 供统一 API 调用的隐藏输出
-        api_output = gr.Markdown(visible=False)
-        api_btn = gr.Button(value="api-run", visible=False)
-        gr.Textbox(visible=False, value="")
-        api_caller_id = gr.Textbox(
-            visible=False,
-            value="",
-            elem_id="api-caller-id",
-        )
-        api_stop_output = gr.JSON(visible=False)
-        api_stop_btn = gr.Button(value="api-stop", visible=False)
-
-        # task_id <-> URL 同步桥：JS 监听该 textbox 的 value 变化，把 ?task_id=xxx 写入 URL。
-        # 注意：Gradio 5 中 visible=False 的组件不会进入 DOM，因此这里 visible=True，
-        # 通过 #gr-task-id-bridge 的 CSS 规则把它定位到屏幕外。
-        task_id_box = gr.Textbox(
-            value="",
-            visible=True,
-            elem_id="gr-task-id-bridge",
-            interactive=False,
-            show_label=False,
-            container=False,
-            label=None,
-        )
-
-        # State
-        ui_state = gr.State(
-            {
-                "task_id": None,
-                "mode": _normalize_research_mode(DEFAULT_RESEARCH_MODE),
-                "search_profile": _normalize_search_profile(DEFAULT_SEARCH_PROFILE),
-                "search_result_num": _normalize_search_result_num(
-                    DEFAULT_SEARCH_RESULT_NUM
-                ),
-                "verification_min_search_rounds": _normalize_verification_min_search_rounds(
-                    DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS
-                ),
-                "output_detail_level": _normalize_output_detail_level(
-                    DEFAULT_OUTPUT_DETAIL_LEVEL
-                ),
-                "render_mode": _get_render_mode_for_output_detail(
-                    _normalize_output_detail_level(DEFAULT_OUTPUT_DETAIL_LEVEL)
-                ),
-                "final_summary_merge_strategy": _get_summary_merge_for_output_detail(
-                    _normalize_output_detail_level(DEFAULT_OUTPUT_DETAIL_LEVEL)
-                ),
-            }
-        )
-
-        # Event handlers
-        run_event = run_btn.click(
-            fn=gradio_run,
-            inputs=[
-                inp,
-                mode_selector,
-                search_profile_selector,
-                search_result_num_selector,
-                verification_min_rounds_selector,
-                output_detail_level_selector,
-                ui_state,
-            ],
-            outputs=[out_md, run_btn, stop_btn, ui_state, task_id_box],
-            api_name="run_research_stream",
-        )
-
-        # ui_state 任意一次更新都同步 task_id 到隐藏 textbox（JS 据此写 URL）
-        ui_state.change(
-            fn=_task_id_bridge_value,
-            inputs=[ui_state],
-            outputs=[task_id_box],
-            api_name=False,
-            queue=False,
-        )
-        export_btn.click(
-            fn=_export_conclusion,
-            inputs=[out_md, export_format_selector, ui_state],
-            outputs=[export_file],
-            api_name=False,
-            queue=False,
-        )
-
-        # 页面加载时根据 URL ?task_id 决定空闲态 / 重连进行中的任务
-        demo.load(
-            fn=reconnect_or_init,
-            inputs=[ui_state, task_id_box],
-            outputs=[out_md, run_btn, stop_btn, ui_state, task_id_box],
-            api_name=False,
-            js="""
-            (uiState, taskIdBridge) => {
-                const urlTaskId = new URL(window.location.href).searchParams.get('task_id') || '';
-                return [uiState, urlTaskId || taskIdBridge || ''];
-            }
-            """,
-        )
-        mode_selector.change(
-            fn=_update_verification_rounds_visibility,
-            inputs=[mode_selector],
-            outputs=[verification_min_rounds_selector],
-            api_name=False,
-        )
-        stop_btn.click(
-            fn=stop_current_ui,
-            inputs=[ui_state],
-            outputs=[run_btn, stop_btn],
-            cancels=[run_event],
-            api_name=False,
-            queue=False,
-        )
-        api_run_event = api_btn.click(
-            fn=run_research_once_api_binding,
-            inputs=[
-                inp,
-                mode_selector,
-                search_profile_selector,
-                search_result_num_selector,
-                verification_min_rounds_selector,
-                output_detail_level_selector,
-                api_caller_id,
-            ],
-            outputs=[api_output],
-            api_name="run_research_once",
-        )
-        api_stop_btn.click(
-            fn=stop_current_by_caller_api,
-            inputs=[api_caller_id],
-            outputs=[api_stop_output],
-            cancels=[api_run_event],
-            api_name="stop_current",
-            queue=False,
-        )
-        api_stop_by_caller_btn = gr.Button(value="api-stop-caller", visible=False)
-        api_stop_by_caller_output = gr.JSON(visible=False)
-        api_stop_by_caller_btn.click(
-            fn=stop_current_by_caller_api,
-            inputs=[api_caller_id],
-            outputs=[api_stop_by_caller_output],
-            cancels=[api_run_event],
-            api_name="stop_current_by_caller",
-            queue=False,
-        )
-
-        # GET /metrics/last — 返回最近一次任务的结构化运行指标
-        api_metrics_btn = gr.Button(value="api-metrics-last", visible=False)
-        api_metrics_output = gr.JSON(visible=False)
-        api_metrics_btn.click(
-            fn=get_last_metrics,
-            inputs=[],
-            outputs=[api_metrics_output],
-            api_name="metrics_last",
-        )
-
-        lang_toggle_btn.click(
-            fn=toggle_language,
-            inputs=[lang_state],
-            outputs=[
-                lang_state,
-                nav_html,
-                hero_html,
-                inp,
-                stop_btn,
-                run_btn,
-                output_label_html,
-                out_md,
-                options_title_html,
-                mode_selector,
-                search_profile_selector,
-                search_result_num_selector,
-                verification_min_rounds_selector,
-                output_detail_level_selector,
-                export_format_selector,
-                export_btn,
-                export_file,
-                export_hint_html,
-                lang_toggle_btn,
-                footer_html,
-            ],
-            api_name=False,
-        )
-
-    return demo
+    return build_gradio_blocks(sys.modules[__name__])
 
 
 if __name__ == "__main__":
     _start_stale_task_reaper()
     demo = build_demo()
+    # Allow a new run to enqueue while a cancelled stream is still winding down.
+    demo.queue(default_concurrency_limit=2)
     host = os.getenv("HOST", "0.0.0.0")
     port = int(os.getenv("PORT", "8080"))
     launch_kwargs = _build_launch_kwargs(host, port)
-    demo.queue().launch(**launch_kwargs)
+    # Return immediately so we can attach /diting-static onto the live app.
+    launch_kwargs["prevent_thread_lock"] = True
+    demo.launch(**launch_kwargs)
+    app = getattr(demo, "server_app", None) or demo.app
+    static_assets.mount_static_routes(app, font_family_stack=LOCAL_FONT_FAMILY_STACK)
+    print(
+        f"Diting static HOT={static_assets.STATIC_HOT} "
+        f"→ http://127.0.0.1:{port}{static_assets.STATIC_URL_PREFIX}/theme.css"
+    )
+    # Keep the process alive (launch did not block the main thread).
+    try:
+        while True:
+            time.sleep(3600)
+    except KeyboardInterrupt:
+        pass

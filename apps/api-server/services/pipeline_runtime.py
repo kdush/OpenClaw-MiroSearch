@@ -97,6 +97,8 @@ class RequestLike:
     search_result_num: int
     verification_min_search_rounds: int
     output_detail_level: str
+    # 与 ResearchRequest 一致：省略即按部署默认值（standard）解析
+    research_intensity: Optional[str] = None
 
 
 class PipelineRuntime:
@@ -175,6 +177,7 @@ class PipelineRuntime:
             search_result_num=req.search_result_num,
             verification_min_search_rounds=req.verification_min_search_rounds,
             output_detail_level=req.output_detail_level,
+            research_intensity=req.research_intensity,
         )
 
         # mode_overrides 内含 agent=... / llm.model_name=... 等；放在 base 之后
@@ -208,7 +211,15 @@ class PipelineRuntime:
     async def create_runtime_components(
         self,
         req: RequestLike,
-    ) -> Tuple[DictConfig, Any, Dict[str, Any], Any, List[Dict], Dict[str, List[Dict]]]:
+    ) -> Tuple[
+        DictConfig,
+        Any,
+        Dict[str, Any],
+        Any,
+        List[Dict],
+        Dict[str, List[Dict]],
+        Dict[str, Any],
+    ]:
         """创建运行时组件（每任务新建）。
 
         与 gradio-demo 的本地路径一致：在 ``_temporary_env_vars`` 上下文中创建
@@ -216,11 +227,30 @@ class PipelineRuntime:
         同时用 ``_components_lock`` 串行化，避免并发任务彼此覆盖进程级 env。
 
         Returns:
-            (cfg, main_tm, sub_tms, output_fmt, tool_defs, sub_tool_defs)
+            (cfg, main_tm, sub_tms, output_fmt, tool_defs, sub_tool_defs, effective_config)
         """
         from src.core.pipeline import create_pipeline_components
+        from services.profile_resolver import resolve_effective_research_params
 
         search_env, overrides = self.build_config_overrides(req)
+
+        # Build effective_config for metrics and orchestrator (Phase 1)
+        effective_config_obj = resolve_effective_research_params(
+            mode=req.mode,
+            search_profile=req.search_profile,
+            search_result_num=req.search_result_num,
+            verification_min_search_rounds=req.verification_min_search_rounds,
+            output_detail_level=req.output_detail_level,
+            research_intensity=req.research_intensity,
+        )
+        effective_config = {
+            "mode": effective_config_obj.mode,
+            "search_profile": effective_config_obj.search_profile,
+            "search_result_num": effective_config_obj.search_result_num,
+            "verification_min_search_rounds": effective_config_obj.verification_min_search_rounds,
+            "output_detail_level": effective_config_obj.output_detail_level,
+            "research_intensity": effective_config_obj.research_intensity,
+        }
 
         async with self._components_lock:
             with _temporary_env_vars(search_env):
@@ -245,7 +275,15 @@ class PipelineRuntime:
                     await _close_created_tool_managers(main_tm, sub_tms)
                     raise
 
-        return cfg, main_tm, sub_tms, output_fmt, tool_defs, sub_tool_defs
+        return (
+            cfg,
+            main_tm,
+            sub_tms,
+            output_fmt,
+            tool_defs,
+            sub_tool_defs,
+            effective_config,
+        )
 
     def get_log_dir(self) -> str:
         """获取日志目录。"""

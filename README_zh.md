@@ -1,8 +1,12 @@
-# OpenClaw-MiroSearch
+# 谛听（Diting）
+
+<p align="center">
+  <img src="assets/diting_logo.png" alt="Diting Logo" width="320" />
+</p>
 
 [English](README.md) | [中文](README_zh.md)
 
-OpenClaw-MiroSearch 是基于 MiroThinker 构建的智能体研究服务，集成多源网页检索、正文抓取、多步推理、来源校验、异步执行和结构化 Markdown 报告。
+谛听（Diting）是基于 MiroThinker 构建的开源智能体研究服务，集成多源网页检索、正文抓取、多步推理、来源校验、异步执行和结构化 Markdown 报告。
 
 当前稳定版本：**v0.2.11**。已发布变更见 [变更记录](docs/CHANGELOG_zh.md)，未来计划见 [路线图](docs/ROADMAP_zh.md)。
 
@@ -36,6 +40,8 @@ OpenClaw-MiroSearch 是基于 MiroThinker 构建的智能体研究服务，集�
 ## 快速开始
 
 需要 Docker Compose v2、一个 OpenAI 兼容或 Anthropic LLM 端点，以及至少一个可用搜索来源。
+
+<p align="center"><img src="assets/demo-screenshot.png" alt="Demo Screenshot" width="900" /></p>
 
 ```bash
 cp .env.compose.example .env.compose
@@ -104,11 +110,107 @@ curl -sS -N http://127.0.0.1:8090/v1/research/<task_id>/stream
 - [变更记录](docs/CHANGELOG_zh.md)
 - [安全策略](docs/SECURITY_zh.md)
 - [贡献指南](docs/CONTRIBUTING_zh.md)
-- [OpenClaw Skill](skills/openclaw-mirosearch/SKILL.md)
+- [Diting Skill](skills/diting/SKILL.md)
 
 ## 开发
 
 主要应用和工具库要求 Python 3.12+。
+
+```bash
+# 安装依赖
+cd apps/gradio-demo && uv sync
+cd ../miroflow-agent && uv sync
+cd ../../libs/miroflow-tools && uv sync
+```
+
+如需兼容旧链路或直接复用 Demo UI，仍可使用 Gradio API：
+
+```bash
+BASE_URL="http://127.0.0.1:8080"
+curl -sS "$BASE_URL/gradio_api/info"
+```
+
+## 面向 OpenClaw / AI Agent
+
+这个项目的定位：
+
+- 提供可被上层智能体调用的联网研究能力
+- 支持模式、路由、检索深度与输出篇幅四维可控
+- 通过 SSE 终态事件，保证智能体编排时可判断任务完成
+
+推荐给 AI Agent 的调用闭环：
+
+1. 先调 `GET /health` 探活
+1. 发起 `POST /v1/research`
+1. 轮询 `GET /v1/research/{task_id}` 或订阅 `GET /v1/research/{task_id}/stream`
+1. `status=completed` 或 `cached` 时，只消费最终 Markdown
+
+Skill 使用建议（先分流）：
+
+- 简单搜索（快速网页检索、单事实查询）：优先使用仓库内分发的 `searxng` skill
+  - 仓库目录：`skills/searxng/`
+  - 打包文件：`skills/searxng.zip`
+- 深度检索或高质量检索（多来源交叉、核查、研究报告）：使用 `diting` skill
+
+Skill 安装：
+
+- 推荐双 skill 打包：`skills/openclaw-search-skills-bundle.zip`
+- 简单搜索 skill：`skills/searxng/`
+- 仓库目录：`skills/diting/`
+- 打包文件：`skills/diting.zip`
+- 安装说明：[`skills/diting/references/skill-install.md`](skills/diting/references/skill-install.md)
+
+Skill 使用：
+
+- 使用说明：[`skills/diting/references/usage.md`](skills/diting/references/usage.md)
+- API 说明：[`skills/diting/references/api.md`](skills/diting/references/api.md)
+- AI Agent 接入详解：[`docs/API_SPEC.md`](docs/API_SPEC.md)
+
+## 建议配置基线
+
+- **默认生产**：`mode=balanced` + `search_profile=parallel-trusted`
+- **高风险事实核查**：`mode=verified` + `search_profile=parallel-trusted`
+- **额度优先**：`mode=quota` + `search_profile=searxng-only`
+- **核查深度**：`search_result_num=30` + `verification_min_search_rounds=4`
+
+> 完整路由环境变量说明请参见 [`apps/miroflow-agent/README.md`](apps/miroflow-agent/README.md) 和 [`docs/API_SPEC.md`](docs/API_SPEC.md)
+
+## 版本亮点
+
+- `0.2.4` 版本亮点：
+  - `scrape_url` 已支持 PDF 抽取，并带 20MB 流式响应体上限
+  - 已支持 JSON / RSS / Atom / XML 结构化直通，返回 `json_keys`、`feed_title`、`entries`、`xml_root` 等字段
+  - 重定向链路改为流式响应，并在中间 30x hop 及时关闭连接
+  - 本地 Docker `app + api + worker + searxng + valkey` 真实端到端验证已通过
+- `0.2.2` 版本亮点：
+  - API 模式严重回归修复：`mode` / `search_profile` / `search_result_num` / `verification_min_search_rounds` / `output_detail_level` 已可端到端透传
+  - Demo 断线重连：`BACKEND_MODE=api` 配合 `?task_id=xxx` 可通过 SSE 回放恢复任务
+  - MCP `scrape_url` 初版上线：基于 `httpx + BeautifulSoup`，在 `google_search` 摘要不足时让 LLM 主动打开正文
+  - 详细抓取路线图见 [`docs/SCRAPING_ITERATION_PLAN.md`](docs/SCRAPING_ITERATION_PLAN.md)
+
+## 文档索引
+
+- 文档总览：[`docs/README.md`](docs/README.md)
+- 架构概览：[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+- 部署指南：[`docs/DEPLOY.md`](docs/DEPLOY.md)
+- API 规格 & Agent 接入：[`docs/API_SPEC.md`](docs/API_SPEC.md)
+- 路线图：[`docs/ROADMAP.md`](docs/ROADMAP.md)
+- 抓取能力迭代计划：[`docs/SCRAPING_ITERATION_PLAN.md`](docs/SCRAPING_ITERATION_PLAN.md)（T1-T9，对应 v0.2.4 → v0.3.0）
+- 变更记录：[`docs/CHANGELOG.md`](docs/CHANGELOG.md)
+- Demo 说明：[`apps/gradio-demo/README.md`](apps/gradio-demo/README.md)
+- API Server 说明：[`apps/api-server/README.md`](apps/api-server/README.md)
+- Agent 说明：[`apps/miroflow-agent/README.md`](apps/miroflow-agent/README.md)
+- 工具层说明：[`libs/miroflow-tools/README.md`](libs/miroflow-tools/README.md)
+- Diting 技能包：[`skills/diting/SKILL.md`](skills/diting/SKILL.md)
+
+## 开源协作文档
+
+- 贡献、治理、支持与发布：[`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md)
+- 安全策略：[`docs/SECURITY.md`](docs/SECURITY.md)
+- 行为准则：[`docs/CODE_OF_CONDUCT.md`](docs/CODE_OF_CONDUCT.md)
+- 变更记录：[`docs/CHANGELOG.md`](docs/CHANGELOG.md)
+
+## 开发验证
 
 ```bash
 # 仓库级检查
@@ -117,7 +219,7 @@ just sort-imports
 just format
 just format-md
 
-# 各模块测试
+# 分模块测试
 cd apps/miroflow-agent && uv sync && uv run pytest
 cd apps/api-server && uv sync && AUTH_DISABLED=1 uv run pytest
 cd apps/gradio-demo && uv sync && uv run pytest

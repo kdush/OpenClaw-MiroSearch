@@ -1,8 +1,12 @@
-# OpenClaw-MiroSearch
+# Diting (谛听)
+
+<p align="center">
+  <img src="assets/diting_logo.png" alt="Diting Logo" width="320" />
+</p>
 
 [English](README.md) | [中文](README_zh.md)
 
-OpenClaw-MiroSearch is an agentic research service built on MiroThinker. It combines multi-provider web search, full-page extraction, multi-step reasoning, source verification, asynchronous execution, and structured Markdown reports.
+Diting (谛听) is an open-source agentic research service built on MiroThinker. It combines multi-provider web search, full-page extraction, multi-step reasoning, source verification, asynchronous execution, and structured Markdown reports.
 
 Current stable release: **v0.2.11**. See the [Changelog](docs/CHANGELOG.md) for released changes and the [Roadmap](docs/ROADMAP.md) for planned work.
 
@@ -104,11 +108,114 @@ These are client recommendations, not immutable server defaults. Omitted optiona
 - [Changelog](docs/CHANGELOG.md)
 - [Security](docs/SECURITY.md)
 - [Contributing](docs/CONTRIBUTING.md)
-- [OpenClaw skill](skills/openclaw-mirosearch/SKILL.md)
+- [Diting skill](skills/diting/SKILL.md)
 
 ## Development
 
 Python 3.12+ is required for the primary applications and library.
+
+```bash
+# Install app dependencies
+cd apps/gradio-demo && uv sync
+cd ../miroflow-agent && uv sync
+cd ../../libs/miroflow-tools && uv sync
+```
+
+If you need legacy compatibility or want to reuse the Demo UI directly, Gradio API remains available:
+
+```bash
+BASE_URL="http://127.0.0.1:8080"
+curl -sS "$BASE_URL/gradio_api/info"
+```
+
+## For OpenClaw / AI Agents
+
+Project positioning:
+
+- Provides web research capability callable by upper-layer agents
+- Supports four-dimensional control: mode, routing, search depth, and output detail
+- Uses SSE terminal events so agents can determine task completion
+
+Recommended agent calling loop:
+
+1. Call `GET /health` for health check
+1. Submit `POST /v1/research`
+1. Poll `GET /v1/research/{task_id}` or subscribe to `GET /v1/research/{task_id}/stream`
+1. When `status=completed` or `cached`, consume only the final Markdown
+
+Skill guidance:
+
+- Simple search, single-fact lookup, and cost-first usage: use the repository-distributed `searxng` skill
+  - Repository: `skills/searxng/`
+  - Packaged file: `skills/searxng.zip`
+- Deep research or high-quality retrieval: use the `diting` skill
+  - Skill docs: [`skills/diting/SKILL.md`](skills/diting/SKILL.md)
+  - Usage docs: [`skills/diting/references/usage.md`](skills/diting/references/usage.md)
+
+Skill acquisition and installation:
+
+- Recommended dual-skill bundle: `skills/openclaw-search-skills-bundle.zip`
+- Simple search skill: `skills/searxng/`
+- Repository: `skills/diting/`
+- Packaged file: `skills/diting.zip`
+- Installation guide: [`skills/diting/references/skill-install.md`](skills/diting/references/skill-install.md)
+- API docs: [`skills/diting/references/api.md`](skills/diting/references/api.md)
+- AI Agent integration: [`docs/API_SPEC.md`](docs/API_SPEC.md)
+
+## Recommended Configuration Baseline
+
+- **Default production**: `mode=balanced` + `search_profile=parallel-trusted`
+- **High-risk fact-checking**: `mode=verified` + `search_profile=parallel-trusted`
+- **Quota-priority**: `mode=quota` + `search_profile=searxng-only`
+- **Verification depth**: `search_result_num=30` + `verification_min_search_rounds=4`
+
+> For the full list of routing environment variables, see [`apps/miroflow-agent/README.md`](apps/miroflow-agent/README.md#4-检索路由配置) and [`docs/API_SPEC.md`](docs/API_SPEC.md)
+
+## Changelog
+
+- Release `0.2.4` highlights:
+  - `scrape_url` now supports PDF extraction with a 20MB streamed body limit
+  - JSON / RSS / Atom / XML payloads can pass through with structured fields (`json_keys`, `feed_title`, `entries`, `xml_root`)
+  - Redirect handling now uses streamed responses and closes intermediate 30x hops eagerly
+  - Local Docker end-to-end verification passed on the `app + api + worker + searxng + valkey` stack
+  - See [`docs/SCRAPING_ITERATION_PLAN.md`](docs/SCRAPING_ITERATION_PLAN.md) for the full T1–T9 scraping roadmap
+- Release `0.2.2` highlights:
+  - API-mode regression fix: `mode` / `search_profile` / `search_result_num` / `verification_min_search_rounds` / `output_detail_level` are now respected end-to-end via `services/profile_resolver.py`
+  - Demo crash-recovery: `BACKEND_MODE=api` plus `?task_id=xxx` URL bridge — refresh / disconnect resumes the same task via SSE replay
+  - MCP tool `scrape_url`: lightweight `httpx + BeautifulSoup` scraper with SSRF guard so the LLM can "open the page" when `google_search` snippets are insufficient
+  - Worker cancel watcher hardened against Redis hiccups; unresponsive pipelines are abandoned after a 10s timeout
+  - Dockerfile uses a domestic apt mirror by default; compose builds run with `network: host`; `scripts/deploy/build_images.sh` bypasses BuildKit's `network.host` entitlement prompt
+- Release `0.2.1` highlights:
+  - Clickable `[N]` references in research summaries pointing to the report's References / 参考文献 section
+  - `api-worker` startup command pinned to `.venv/bin/python` for reliable arq worker boot
+- Release `0.2.0` highlights:
+  - Async task queue (arq + Valkey), persistent SSE event streams, cache and metadata persistence
+  - `SearchProvider` Protocol + `ProviderRegistry` (Serper / SerpAPI / SearXNG)
+- Full history: [`docs/CHANGELOG.md`](docs/CHANGELOG.md)
+
+## Documentation Index
+
+- Overview: [`docs/README.md`](docs/README.md)
+- Architecture: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+- Deployment: [`docs/DEPLOY.md`](docs/DEPLOY.md)
+- API spec & Agent integration: [`docs/API_SPEC.md`](docs/API_SPEC.md)
+- Roadmap: [`docs/ROADMAP.md`](docs/ROADMAP.md)
+- Changelog: [`docs/CHANGELOG.md`](docs/CHANGELOG.md)
+- Demo docs: [`apps/gradio-demo/README.md`](apps/gradio-demo/README.md)
+- API server docs: [`apps/api-server/README.md`](apps/api-server/README.md)
+- Agent docs: [`apps/miroflow-agent/README.md`](apps/miroflow-agent/README.md)
+- Tools docs: [`libs/miroflow-tools/README.md`](libs/miroflow-tools/README.md)
+- Diting skill package: [`skills/diting/SKILL.md`](skills/diting/SKILL.md)
+
+## Open Source Collaboration
+
+- Contributing, governance, support & release: [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md)
+- Security policy: [`docs/SECURITY.md`](docs/SECURITY.md)
+- Code of conduct: [`docs/CODE_OF_CONDUCT.md`](docs/CODE_OF_CONDUCT.md)
+- Changelog: [`docs/CHANGELOG.md`](docs/CHANGELOG.md)
+
+
+## Development Validation
 
 ```bash
 # Repository-wide checks

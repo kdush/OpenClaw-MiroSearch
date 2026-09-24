@@ -6,13 +6,13 @@
 ## 先做选型
 
 - 如果只需要简单搜索，优先安装并使用 `searxng` skill：`https://clawhub.ai/abk234/searxng`
-- 如果需要深度检索或高质量检索，再安装 `openclaw-mirosearch`（本技能）
+- 如果需要深度检索或高质量检索，再安装 `diting`（本技能）
 
 本仓库额外提供一个便于分发的双 skill 打包文件：
 
 - `skills/openclaw-search-skills-bundle.zip`
 - 内含：
-  - `openclaw-mirosearch/`
+  - `diting/`
   - `searxng/`
 
 ## 方式一：作为仓库内 skill（推荐）
@@ -21,7 +21,7 @@
 
 路径：
 
-- `skills/openclaw-mirosearch/`
+- `skills/diting/`
 - `skills/searxng/`
 
 OpenClaw 读取后即可获得深度检索技能定义。
@@ -46,19 +46,19 @@ OpenClaw 读取后即可获得深度检索技能定义。
 
 ```bash
 mkdir -p "$CODEX_HOME/skills"
-cp -R skills/openclaw-mirosearch "$CODEX_HOME/skills/openclaw-mirosearch"
+cp -R skills/diting "$CODEX_HOME/skills/diting"
 cp -R skills/searxng "$CODEX_HOME/skills/searxng"
 ```
 
 安装后，触发词示例：
 
-- “帮我安装 OpenClaw-MiroSearch”
-- “把 OpenClaw-MiroSearch 这个 skill 装到本机”
+- “帮我安装谛听”
+- “把谛听这个 skill 装到本机”
 
 ## 验证安装
 
 ```bash
-python3 "$CODEX_HOME/skills/openclaw-mirosearch/scripts/call_openclaw_mirosearch.py" --help
+python3 "$CODEX_HOME/skills/diting/scripts/call_diting.py" --help
 uv run "$CODEX_HOME/skills/searxng/scripts/searxng.py" --help
 ```
 

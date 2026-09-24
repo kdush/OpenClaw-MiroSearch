@@ -7,6 +7,7 @@ import re
 from typing import Tuple
 
 from ..utils.prompt_utils import FORMAT_ERROR_MESSAGE
+from .report_structure import ReportStructureValidator
 
 # Maximum length for tool results before truncation (100k chars ≈ 25k tokens)
 TOOL_RESULT_MAX_LENGTH = 100_000
@@ -223,7 +224,13 @@ class OutputFormatter:
 
         return "\n".join(summary_lines), boxed_result, log_string
 
-    def format_final_summary_payload(self, final_answer_text: str, client=None) -> dict:
+    def format_final_summary_payload(
+        self,
+        final_answer_text: str,
+        client=None,
+        detail_level: str = "balanced",
+        validate_structure: bool = True,
+    ) -> dict:
         """格式化最终摘要并返回结构化质量信息。
 
         与 format_final_summary_and_log() 的区别：返回值包含 quality 字典，
@@ -232,10 +239,13 @@ class OutputFormatter:
         Args:
             final_answer_text: 模型的最终回答文本
             client: 可选的 LLM 客户端（用于 token 统计）
+            detail_level: 输出篇幅档位 (compact/balanced/detailed)
+            validate_structure: 是否验证报告结构
 
         Returns:
             dict with keys: summary, boxed_answer, usage_log, quality
-            quality: {"format_valid": bool, "fallback_used": bool, "issues": list}
+            quality: {"format_valid": bool, "fallback_used": bool, "issues": list,
+                      "structure_valid": bool, "structure_issues": list}
         """
         display_text = self.clean_final_answer_text(final_answer_text)
 
@@ -275,10 +285,47 @@ class OutputFormatter:
         if not quality["format_valid"] and not quality["fallback_used"]:
             quality["issues"].append("no_answer_available")
 
+        # Structure validation (Phase 2)
+        quality["structure_valid"] = False
+        quality["structure_issues"] = []
+        quality["structure_metadata"] = {}
+
+        if validate_structure and display_text:
+            struct_valid, struct_issues, struct_meta = (
+                ReportStructureValidator.validate_structure(display_text, detail_level)
+            )
+            quality["structure_valid"] = struct_valid
+            quality["structure_issues"] = struct_issues
+            quality["structure_metadata"] = struct_meta
+
+            # Attempt to fix structure if invalid
+            if not struct_valid and boxed_result:
+                fixed_text = ReportStructureValidator.enforce_structure(
+                    display_text, detail_level
+                )
+                if fixed_text != display_text:
+                    # Re-validate after fix
+                    struct_valid_fixed, struct_issues_fixed, struct_meta_fixed = (
+                        ReportStructureValidator.validate_structure(
+                            fixed_text, detail_level
+                        )
+                    )
+                    if struct_valid_fixed or len(struct_issues_fixed) < len(
+                        struct_issues
+                    ):
+                        display_text = fixed_text
+                        quality["structure_valid"] = struct_valid_fixed
+                        quality["structure_issues"] = struct_issues_fixed
+                        quality["structure_metadata"] = struct_meta_fixed
+                        quality["issues"].append("structure_auto_fixed")
+
         # Token usage statistics
         if client and hasattr(client, "format_token_usage_summary"):
             token_summary_lines, _ = client.format_token_usage_summary()
             summary_lines.extend(token_summary_lines)
+
+        # Update summary_lines with potentially fixed text
+        summary_lines[1] = display_text
 
         return {
             "summary": "\n".join(summary_lines),

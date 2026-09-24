@@ -780,12 +780,12 @@ async def test_stream_tasks_pass_fresh_runtime_components_to_pipeline(
 
 
 @pytest.mark.asyncio
-async def test_stream_awaits_cancelled_pipeline_cleanup(
+async def test_cancelled_stream_releases_caller_while_thread_cleans_up(
     demo_main,
     _clean_preload_cache,
     monkeypatch,
 ):
-    """取消 watcher 触发后必须 await pipeline，让其 finally 完整执行。"""
+    """停止后本次事件立即返回，不再等被同步调用卡住的 pipeline 线程；线程自身仍要收尾。"""
     stream_kwargs = _install_stream_profile_cache(demo_main, monkeypatch)
     cleanup_finished = threading.Event()
 
@@ -824,6 +824,9 @@ async def test_stream_awaits_cancelled_pipeline_cleanup(
     ]
 
     assert events == []
+    deadline = time.time() + 2
+    while not cleanup_finished.is_set() and time.time() < deadline:
+        await asyncio.sleep(0.01)
     assert cleanup_finished.is_set()
 
 

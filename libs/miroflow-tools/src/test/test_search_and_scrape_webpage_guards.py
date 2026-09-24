@@ -8,12 +8,8 @@ import pytest
 
 
 def _make_simple_pdf_bytes(text: str) -> bytes:
-    escaped_text = (
-        text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
-    )
-    stream = (
-        f"BT\n/F1 18 Tf\n72 720 Td\n({escaped_text}) Tj\nET\n".encode("latin-1")
-    )
+    escaped_text = text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+    stream = f"BT\n/F1 18 Tf\n72 720 Td\n({escaped_text}) Tj\nET\n".encode("latin-1")
     objects = [
         b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
         b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n",
@@ -47,76 +43,7 @@ def _make_simple_pdf_bytes(text: str) -> bytes:
     return content
 
 
-def _install_tencentcloud_stubs() -> None:
-    """为缺失的 tencentcloud 依赖注入最小桩，避免单测导入失败。"""
-    if "tencentcloud" in sys.modules:
-        return
-
-    tencentcloud = types.ModuleType("tencentcloud")
-    common = types.ModuleType("tencentcloud.common")
-    credential = types.ModuleType("tencentcloud.common.credential")
-    common_client = types.ModuleType("tencentcloud.common.common_client")
-    exception_pkg = types.ModuleType("tencentcloud.common.exception")
-    exception_mod = types.ModuleType(
-        "tencentcloud.common.exception.tencent_cloud_sdk_exception"
-    )
-    profile_pkg = types.ModuleType("tencentcloud.common.profile")
-    client_profile = types.ModuleType("tencentcloud.common.profile.client_profile")
-    http_profile = types.ModuleType("tencentcloud.common.profile.http_profile")
-
-    class _DummyCredential:
-        def __init__(self, *_args, **_kwargs):
-            pass
-
-    class _DummyCommonClient:
-        def __init__(self, *_args, **_kwargs):
-            pass
-
-        def call_json(self, *_args, **_kwargs):
-            return {"Response": {}}
-
-    class _DummyTencentCloudSDKException(Exception):
-        pass
-
-    class _DummyClientProfile:
-        def __init__(self):
-            self.httpProfile = None
-
-    class _DummyHttpProfile:
-        def __init__(self):
-            self.endpoint = ""
-
-    credential.Credential = _DummyCredential
-    common_client.CommonClient = _DummyCommonClient
-    exception_mod.TencentCloudSDKException = _DummyTencentCloudSDKException
-    client_profile.ClientProfile = _DummyClientProfile
-    http_profile.HttpProfile = _DummyHttpProfile
-
-    common.credential = credential
-    common.common_client = common_client
-    common.exception = exception_pkg
-    common.profile = profile_pkg
-    exception_pkg.tencent_cloud_sdk_exception = exception_mod
-    profile_pkg.client_profile = client_profile
-    profile_pkg.http_profile = http_profile
-
-    tencentcloud.common = common
-
-    sys.modules["tencentcloud"] = tencentcloud
-    sys.modules["tencentcloud.common"] = common
-    sys.modules["tencentcloud.common.credential"] = credential
-    sys.modules["tencentcloud.common.common_client"] = common_client
-    sys.modules["tencentcloud.common.exception"] = exception_pkg
-    sys.modules[
-        "tencentcloud.common.exception.tencent_cloud_sdk_exception"
-    ] = exception_mod
-    sys.modules["tencentcloud.common.profile"] = profile_pkg
-    sys.modules["tencentcloud.common.profile.client_profile"] = client_profile
-    sys.modules["tencentcloud.common.profile.http_profile"] = http_profile
-
-
 def _load_search_module():
-    _install_tencentcloud_stubs()
     module_name = "miroflow_tools.dev_mcp_servers.search_and_scrape_webpage"
     if module_name in sys.modules:
         del sys.modules[module_name]
@@ -137,7 +64,9 @@ def test_searxng_only_downgrade_disabled(monkeypatch):
 def test_searxng_only_downgrade_enabled(monkeypatch):
     search_mod = _load_search_module()
     monkeypatch.setattr(search_mod, "SEARCH_SEARXNG_ONLY_ALLOW_DOWNGRADE", True)
-    monkeypatch.setattr(search_mod, "SEARCH_SEARXNG_ONLY_DOWNGRADE_ORDER", "serpapi,serper")
+    monkeypatch.setattr(
+        search_mod, "SEARCH_SEARXNG_ONLY_DOWNGRADE_ORDER", "serpapi,serper"
+    )
 
     # 构造 registry：serpapi 可用，serper 不可用
     from miroflow_tools.dev_mcp_servers.providers.registry import ProviderRegistry
@@ -222,9 +151,7 @@ async def test_searxng_precheck_raises_on_403(monkeypatch):
     async def _forbidden_handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(403, json={"error": "forbidden"}, request=request)
 
-    mock_client = httpx.AsyncClient(
-        transport=httpx.MockTransport(_forbidden_handler)
-    )
+    mock_client = httpx.AsyncClient(transport=httpx.MockTransport(_forbidden_handler))
 
     async def _async_return(value):
         return value
@@ -286,9 +213,7 @@ async def test_scrape_url_rejects_empty_url():
 async def test_scrape_url_blocks_private_host(monkeypatch):
     fn, search_mod, json_lib = _scrape_url_callable()
     # 强制 SSRF 守卫返回 True，模拟内网解析
-    monkeypatch.setattr(
-        search_mod, "_is_private_or_loopback_host", lambda _host: True
-    )
+    monkeypatch.setattr(search_mod, "_is_private_or_loopback_host", lambda _host: True)
     raw = await fn("http://intranet.example/")
     payload = json_lib.loads(raw)
     assert payload["success"] is False
@@ -298,9 +223,7 @@ async def test_scrape_url_blocks_private_host(monkeypatch):
 @pytest.mark.asyncio
 async def test_scrape_url_extracts_main_content(monkeypatch):
     fn, search_mod, json_lib = _scrape_url_callable()
-    monkeypatch.setattr(
-        search_mod, "_is_private_or_loopback_host", lambda _host: False
-    )
+    monkeypatch.setattr(search_mod, "_is_private_or_loopback_host", lambda _host: False)
 
     # 确保正文长度明显超过 max_chars=500，便于断言截断生效
     paragraph = "<p>第一条 任何人不得在公共场所吸烟，违者处以五十元罚款。</p>" * 30
@@ -348,9 +271,7 @@ async def test_scrape_url_extracts_main_content(monkeypatch):
 @pytest.mark.asyncio
 async def test_scrape_url_rejects_invalid_pdf_payload(monkeypatch):
     fn, search_mod, json_lib = _scrape_url_callable()
-    monkeypatch.setattr(
-        search_mod, "_is_private_or_loopback_host", lambda _host: False
-    )
+    monkeypatch.setattr(search_mod, "_is_private_or_loopback_host", lambda _host: False)
 
     async def _handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -461,9 +382,7 @@ async def test_scrape_url_allows_configured_fake_ip_dns(monkeypatch):
 @pytest.mark.asyncio
 async def test_scrape_url_returns_metrics_and_encoding_fields(monkeypatch):
     fn, search_mod, json_lib = _scrape_url_callable()
-    monkeypatch.setattr(
-        search_mod, "_is_private_or_loopback_host", lambda _h: False
-    )
+    monkeypatch.setattr(search_mod, "_is_private_or_loopback_host", lambda _h: False)
 
     async def _handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -498,9 +417,7 @@ async def test_scrape_url_returns_metrics_and_encoding_fields(monkeypatch):
 @pytest.mark.asyncio
 async def test_scrape_url_follows_redirect_chain_within_limit(monkeypatch):
     fn, search_mod, json_lib = _scrape_url_callable()
-    monkeypatch.setattr(
-        search_mod, "_is_private_or_loopback_host", lambda _h: False
-    )
+    monkeypatch.setattr(search_mod, "_is_private_or_loopback_host", lambda _h: False)
 
     call_log = []
 
@@ -587,15 +504,17 @@ async def test_scrape_url_blocks_redirect_to_private_host(monkeypatch):
 @pytest.mark.asyncio
 async def test_scrape_url_rejects_too_many_redirects(monkeypatch):
     fn, search_mod, json_lib = _scrape_url_callable()
-    monkeypatch.setattr(
-        search_mod, "_is_private_or_loopback_host", lambda _h: False
-    )
+    monkeypatch.setattr(search_mod, "_is_private_or_loopback_host", lambda _h: False)
     # 把跳数上限压低到 2，便于触发
     monkeypatch.setattr(search_mod, "SCRAPE_MAX_REDIRECT_HOPS", 2)
 
     async def _handler(request: httpx.Request) -> httpx.Response:
         path = request.url.path
-        idx = int(path.rsplit("/", 1)[-1].lstrip("step")) if path.startswith("/step") else 0
+        idx = (
+            int(path.rsplit("/", 1)[-1].lstrip("step"))
+            if path.startswith("/step")
+            else 0
+        )
         return httpx.Response(
             302,
             headers={"location": f"https://example.com/step{idx + 1}"},
@@ -620,9 +539,7 @@ async def test_scrape_url_rejects_too_many_redirects(monkeypatch):
 @pytest.mark.asyncio
 async def test_scrape_url_decodes_gbk_via_header(monkeypatch):
     fn, search_mod, json_lib = _scrape_url_callable()
-    monkeypatch.setattr(
-        search_mod, "_is_private_or_loopback_host", lambda _h: False
-    )
+    monkeypatch.setattr(search_mod, "_is_private_or_loopback_host", lambda _h: False)
 
     chinese_html = (
         "<html><head><title>政府公告</title></head>"
@@ -656,9 +573,7 @@ async def test_scrape_url_decodes_gbk_via_header(monkeypatch):
 @pytest.mark.asyncio
 async def test_scrape_url_decodes_via_meta_charset_when_header_missing(monkeypatch):
     fn, search_mod, json_lib = _scrape_url_callable()
-    monkeypatch.setattr(
-        search_mod, "_is_private_or_loopback_host", lambda _h: False
-    )
+    monkeypatch.setattr(search_mod, "_is_private_or_loopback_host", lambda _h: False)
 
     chinese_html = (
         '<html><head><meta charset="gb2312"><title>地方法规</title></head>'
@@ -693,9 +608,7 @@ async def test_scrape_url_decodes_via_meta_charset_when_header_missing(monkeypat
 @pytest.mark.asyncio
 async def test_scrape_url_decodes_via_charset_normalizer_fallback(monkeypatch):
     fn, search_mod, json_lib = _scrape_url_callable()
-    monkeypatch.setattr(
-        search_mod, "_is_private_or_loopback_host", lambda _h: False
-    )
+    monkeypatch.setattr(search_mod, "_is_private_or_loopback_host", lambda _h: False)
 
     chinese_html = (
         "<html><body><main><article>"
@@ -729,9 +642,7 @@ async def test_scrape_url_decodes_via_charset_normalizer_fallback(monkeypatch):
 @pytest.mark.asyncio
 async def test_scrape_url_reuses_shared_client(monkeypatch):
     fn, search_mod, json_lib = _scrape_url_callable()
-    monkeypatch.setattr(
-        search_mod, "_is_private_or_loopback_host", lambda _h: False
-    )
+    monkeypatch.setattr(search_mod, "_is_private_or_loopback_host", lambda _h: False)
 
     async def _handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -757,9 +668,7 @@ async def test_scrape_url_reuses_shared_client(monkeypatch):
 @pytest.mark.asyncio
 async def test_scrape_url_uses_trafilatura_markdown_primary_path(monkeypatch):
     fn, search_mod, json_lib = _scrape_url_callable()
-    monkeypatch.setattr(
-        search_mod, "_is_private_or_loopback_host", lambda _h: False
-    )
+    monkeypatch.setattr(search_mod, "_is_private_or_loopback_host", lambda _h: False)
 
     calls = {}
     fake_trafilatura = types.ModuleType("trafilatura")
@@ -803,9 +712,7 @@ async def test_scrape_url_uses_trafilatura_markdown_primary_path(monkeypatch):
 @pytest.mark.asyncio
 async def test_scrape_url_fallback_preserves_html_table_as_markdown(monkeypatch):
     fn, search_mod, json_lib = _scrape_url_callable()
-    monkeypatch.setattr(
-        search_mod, "_is_private_or_loopback_host", lambda _h: False
-    )
+    monkeypatch.setattr(search_mod, "_is_private_or_loopback_host", lambda _h: False)
 
     fake_trafilatura = types.ModuleType("trafilatura")
     fake_trafilatura.extract = lambda *_args, **_kwargs: None
@@ -842,9 +749,7 @@ async def test_scrape_url_fallback_preserves_html_table_as_markdown(monkeypatch)
 @pytest.mark.asyncio
 async def test_scrape_url_truncates_on_sentence_boundary(monkeypatch):
     fn, search_mod, json_lib = _scrape_url_callable()
-    monkeypatch.setattr(
-        search_mod, "_is_private_or_loopback_host", lambda _h: False
-    )
+    monkeypatch.setattr(search_mod, "_is_private_or_loopback_host", lambda _h: False)
 
     fake_trafilatura = types.ModuleType("trafilatura")
     fake_trafilatura.extract = lambda *_args, **_kwargs: None
@@ -885,9 +790,7 @@ async def test_scrape_url_truncates_on_sentence_boundary(monkeypatch):
 @pytest.mark.asyncio
 async def test_scrape_url_extracts_pdf_content(monkeypatch):
     fn, search_mod, json_lib = _scrape_url_callable()
-    monkeypatch.setattr(
-        search_mod, "_is_private_or_loopback_host", lambda _h: False
-    )
+    monkeypatch.setattr(search_mod, "_is_private_or_loopback_host", lambda _h: False)
     pdf_bytes = _make_simple_pdf_bytes("Shenzhen Statistical Bulletin 2024")
 
     async def _handler(request: httpx.Request) -> httpx.Response:
@@ -916,9 +819,7 @@ async def test_scrape_url_extracts_pdf_content(monkeypatch):
 @pytest.mark.asyncio
 async def test_scrape_url_blocks_oversized_body(monkeypatch):
     fn, search_mod, json_lib = _scrape_url_callable()
-    monkeypatch.setattr(
-        search_mod, "_is_private_or_loopback_host", lambda _h: False
-    )
+    monkeypatch.setattr(search_mod, "_is_private_or_loopback_host", lambda _h: False)
     monkeypatch.setattr(search_mod, "SCRAPE_MAX_BODY_BYTES", 1024, raising=False)
 
     async def _handler(request: httpx.Request) -> httpx.Response:
@@ -945,9 +846,7 @@ async def test_scrape_url_blocks_oversized_body(monkeypatch):
 @pytest.mark.asyncio
 async def test_scrape_url_returns_structured_json_payload(monkeypatch):
     fn, search_mod, json_lib = _scrape_url_callable()
-    monkeypatch.setattr(
-        search_mod, "_is_private_or_loopback_host", lambda _h: False
-    )
+    monkeypatch.setattr(search_mod, "_is_private_or_loopback_host", lambda _h: False)
 
     async def _handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -975,9 +874,7 @@ async def test_scrape_url_returns_structured_json_payload(monkeypatch):
 @pytest.mark.asyncio
 async def test_scrape_url_returns_structured_rss_payload(monkeypatch):
     fn, search_mod, json_lib = _scrape_url_callable()
-    monkeypatch.setattr(
-        search_mod, "_is_private_or_loopback_host", lambda _h: False
-    )
+    monkeypatch.setattr(search_mod, "_is_private_or_loopback_host", lambda _h: False)
     rss_body = """<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0">
   <channel>

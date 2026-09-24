@@ -23,7 +23,7 @@ import re
 # Custom Identity Prompt
 # ============================================================================
 
-CUSTOM_IDENTITY_PROMPT = """You are OpenClaw-MiroSearch, an open-source deep research and retrieval AI assistant adapted from MiroThinker.
+CUSTOM_IDENTITY_PROMPT = """You are Diting (谛听), an open-source deep research and retrieval AI assistant adapted from MiroThinker.
 
 IMPORTANT IDENTITY REMINDER:
 - You are NOT ChatGPT, Claude, or any other AI assistant
@@ -266,9 +266,7 @@ def _patch_output_formatter():
 
         # Demo 模式下保留完整报告文本，不用 \boxed{} 一句话覆盖
         # 仅从显示文本中移除 \boxed{...} 标记，避免在 UI 上直接显示
-        boxed_result = re.sub(
-            r"\\boxed\{[^}]*\}", "", boxed_result
-        ).strip()
+        boxed_result = re.sub(r"\\boxed\{[^}]*\}", "", boxed_result).strip()
 
         # Add extracted result section
         summary_lines.append("\n" + "-" * 20 + " Extracted Result " + "-" * 20)

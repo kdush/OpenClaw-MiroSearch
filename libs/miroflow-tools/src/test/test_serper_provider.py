@@ -4,7 +4,6 @@ import json
 
 import httpx
 import pytest
-import pytest_asyncio
 
 from miroflow_tools.dev_mcp_servers.providers.base import SearchParams, SearchResult
 from miroflow_tools.dev_mcp_servers.providers.serper import SerperProvider
@@ -79,9 +78,7 @@ class TestSerperProvider:
         provider = SerperProvider(api_key="fake-key")
 
         # Mock httpx client
-        mock_client = httpx.AsyncClient(
-            transport=_mock_transport(MOCK_SERPER_RESPONSE)
-        )
+        mock_client = httpx.AsyncClient(transport=_mock_transport(MOCK_SERPER_RESPONSE))
         monkeypatch.setattr(
             "miroflow_tools.dev_mcp_servers.providers.serper.get_shared_client",
             lambda: _async_return(mock_client),
@@ -147,9 +144,7 @@ class TestSerperProvider:
     async def test_search_returns_search_result_type(self, monkeypatch):
         """验证返回类型是 SearchResult 实例。"""
         provider = SerperProvider(api_key="fake-key")
-        mock_client = httpx.AsyncClient(
-            transport=_mock_transport(MOCK_SERPER_RESPONSE)
-        )
+        mock_client = httpx.AsyncClient(transport=_mock_transport(MOCK_SERPER_RESPONSE))
         monkeypatch.setattr(
             "miroflow_tools.dev_mcp_servers.providers.serper.get_shared_client",
             lambda: _async_return(mock_client),

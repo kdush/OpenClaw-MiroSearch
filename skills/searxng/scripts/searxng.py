@@ -61,6 +61,7 @@ def _should_verify_ssl(searxng_url: str) -> bool:
         return True
     return False
 
+
 def search_searxng(
     query: str,
     limit: int = 10,
@@ -76,13 +77,13 @@ def search_searxng(
         "format": "json",
         "categories": category,
     }
-    
+
     if language != "auto":
         params["language"] = language
-    
+
     if time_range:
         params["time_range"] = time_range
-    
+
     try:
         response = httpx.get(
             f"{searxng_url}/search",
@@ -91,15 +92,15 @@ def search_searxng(
             verify=verify_ssl,
         )
         response.raise_for_status()
-        
+
         data = response.json()
-        
+
         # Limit results
         if "results" in data:
             data["results"] = data["results"][:limit]
-        
+
         return data
-        
+
     except httpx.HTTPError as e:
         console.print(f"[red]连接 SearXNG 失败：[/red]{e}", file=sys.stderr)
         return {"error": str(e), "results": []}
@@ -111,42 +112,37 @@ def search_searxng(
 def display_results_table(data: dict, query: str):
     """以表格形式展示检索结果。"""
     results = data.get("results", [])
-    
+
     if not results:
         rprint(f"[yellow]未找到结果：[/yellow]{query}")
         return
-    
+
     table = Table(title=f"SearXNG 搜索：{query}", show_lines=False)
     table.add_column("#", style="dim", width=3)
     table.add_column("Title", style="bold")
     table.add_column("URL", style="blue", width=50)
     table.add_column("Engines", style="green", width=20)
-    
+
     for i, result in enumerate(results, 1):
         title = result.get("title", "No title")[:70]
         url = result.get("url", "")[:45] + "..."
         engines = ", ".join(result.get("engines", []))[:18]
-        
-        table.add_row(
-            str(i),
-            title,
-            url,
-            engines
-        )
-    
+
+        table.add_row(str(i), title, url, engines)
+
     console.print(table)
-    
+
     # Show additional info
     if data.get("number_of_results"):
         rprint(f"\n[dim]可用结果总数：{data['number_of_results']}[/dim]")
-    
+
     # 展示前三条摘要，便于快速判断质量。
     rprint("\n[bold]前三条结果：[/bold]")
     for i, result in enumerate(results[:3], 1):
         title = result.get("title", "No title")
         url = result.get("url", "")
         content = result.get("content", "")[:200]
-        
+
         rprint(f"\n[bold cyan]{i}. {title}[/bold cyan]")
         rprint(f"   [blue]{url}[/blue]")
         if content:
@@ -173,52 +169,60 @@ def main():
 环境变量:
   SEARXNG_URL / SEARXNG_BASE_URL: SearXNG 实例地址（默认: {DEFAULT_SEARXNG_URL})
   {VERIFY_SSL_ENV_NAME}: 是否校验证书，支持 true/false
-        """
+        """,
     )
-    
+
     subparsers = parser.add_subparsers(dest="command", help="命令")
-    
+
     # 搜索命令
     search_parser = subparsers.add_parser("search", help="执行网页搜索")
     search_parser.add_argument("query", nargs="+", help="搜索词")
     search_parser.add_argument(
-        "-n", "--limit",
-        type=int,
-        default=10,
-        help="结果数量（默认：10）"
+        "-n", "--limit", type=int, default=10, help="结果数量（默认：10）"
     )
     search_parser.add_argument(
-        "-c", "--category",
+        "-c",
+        "--category",
         default="general",
-        choices=["general", "images", "videos", "news", "map", "music", "files", "it", "science"],
-        help="搜索分类（默认：general）"
+        choices=[
+            "general",
+            "images",
+            "videos",
+            "news",
+            "map",
+            "music",
+            "files",
+            "it",
+            "science",
+        ],
+        help="搜索分类（默认：general）",
     )
     search_parser.add_argument(
-        "-l", "--language",
-        default="auto",
-        help="语言代码（auto、en、zh 等）"
+        "-l", "--language", default="auto", help="语言代码（auto、en、zh 等）"
     )
     search_parser.add_argument(
-        "-t", "--time-range",
+        "-t",
+        "--time-range",
         choices=["day", "week", "month", "year"],
-        help="时间范围过滤"
+        help="时间范围过滤",
     )
     search_parser.add_argument(
-        "-f", "--format",
+        "-f",
+        "--format",
         choices=["table", "json"],
         default="table",
-        help="输出格式（默认：table）"
+        help="输出格式（默认：table）",
     )
-    
+
     args = parser.parse_args()
-    
+
     if not args.command:
         parser.print_help()
         return
-    
+
     if args.command == "search":
         query = " ".join(args.query)
-        
+
         data = search_searxng(
             query=query,
             limit=args.limit,
@@ -226,7 +230,7 @@ def main():
             language=args.language,
             time_range=args.time_range,
         )
-        
+
         if args.format == "json":
             display_results_json(data)
         else:

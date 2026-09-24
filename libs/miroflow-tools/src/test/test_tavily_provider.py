@@ -148,7 +148,9 @@ class TestTavilyProvider:
                 request=request,
             )
 
-        mock_client = httpx.AsyncClient(transport=httpx.MockTransport(capturing_handler))
+        mock_client = httpx.AsyncClient(
+            transport=httpx.MockTransport(capturing_handler)
+        )
         monkeypatch.setattr(
             "miroflow_tools.dev_mcp_servers.providers.tavily.get_shared_client",
             lambda: _async_return(mock_client),
@@ -182,7 +184,9 @@ class TestTavilyProvider:
                 request=request,
             )
 
-        mock_client = httpx.AsyncClient(transport=httpx.MockTransport(capturing_handler))
+        mock_client = httpx.AsyncClient(
+            transport=httpx.MockTransport(capturing_handler)
+        )
         monkeypatch.setattr(
             "miroflow_tools.dev_mcp_servers.providers.tavily.get_shared_client",
             lambda: _async_return(mock_client),

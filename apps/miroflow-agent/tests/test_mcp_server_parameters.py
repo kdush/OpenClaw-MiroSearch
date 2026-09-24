@@ -25,8 +25,8 @@ def test_search_and_scrape_webpage_forwards_scrape_proxy_fake_ip_cidrs(monkeypat
     configs, blacklist = settings.create_mcp_server_parameters(cfg, agent_cfg)
 
     assert blacklist == set()
-    search_cfg = next(item for item in configs if item["name"] == "search_and_scrape_webpage")
-    assert (
-        search_cfg["params"].env["SCRAPE_PROXY_FAKE_IP_CIDRS"] == "198.18.0.0/15"
+    search_cfg = next(
+        item for item in configs if item["name"] == "search_and_scrape_webpage"
     )
+    assert search_cfg["params"].env["SCRAPE_PROXY_FAKE_IP_CIDRS"] == "198.18.0.0/15"
     assert search_cfg["params"].env["SEARXNG_BASE_URL"] == "http://searxng:8080"

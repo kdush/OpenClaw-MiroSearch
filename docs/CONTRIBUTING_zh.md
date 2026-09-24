@@ -2,7 +2,7 @@
 
 # 贡献指南
 
-感谢你参与 OpenClaw-MiroSearch 的开发与改进。
+感谢你参与谛听（Diting）的开发与改进。
 
 ## 开发环境
 

@@ -7,8 +7,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.core.orchestrator import Orchestrator
-from src.utils.prompt_utils import generate_cross_verification_prompt
+from src.core.orchestrator import Orchestrator  # noqa: E402
+from src.utils.prompt_utils import generate_cross_verification_prompt  # noqa: E402
 
 
 BANNED_TERMS = ("导弹", "无人机", "火箭弹", "美以")

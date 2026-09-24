@@ -1,7 +1,5 @@
 """SearXNGProvider 单元测试。"""
 
-import json
-
 import httpx
 import pytest
 
@@ -137,9 +135,7 @@ class TestSearXNGProvider:
         provider = SearXNGProvider(base_url="http://localhost:8888")
         provider._precheck_enabled = False
 
-        mock_client = httpx.AsyncClient(
-            transport=_mock_transport(many_results)
-        )
+        mock_client = httpx.AsyncClient(transport=_mock_transport(many_results))
         monkeypatch.setattr(
             "miroflow_tools.dev_mcp_servers.providers.searxng.get_shared_client",
             lambda: _async_return(mock_client),

@@ -119,22 +119,96 @@ class RunMetrics:
     # LLM 层
     rate_limit_429_count: int = 0
     timeout_count: int = 0
+    http_timeout_count: int = 0
+    wall_timeout_count: int = 0
+    llm_retry_count: int = 0
+    summary_passes: int = 0
     key_switch_count: int = 0
     model_route_hits: Dict[str, Dict[str, int]] = field(default_factory=dict)
     # 检索层
     search_rounds: int = 0
+    search_attempts: int = 0
+    search_provider_hits: Dict[str, int] = field(default_factory=dict)
+    scrape_count: int = 0
+    follow_up_searches: int = 0
+    # 工具侧检索质量门控（passed 后不再追加补检）
+    retrieval_confidence_passed: bool = False
+    # Deep early-stop / LLM-path efficiency (Round 7)
+    early_stop_triggered: bool = False
+    early_stop_turn: int = 0
     # 耗时（毫秒）
     total_duration_ms: int = 0
     stage_durations: Dict[str, int] = field(default_factory=dict)
     # 模型 failback
     failback_activated: bool = False
     failback_model: str = ""
+    # 生效配置（记录实际使用的参数）
+    effective_config: Dict[str, Any] = field(default_factory=dict)
 
     # ---- 便捷方法 ----
 
     def record_model_route(self, requested: str, responded: str) -> None:
         inner = self.model_route_hits.setdefault(requested, {})
         inner[responded] = inner.get(responded, 0) + 1
+
+    def record_search_round(self) -> None:
+        """记录一次检索轮次"""
+        self.search_rounds += 1
+
+    def record_search_attempt(self) -> None:
+        """记录一次检索工具调用（无论是否返回 organic 结果）。"""
+        self.search_attempts += 1
+
+    def record_search_provider_hit(self, provider: str, count: int = 1) -> None:
+        """记录某个搜索源被命中/尝试的次数。"""
+        name = (provider or "").strip().lower()
+        if not name:
+            return
+        self.search_provider_hits[name] = self.search_provider_hits.get(name, 0) + max(
+            1, int(count)
+        )
+
+    def record_scrape(self, count: int = 1) -> None:
+        """记录页面抓取次数"""
+        self.scrape_count += count
+
+    def record_follow_up_search(self) -> None:
+        """记录一次追踪式检索"""
+        self.follow_up_searches += 1
+
+    def record_llm_retry(self, count: int = 1) -> None:
+        """记录一次 LLM 应用层重试（含 timeout degrade）。"""
+        self.llm_retry_count += max(1, int(count))
+
+    def record_summary_pass(self) -> None:
+        """记录一次最终总结 LLM 调用。"""
+        self.summary_passes += 1
+
+    def record_early_stop(self, turn: int) -> None:
+        """记录 deep early-stop 首次触发回合。"""
+        if self.early_stop_triggered:
+            return
+        self.early_stop_triggered = True
+        self.early_stop_turn = max(0, int(turn))
+
+    def set_effective_config(
+        self,
+        mode: str,
+        search_profile: str,
+        search_result_num: int,
+        verification_min_search_rounds: int,
+        output_detail_level: str,
+        research_intensity: str = "standard",
+    ) -> None:
+        """设置生效配置"""
+        self.effective_config = {
+            "mode": mode,
+            "search_profile": search_profile,
+            "search_result_num": search_result_num,
+            "verification_min_search_rounds": verification_min_search_rounds,
+            "output_detail_level": output_detail_level,
+            "research_intensity": research_intensity,
+        }
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

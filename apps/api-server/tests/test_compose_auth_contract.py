@@ -49,8 +49,8 @@ def test_api_server_env_does_not_trust_proxy_headers_by_default():
 def test_api_spec_lists_authentication_not_configured_error():
     """API 错误码表必须包含 fail-closed 的认证未配置响应。"""
     contents = API_SPEC.read_text(encoding="utf-8")
-    error_table = contents.split("### 错误码", maxsplit=1)[1].split(
-        "\n---",
+    error_table = contents.split("## Error handling", maxsplit=1)[1].split(
+        "\n## ",
         maxsplit=1,
     )[0]
 

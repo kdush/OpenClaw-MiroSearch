@@ -7,7 +7,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.logging.task_logger import TaskLog
+from src.logging.task_logger import TaskLog  # noqa: E402
 
 
 def test_record_stage_timing_updates_trace_data_and_summary():
