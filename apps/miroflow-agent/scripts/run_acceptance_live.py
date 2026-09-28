@@ -761,7 +761,12 @@ def _compose_cfg(overrides: List[str]):
         OmegaConf.update(cfg, "llm.api_key", api_key, merge=True)
     if base_url:
         OmegaConf.update(cfg, "llm.base_url", base_url, merge=True)
-    OmegaConf.update(cfg, "llm.model_name", "glm-5.3-flash", merge=True)
+    # 尊重 DEFAULT_MODEL_NAME（与 gradio-demo / api-server 同一开关），
+    # 让 harness 能指向任意 OpenAI 兼容模型；未设置时回落到 case 的 llm 配置。
+    # 也保证 [creds] 打印的 model 与实际使用的模型一致。
+    model_name = os.environ.get("DEFAULT_MODEL_NAME") or cfg.llm.get("model_name")
+    if model_name:
+        OmegaConf.update(cfg, "llm.model_name", model_name, merge=True)
     OmegaConf.update(cfg, "llm.provider", "openai", merge=True)
     return cfg
 
