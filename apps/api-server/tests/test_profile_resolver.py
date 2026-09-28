@@ -234,6 +234,25 @@ class TestBuildSearchEnv:
         env = pr.build_search_env("definitely-not-exist", 10)
         assert env["SEARCH_PROVIDER_ORDER"] == "searxng,serpapi,tavily,serper"
 
+    def test_carries_profile_name_for_tier_attribution(self):
+        """M5：profile 名要透给检索工具，档位决策才能准确记录 degraded_from。
+
+        provider 顺序串无法反推 profile 名——serp-first 与 parallel-trusted 共用
+        同一顺序串，只看顺序串无法区分请求的是哪个 profile。
+        """
+        assert (
+            pr.build_search_env("parallel-trusted", 20)["SEARCH_PROFILE"]
+            == "parallel-trusted"
+        )
+        assert (
+            pr.build_search_env("searxng-only", 15)["SEARCH_PROFILE"] == "searxng-only"
+        )
+        assert pr.build_search_env("serp-first", 20)["SEARCH_PROFILE"] == "serp-first"
+
+    def test_unknown_profile_omits_search_profile(self):
+        """未知 profile 不写 SEARCH_PROFILE——宁可不记归因，也不写错。"""
+        assert "SEARCH_PROFILE" not in pr.build_search_env("definitely-not-exist", 10)
+
 
 # ---- build_mode_overrides -------------------------------------------------
 class TestBuildModeOverrides:

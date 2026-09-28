@@ -10,6 +10,7 @@ import re
 import socket
 import time
 import xml.etree.ElementTree as ET
+from dataclasses import replace
 from io import BytesIO, StringIO
 from ipaddress import ip_address, ip_network
 from typing import Any, Dict, List, Optional, Tuple
@@ -34,10 +35,11 @@ from tencentcloud.common.profile.http_profile import HttpProfile
 from ..mcp_servers.utils.url_unquote import decode_http_urls_in_dict
 from .providers.base import SearchParams
 from .providers.registry import ProviderRegistry
-from .providers.searxng import SearXNGProvider, SearxngPrecheckError
+from .providers.searxng import SearxngPrecheckError, SearXNGProvider
 from .providers.serpapi import SerpAPIProvider
 from .providers.serper import SerperProvider
 from .providers.tavily import TavilyProvider
+from .providers.tiering import resolve_provider_tier
 
 # Configure logging
 logger = logging.getLogger("miroflow")
@@ -58,6 +60,10 @@ DEFAULT_SEARCH_PROVIDER_MODE = "fallback"
 SEARCH_PROVIDER_MODE = os.getenv(
     "SEARCH_PROVIDER_MODE", DEFAULT_SEARCH_PROVIDER_MODE
 ).strip()
+# M5：上层 profile 名（如 serp-first / searxng-only / multi-route），由
+# profile_resolver.build_search_env 注入。provider 顺序串无法反推 profile 名，
+# 故缺省留空——档位决策宁可不记 degraded_from，也不写错误的归因。
+SEARCH_PROFILE = os.getenv("SEARCH_PROFILE", "").strip()
 VALID_SEARCH_PROVIDER_MODES = {
     "fallback",
     "merge",
@@ -278,18 +284,22 @@ def _merge_provider_results(
     ordered_providers: list[str], provider_results: dict[str, list[dict]], limit: int
 ) -> list[dict]:
     merged: list[dict] = []
-    seen_keys: set[str] = set()
+    by_key: dict[str, dict] = {}
     for provider in ordered_providers:
         for item in provider_results.get(provider, []):
             link = str(item.get("link", "")).strip()
             title = str(item.get("title", "")).strip()
             dedupe_key = link or title
-            if not dedupe_key or dedupe_key in seen_keys:
+            if not dedupe_key:
                 continue
-            seen_keys.add(dedupe_key)
-            merged.append(item)
-            if len(merged) >= limit:
-                return merged
+            if dedupe_key not in by_key:
+                if len(merged) >= limit:
+                    continue
+                by_key[dedupe_key] = {**item, "discoveries": []}
+                merged.append(by_key[dedupe_key])
+            by_key[dedupe_key]["discoveries"].append(
+                {"provider": provider, "position": item.get("position")}
+            )
     return merged
 
 
@@ -298,6 +308,7 @@ def _evaluate_confidence(
     providers_with_results: set[str],
     *,
     allowed_providers: Optional[list[str] | set[str]] = None,
+    min_provider_coverage: Optional[int] = None,
 ) -> dict[str, Any]:
     unique_domains = {
         _normalize_domain(str(item.get("link", "")).strip())
@@ -324,13 +335,19 @@ def _evaluate_confidence(
         coverage_ceiling = len(route_pool) if route_pool else 1
     else:
         coverage_ceiling = len(_registry.available_names()) or 1
-    min_provider_coverage = max(
-        1,
-        min(
-            SEARCH_CONFIDENCE_MIN_PROVIDER_COVERAGE,
-            coverage_ceiling,
-        ),
+    # M5: the resolved provider tier owns the coverage floor, so a
+    # single-provider deployment is never held to the multi-provider default.
+    # The floor stays capped by what this route can actually reach.
+    requested_coverage = (
+        SEARCH_CONFIDENCE_MIN_PROVIDER_COVERAGE
+        if min_provider_coverage is None
+        else min_provider_coverage
     )
+    min_provider_coverage = min(requested_coverage, coverage_ceiling)
+    if requested_coverage > 0:
+        min_provider_coverage = max(1, min_provider_coverage)
+    else:
+        min_provider_coverage = max(0, min_provider_coverage)
 
     result_ratio = min(
         len(organic_results) / max(1, SEARCH_CONFIDENCE_MIN_RESULTS),
@@ -397,10 +414,13 @@ def _ensure_confidence_evaluated(
     allowed = search_params.get("provider_order")
     if not isinstance(allowed, list):
         allowed = None
+    tier = search_params.get("provider_tier")
+    floor = tier.get("min_provider_coverage") if isinstance(tier, dict) else None
     search_params["confidence"] = _evaluate_confidence(
         organic_results,
         {name for name in covered if name},
         allowed_providers=allowed,
+        min_provider_coverage=floor if isinstance(floor, int) else None,
     )
 
 
@@ -523,6 +543,23 @@ async def google_search(
                     "No search provider configured. Set SERPER_API_KEY or SERPAPI_API_KEY or SEARXNG_BASE_URL."
                 )
 
+            # M5: resolve the effective provider tier from what is actually
+            # configured. Records the tier + reason + degradation path and
+            # supplies the adaptive confidence floor below. The effective order
+            # is pinned to the resolved route so the record matches reality.
+            # requested_profile carries the *profile name* (not the provider
+            # order string); it is empty when the caller has no profile concept.
+            tier_decision = replace(
+                resolve_provider_tier(
+                    SEARCH_PROFILE,
+                    providers,
+                    requested_order=SEARCH_PROVIDER_ORDER,
+                    strict=SEARCH_PROVIDER_ORDER_STRICT,
+                ),
+                effective_order=list(providers),
+            )
+            provider_tier = tier_decision.to_dict()
+
             requested_result_num = num if num is not None else SEARCH_RESULT_NUM
             try:
                 requested_result_num = int(requested_result_num)
@@ -612,6 +649,7 @@ async def google_search(
                     merged_results,
                     providers_with_results,
                     allowed_providers=providers,
+                    min_provider_coverage=tier_decision.min_provider_coverage,
                 )
                 parallel_min_success_passed = (
                     len(providers_with_results) >= SEARCH_PROVIDER_PARALLEL_MIN_SUCCESS
@@ -626,6 +664,7 @@ async def google_search(
                     "provider": "multi-route",
                     "provider_mode": configured_mode,
                     "provider_order": providers,
+                    "provider_tier": provider_tier,
                     "searxng_only_downgraded": searxng_only_downgraded,
                     "searxng_only_downgrade_added": searxng_only_downgrade_added,
                     "providers_with_results": sorted(providers_with_results),
@@ -712,6 +751,7 @@ async def google_search(
                         merged_results,
                         providers_with_results,
                         allowed_providers=merge_order,
+                        min_provider_coverage=tier_decision.min_provider_coverage,
                     )
                     confidence_passed = (
                         not SEARCH_CONFIDENCE_ENABLED
@@ -734,7 +774,7 @@ async def google_search(
 
             if configured_mode == "merge":
                 merged_results: list[dict] = []
-                seen_links: set[str] = set()
+                provider_results_map = {}
                 for provider in providers:
                     search_provider = provider
                     try:
@@ -745,17 +785,10 @@ async def google_search(
                             provider_errors.append(f"{provider}: empty organic results")
                             continue
 
-                        for item in provider_results:
-                            link = str(item.get("link", "")).strip()
-                            title = str(item.get("title", "")).strip()
-                            dedupe_key = link or title
-                            if not dedupe_key or dedupe_key in seen_links:
-                                continue
-                            seen_links.add(dedupe_key)
-                            merged_results.append(item)
-                            if len(merged_results) >= result_num:
-                                break
-
+                        provider_results_map[provider] = provider_results
+                        merged_results = _merge_provider_results(
+                            providers, provider_results_map, result_num
+                        )
                         if len(merged_results) >= result_num:
                             break
                     except Exception as exc:
@@ -777,6 +810,7 @@ async def google_search(
                         "provider": "multi-route",
                         "provider_mode": "merge",
                         "provider_order": providers,
+                        "provider_tier": provider_tier,
                         "searxng_only_downgraded": searxng_only_downgraded,
                         "searxng_only_downgrade_added": searxng_only_downgrade_added,
                     },
@@ -792,6 +826,7 @@ async def google_search(
                     if organic_results:
                         search_params["provider_mode"] = "fallback"
                         search_params["provider_order"] = providers
+                        search_params["provider_tier"] = provider_tier
                         search_params["searxng_only_downgraded"] = (
                             searxng_only_downgraded
                         )
@@ -821,6 +856,7 @@ async def google_search(
                     "provider": search_provider,
                     "provider_mode": "fallback",
                     "provider_order": providers,
+                    "provider_tier": provider_tier,
                     "searxng_only_downgraded": searxng_only_downgraded,
                     "searxng_only_downgrade_added": searxng_only_downgrade_added,
                     "fallback_errors": provider_errors,
