@@ -1,0 +1,714 @@
+{
+  "case_id": "H1",
+  "query": "智谱 ZCode 被指静默上传代码仓库：上传了哪些内容？是否跨境？官方如何回应？各方说法有何冲突？",
+  "overrides": [
+    "agent=mirothinker_v1.5_keep5_max200",
+    "llm=glm-flash",
+    "agent.main_agent.max_turns=12",
+    "++agent.research_intensity=deep",
+    "++agent.research_report_mode=true",
+    "+agent.main_agent.research_mode=verified",
+    "+output_formatter.detail_level=detailed",
+    "++agent.output_detail_level=detailed",
+    "+agent.main_agent.verification_min_search_rounds=3",
+    "+agent.main_agent.enable_lead_tracking=true",
+    "++agent.max_lead_follow_ups=2",
+    "++agent.max_scrape_per_task=8",
+    "++agent.deep_early_stop_on_agreement=true",
+    "++agent.parallel_tool_calls=true",
+    "++agent.deep_exit_on_early_stop=true",
+    "++agent.deep_post_early_stop_turns=1",
+    "++agent.max_final_answer_retries=1",
+    "++agent.oneshot_final_report=true",
+    "++agent.summary_keep_tool_result=2",
+    "++agent.summary_max_tokens_cap=4096",
+    "++llm.summary_max_tokens=4096"
+  ],
+  "env_patch": {
+    "SEARCH_PROVIDER_ORDER": "serpapi,tavily,searxng,serper",
+    "SEARCH_PROVIDER_MODE": "parallel_conf_fallback",
+    "SEARCH_PROVIDER_TRUSTED_ORDER": "serpapi,tavily,searxng,serper",
+    "SEARCH_PROVIDER_ORDER_STRICT": "0",
+    "SEARCH_RESULT_NUM": "20",
+    "SEARXNG_BASE_URL": ""
+  },
+  "effective_config": {
+    "mode": "verified",
+    "search_profile": "parallel-trusted",
+    "search_result_num": 20,
+    "verification_min_search_rounds": 3,
+    "output_detail_level": "detailed",
+    "research_intensity": "deep"
+  },
+  "tracker_enabled_at_compose": true,
+  "tracker_max_follow_ups": 2,
+  "status": "completed",
+  "duration_seconds": 427.77647,
+  "final_boxed_answer": "\\textbf{一句话核心结论}：ZCode在登录状态下静默将含完整.git历史（占载荷86.6\\%）的整仓快照加密直传阿里云OSS已被多源实锤并促成72小时内开源整改，但\"数据是否流向新加坡主体”的跨境质疑、“立即销毁不留存”的官方承诺均因直传OSS绕过审计、官方拒答而悬而未决——技术事实已明，责任与数据流向仍是罗生门。",
+  "final_summary_excerpt": "## 结论\n\n\\textbf{一句话核心结论}：ZCode在登录状态下静默将含完整.git历史（占载荷86.6\\%）的整仓快照加密直传阿里云OSS已被多源实锤并促成72小时内开源整改，但\"数据是否流向新加坡主体”的跨境质疑、“立即销毁不留存”的官方承诺均因直传OSS绕过审计、官方拒答而悬而未决——技术事实已明，责任与数据流向仍是罗生门。\n\n<!-- confidence:high -->\n**置信度：高**\n\n## 要点\n\n- 2026年9月18日，开发者ferstar逆向取证曝光智谱AI编程工具ZCode在用户登录状态下静默将**整个代码仓库（含完整.git历史，占载荷86.6%）**打包加密后直传阿里云OSS，端到端上传链路、快照构成均有多个独立信源交叉印证（**高置信度**）。\n- 但“数据是否实际跨境至新加坡主体”目前仅有承明科技单方取证与协议文本矛盾作为依据，智谱未正面回应，数据实际出境无实证（**低置信度，未决**）。\n\n## 争议与不确定\n\n| 议题 | 官方/智谱 | ferstar | 承明科技/社区 | 口径原因推测 |\n|---|---|---|---|---|\n| 上传范围 | \"代码片段/Repo Wiki索引数据\" | 整仓快照，.git占86.6% | \"结构完整归档\"，含商业机密 | 官方淡化范围以降低违规定性风险 |\n| 销毁承诺 | \"页面生成后立即销毁，不会保存\" | 直传OSS绕过应用服务器，无记录可查 | 9.18凌晨仍检测到上传 | 绕行架构使承诺客观上不可审计 |\n| 修复时点 | 9.18称已修复 | — | 9.18凌晨仍见上传；3.14.0迟至9.19 | \"修复\"或指停止新触发而非截断存量队列 |\n| 开关有效性 | 暗示可经设置管理 | 代码证明开关不控制上传 | — | 默认开启+开关失灵是追责核心 |\n| **跨境** | 未正面回应；中文协议承诺境内存储不跨境（北京智谱华章） | — | 请求指向zcode.z.ai，对应新加坡主体JINGSHENG HENGXING（Z.AI隐私政策称数据通常在新加坡处理） | 境内/境外双协议架构与VIE子公司布局的固有矛盾 |\n| 训练用途 | \"从未用于模型训练、不留存\" | \"Optimize Experience\"开关实为训练授权 | 要求说明第三方共享情况 | 单方宣称，无法核实 |\n| 开源诚意 | 道歉三天后开源接受监督 | — | 开源仓库\"零git历史”，与上传用户完整git历史形成讽刺对照 | 舆情修复动作 vs 社区信任赤字 |\n\n## 证据与来源\n\n### 时间线 / Timeline\n\n- **8月28日—9月14日**：承明科技取证期内，超6个工作区被上传，最大391.94MB\n- **9月18日凌晨**：ferstar发文曝光（256GB MacBook Air清理磁盘时发现~/.zcode占700MB+、313MB加密包、564次失败）；团队回复\"hey I am sorry to let you find it\"\n- **9月18日下午**：智谱用户群致歉，称Repo Wiki触发、默认开启、已修复、承诺立即销毁、补偿周额度\n- **9月19日**：ZCode 3.14.0发布（“修复仓库百科异常上传”）\n- **9月19日晚**：承明科技公开致智谱函，提11项要求、跨境质疑、限10月10日书面答复\n- **9月20日**：财中社/凤凰网/新浪以“涉嫌违规向境外传信息”报道；承明科技函件广泛传播\n- **9月21日08:45**：ZCode公众号公告整改完成、开源GitHub、移除Repo Wiki、切断快照上传链路；信通院+绿盟审计；当日股价翻红\n- **10月10日**：承明科技要求的书面答复截止日（未来时点）\n\n### Evidence\n\n1. 快照构成数字（313MB、42,411文件、86.6%、196.1MB/102.2MB/0.6MB/46.2MB、345MB工作区）：ferstar逆向分析，见知乎专栏《ZCode上传代码追踪：86.6%是Git历史，日志被删》（zhuanlan.zhihu.com/p/2085008412828610829）、《ZCode静默上传Git历史被扒，一次313MB直传阿里云》（p/2084629727038517696，2026-09-18/19）\n2. 62次捕获/会话、删包半小时重打包（564→565）：知乎ferstar独立取证文（p/2084421520261227907）\n3. 564次上传失败滞留本地：知乎“三天开源”文（p/2085473394431207370）及CSDN（2026-09-21）独立印证\n4. 发现过程（700MB+目录、256GB MacBook Air）：网易《一份Repo Wiki，绊了下智谱》\n5. 承明科技取证（391.94MB、超6工作区、32次失败、8.28–9.14、11项要求、10月10日限答）：新浪财经（2026-09-20）、搜狐（2026-09-20）\n6. 跨境质疑（JINGSHENG HENGXING TECHNOLOGY PTE.LTD.、zcode.z.ai/cdn-zcode.z.ai、新加坡处理条款、中文协议境内存储条款）：财中社、凤凰网（2026-09-20）、BigGo财经、X@_FORAB\n7. 官方回应与整改（9.21 08:45公告、移除Repo Wiki、信通院/绿盟、zcode-prod存储桶评测、开源）：东方财富（2026-09-21）、新浪财经（2026-09-21）、腾讯新闻（2026-09-20，含“立即销毁”表态）、知乎“零git历史”问题（2085304660995457603）\n8. “日志被删”取证障碍：知乎追踪文标题及内容（单一来源倾向，但与“绕过应用服务器无记录”逻辑互洽）\n\n### References\n\n1. 知乎专栏《ZCode上传代码追踪：86.6%是Git历史，日志被删》，zhuanlan.zhihu.com/p/2085008412828610829\n2. 知乎专栏《ZCode静默上传Git历史被扒，一次313MB直传阿里云》，p/2084629727038517696\n3. 知乎专栏《ZCode被曝整仓静默上传，我做了独立取证，我也中招了！》，p/2084421520261227907\n4. 知乎《“偷传代码”风波后，智谱把ZCode开源了：三天》，p/2085473394431207370\n5. 知乎问题《如何看待ZCode道歉三天后开源：零git历史》，2085304660995457603（含9.21 08:45官方公告）\n6. 财中社《智谱ZCode涉嫌违规向境外传信息》，m.caizhongshe.cn，2026-09-20\n7. 新浪财经《智谱ZCode涉嫌违规向境外传信息》/承明科技发函，finance.sina.com.cn，2026-09-20\n8. 凤凰网《智谱偷传数据风波扩大，有企业要求说明是否跨境传输》，news.ifeng.com/c/8wZVwrW7hfZ\n9. 东方财富《智谱回应AI编程工具ZCode隐私争议》，2026-09-21（信通院/绿盟、zcode-prod存储桶）\n10. 腾讯新闻《智谱ZCode“偷传代码”风波升级，企业发函追责》，news.qq.com，2026-09-20\n11. 网易《一份Repo Wiki，绊了下智谱》及《一个313MB加密包，撕开智谱等AI编程工具安全暗门》，2026-09-21\n12. 搜狐《企业用户发函质疑ZCode上传数据》《整改开源后创始人亲自上小红书》，2026-09-20/21\n13. BigGo财经《智谱ZCode资料上传风波升级 境外子公司架构引发电子政务疑虑》\n14. CSDN《智谱ZCode风波：代码还没写完，仓库已经裸奔》，2026-09-21\n\n## 深入了解\n\n### 内容分析 / Content Analysis\n\n舆情呈三级升级：技术曝光（ferstar，9.18）→法律追责（承明科技，9.19）→出境合规质疑（媒体，9.20）。官方响应速度极快（72小时内道歉—修复—开源—审计）但每一回应均被对应反证消解：销毁承诺vs不可审计架构、开源诚意vs零git历史、整改声明vs对跨境质询沉默。行业对照（Grok Build同构、Cursor/Claude Code前例）被用于将事件“常态化”，但“整仓.git+服务端独持私钥”组合仍属最重情节。\n\n### 关系拓扑 / Relationship Map\n\n```mermaid\nflowchart LR\n    A[ferstar 逆向取证] --> B[整仓快照 86.6% .git]\n    A --> C[服务端独持私钥]\n    C --> D[销毁承诺不可审计]\n    E[承明科技] --> F[批量上传取证 391.94MB]\n    E --> G[跨境质疑 新加坡主体]\n    G --> H[中文协议境内条款 vs 英文协议新加坡处理]\n    B --> I[官方: 代码片段/Repo Wiki]\n    I --> J[反驳: Manifest明文清单]\n    K[官方9.21整改: 开源+信通院/绿盟审计] --> L[缺口: 审计细节未公开]\n    M[开源仓库零git历史] --> N[社区信任赤字]\n```\n\n### Conclusions\n\n- **上传内容**：非官方所称“代码片段”，而是工作区全量基线快照（kind:\"baseline\"）：实测42,411个文件、313MB，其中.git目录占86.6%（LFS缓存196.1MB+完整提交对象库102.2MB+reflog 0.6MB），源码文档仅46.2MB；另含全局应用配置。企业端（承明科技）独立发现最大391.94MB、超6个工作区，含数据库口令、API密钥、云凭证、员工与用户个人信息、未公开研发与商业计划。\n- **触发机制**：登录即触发，与使用无关；单会话最多62次捕获；删除待传归档半小时内自动重新打包（重试564→565次）；UI开关只控制“训练授权/服务端索引”，无法停止上传。\n- **加密设计**：AES-256-CTR加密+RSA-OAEP封装，私钥仅存服务端，用户无法解密自己的密文——被ferstar认定为“确保服务器随时能读你的代码”。\n- **官方回应**：9.18群内致歉（Repo Wiki触发、默认开启、已修复、页面生成后立即销毁、开源承诺、周额度补偿）；9.19发布3.14.0“修复仓库百科异常上传”；9.21开源、移除Repo Wiki、切断上传链路，信通院+绿盟审计确认zcode-prod阿里云存储桶状态，股价翻红。\n\n### 已确认 vs 未确认 / Confirmed vs Unconfirmed\n\n- **已确认**：整仓快照上传机制及链路（≥3独立信源）；.git占86.6%及各分项体积（ferstar清单，多人复现）；登录即触发、开关无效、删包重生（ferstar+复现者）；承明科技8.28–9.14期间被批量上传（企业自查）；9.18致歉、9.19修复版本、9.21开源+审计（官方公告+多家媒体）\n- **未确认/无法确认**：数据是否实际出境至新加坡（仅协议指向+域名指向，无抓包证实数据落地境外）；上传数据是否被用于模型训练（官方单方否认）；“立即销毁”是否属实（无第三方可验证）；本地日志被删的责任方与时间；智谱对承明科技11项要求及跨境质询的正式答复（截至9.21未回应）\n\n### Gaps in Knowledge\n\n- 信通院/绿盟审计报告全文未公开，存储桶评测细节（是否含历史已传数据、是否删除）未知\n- 智谱对“新加坡主体vs境内存储承诺”矛盾的官方解释缺失\n- 监管机构（网信办等）是否介入无公开信息\n- Repo Wiki云端生成期间数据被谁访问、留存时长无披露\n- 其他受影响企业是否跟进追责未知\n",
+  "final_summary_chars": 5035,
+  "summary_file": "..\\..\\docs\\acceptance\\baseline-2026-09-24\\case_H1_summary.md",
+  "has_lead_trail": false,
+  "log_file": "..\\..\\docs\\acceptance\\baseline-2026-09-24\\logs/task_acceptance_h1_20260924_035213_2026-09-24-11-52-13.json",
+  "metrics": {
+    "rate_limit_429_count": 0,
+    "timeout_count": 0,
+    "http_timeout_count": 0,
+    "wall_timeout_count": 0,
+    "llm_retry_count": 0,
+    "summary_passes": 1,
+    "key_switch_count": 0,
+    "model_route_hits": {
+      "glm-5.3-flash": {
+        "glm-5.3-flash": 13
+      }
+    },
+    "search_rounds": 7,
+    "search_attempts": 18,
+    "search_provider_hits": {
+      "serper": 7
+    },
+    "scrape_count": 8,
+    "follow_up_searches": 2,
+    "retrieval_confidence_passed": false,
+    "early_stop_triggered": false,
+    "early_stop_turn": 0,
+    "total_duration_ms": 427774,
+    "stage_durations": {
+      "pipeline.llm_client_init": 12,
+      "pipeline.orchestrator_init": 0,
+      "llm.request.main": 302107,
+      "answer_generator.llm_call.main": 302113,
+      "llm.request.final_summary": 73688,
+      "answer_generator.llm_call.final_summary": 73689,
+      "pipeline.main_agent_run": 427757,
+      "pipeline.total": 427774
+    },
+    "failback_activated": false,
+    "failback_model": "",
+    "effective_config": {
+      "mode": "verified",
+      "search_profile": "parallel-trusted",
+      "search_result_num": 20,
+      "verification_min_search_rounds": 3,
+      "output_detail_level": "detailed",
+      "research_intensity": "deep"
+    }
+  },
+  "token_usage": {
+    "total_input_tokens": 165184,
+    "total_cache_input_tokens": 0,
+    "total_output_tokens": 18026
+  },
+  "source_urls": [
+    {
+      "url": "https://www.oschina.net/news/502589",
+      "title": "智谱旗下AI 编程工具ZCode 被扒静默上传完整Git 历史",
+      "status": "fetched",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "智谱AI编程工具ZCode被曝静默打包上传用户完整工作区至阿里云OSS。开发者ferstar发现加密文件包含全量.git历史及LFS大文件缓存等敏感数据。上传链路显示 ..."
+    },
+    {
+      "url": "https://www.zhihu.com/question/2084291380302574171",
+      "title": "有消息传智谱Zcode会上传用户的全量Git操作",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "智谱ZCode被质疑“偷传代码”：官方回应称问题已修复，将开源代码库、引入第三方审查\n\n智谱ZCode被质疑“偷传代码”： ..."
+    },
+    {
+      "url": "https://finance.sina.com.cn/roll/2026-09-19/doc-inisinhc2626091.shtml",
+      "title": "智谱ZCode回应数据上传争议：功能默认开启致数据上传",
+      "status": "fetched",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "官方表示,本次争议源于产品“代码库索引”功能。该功能设计初衷是在本地生成仓库索引, 发仓库数据上传; 知的情况下触发上传行为,波及部分使用者。"
+    },
+    {
+      "url": "https://tech.ifeng.com/c/8wWkqtwNNZd",
+      "title": "智谱ZCode就代码库数据上传致歉：已修复",
+      "status": "fetched",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "凤凰网科技讯9月18日，针对社区中有关代码库数据上传的讨论，智谱旗下编程产品ZCode今日通过智谱官方群组向受影响用户致歉，并发布回应称已第一时间完成自 ..."
+    },
+    {
+      "url": "https://zhuanlan.zhihu.com/p/2085402183818797832",
+      "title": "智谱ZCode静默上传用户代码，整改开源后创始人亲自上小红 ...",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "当天，智谱紧急发声明致歉，解释称这是\"代码库索引\"功能导致的——该功能在上线初期默认开启，上传的数据仅用于生成Repo Wiki页面，随后销毁。 9月19日， ..."
+    },
+    {
+      "url": "https://timeline.sohu.com/news/TcOLNyIkPp",
+      "title": "智谱Zcode擅自上传数据代码引争议官方回应 - 时间线- 搜狐",
+      "status": "fetched",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "快科技9月21日消息，围绕ZCode代码擅自上传历史数据引发的争议，智谱官方回应媒体称，社区提及的相关代码数据不会留存，公司也从未将其用于模型训练。"
+    },
+    {
+      "url": "https://m.sohu.com/a/1077957842_100106801?scm=10001.325_13-325_13.0.0-0-0-0-0.5_1334",
+      "title": "智谱ZCode上传用户仓库？官方道歉：已修复，将开源",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "刚刚，智谱在Zcode官方社群里进行了回应。承认上传了数据，解释称是“代码库索引”功能导致上传了仓库数据，初衷是为了方便用户，并表示生成wiki页面后， ..."
+    },
+    {
+      "url": "https://www.163.com/dy/article/L74P1LBD0511A6N9.html",
+      "title": "上传用户仓库？智谱道歉：已修复，将开源ZCode",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "智谱在Zcode官方社群里进行了回应。官方承认上传了数据。其解释称是“代码库索引”功能导致上传了仓库数据,初衷是为了方便用户,并表示生成wiki页面后"
+    },
+    {
+      "url": "https://post.smzdm.com/p/az867dp5",
+      "title": "智谱Zcode擅自上传数据代码引争议官方回应",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "快科技9月21日消息，围绕ZCode代码擅自上传历史数据引发的争议，智谱官方回应媒体称，社区提及的相关代码数据不会留存，公司也从未将其用于模型训练。"
+    },
+    {
+      "url": "https://www.zhihu.com/question/2084415444694163889",
+      "title": "如何看待智谱就上传用户本地仓库数据道歉，称已修复",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "IT时代网9月18日消息，今日，有网友曝光智谱AI编程工具ZCode会静默上传用户本地仓库数据。\n\n网友指出，只要在登录状态 ..."
+    },
+    {
+      "url": "https://www.youtube.com/post/UgkxPX-OVP7b1OzTy38jBF5_FQi6ecuSjJjp",
+      "title": "Post from 最佳拍档",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "总结： · 事件核心：ZCode在后台静默打包用户整个工作区，包括完整的.git提交历史、LFS大文件缓存、reflog操作轨迹及全局配置，加密后直传阿里云OSS。 · ..."
+    },
+    {
+      "url": "https://zhuanlan.zhihu.com/p/2085008412828610829",
+      "title": "ZCode上传代码追踪：86.6%是Git历史，日志被删",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "上传链路也被还原了：客户端先向 zcode.z.ai 的 /api/v1/snapshot/upload-credential 申请凭证和RSA公钥，本地 tar.gz 打包、AES-256-CTR加密、RSA-OAEP ..."
+    },
+    {
+      "url": "https://www.binance.com/zh-CN/square/post/367920655820538",
+      "title": "智谱ZCode被曝后台整库上传，连Git历史也不放过",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "币界网消息，智谱AI编程工具ZCode被曝在后台会将整个项目做快照，连.git一起打包加密，并上传到阿里云OSS。技术博客作者Ferstar逆向客户端后称，只要 ..."
+    },
+    {
+      "url": "https://x.com/vikingmute/status/2100946444085821900",
+      "title": "Viking on X: \"这是真的还是假的？https://t.co/tFT9Javr8z ...",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "ZCode 会把后台静默把整个工作区——包括完整的.git 历史、LFS 大文件缓存、reflog 以及全局应用配置——打包加密，直接上传到阿里云OSS 这个操作真的有点没有 ..."
+    },
+    {
+      "url": "https://www.facebook.com/will.fans/posts/智譜旗下的-ai-開發工具-zcode-最近在社群引發了相當嚴重的隱私爭議這款工具先前主打-glm-53-加上高額度福利用戶數迅速突破百萬不過技術部落客-fer/1540673954753355/",
+      "title": "智譜旗下的AI 開發工具ZCode 最近在社群引發了相當嚴重的 ...",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "不過技術部落客ferstar 今天揭露，只要在登入狀態下，ZCode 就會在背景默默打包整個工作區( .git ) 並上傳到阿里雲 OSS (類似AWS 的S3)。 ... 扒一扒ZCode ..."
+    },
+    {
+      "url": "https://news.cnyes.com/news/id/6610113",
+      "title": "智譜ZCode被曝後台整庫上傳，連Git歷史也不放過",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "動察Beating AI 快訊，智譜AI 編程工具ZCode 被曝會在後台給整個項目做快照，連.git 一起打包加密，並上傳到阿里雲OSS。 技術部落格作者ferstar 逆向 ..."
+    },
+    {
+      "url": "https://help.aliyun.com/en/yunxiao/user-guide/how-to-use-git-lfs",
+      "title": "How to use Git LFS - 阿里云文档",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "Step 1: Create a new empty Git repository · Step 2: Configure Git LFS · Step 3: Commit the Git LFS configuration · Step 4: Test with a large file."
+    },
+    {
+      "url": "https://view.inews.qq.com/a/20260920A07KWN00?uid%5B0%5D=&uid%5B1%5D=",
+      "title": "比Grok Build、Cursor 都狠？智谱ZCode“偷传代码”风波升级",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "加密，再用服务器下发的RSA 公钥封装密钥，最后把文件直接上传到阿里云OSS。 这不是一段没有启用的预留代码。除上述上传失败的商业项目外，ferstar 还 ..."
+    },
+    {
+      "url": "https://www.cnblogs.com/foxcharon/p/23037120",
+      "title": "ZCode 静默上传Git 历史：一次逆向取证的完整复盘",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "ai（智谱）官方AI 编程桌面应用ZCode，只要处于登录状态，就会把你的整个工作区——连同完整 .git 历史——加密打包上传到阿里云OSS，而解密私钥只存在于Z."
+    },
+    {
+      "url": "https://www.guancha.cn/CaiJing/2026_09_20_901394.shtml",
+      "title": "智谱偷传数据风波扩大，有企业要求说明是否跨境传输",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "中文ZCode隐私协议还提到，所有中国在中国境内运营中收集、产生的个人信息存储于中国境内，不会跨境传输或存储。如需跨境传输或存储，除法定免告知情形外 ..."
+    },
+    {
+      "url": "https://www.huxiu.com/article/4892594.html",
+      "title": "智谱偷传数据风波扩大，有企业要求说明是否跨境传输",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "2025年9月，智谱旗下AI编程工具ZCode被开发者发现自动生成用户工作区快照并加密上传至云端，涉及完整源代码、凭证等敏感数据。太原承明科技发函质疑 ..."
+    },
+    {
+      "url": "https://m.jiemian.com/article/15121635.html",
+      "title": "界面快评｜智谱Zcode数据上传引争议，AI治理须跟上AI能力",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "公司已向北京智谱华章发出函件，要求智谱说明数据删除情况、加密私钥的保管方式，以及有关数据是否发生跨境传输，并保留索赔和提起诉讼的权利。"
+    },
+    {
+      "url": "https://www.thepaper.cn/newsDetail_forward_34118714",
+      "title": "AI编程狂飙，安全跟得上吗？",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "此前有社交媒体爆料称，智谱（2513.HK）旗下AI编程工具ZCode会未经用户许可“静默上传”其编程开发数据至第三方云服务器。有技术博主发帖称，只要登录ZCode ..."
+    },
+    {
+      "url": "https://m.sohu.com/a/1078901073_121347613?scm=10001.325_13-325_13.0.0-0-0-0-0.5_1334",
+      "title": "企业用户发函质疑ZCode上传数据，智谱致歉称已整改并引入 ...",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "承明科技称，ZCode部分网络请求指向新加坡主体，而产品服务协议的签约方为北京智谱华章，要求智谱说明实际数据处理者、存储地点，以及是否发生跨境传输或 ..."
+    },
+    {
+      "url": "https://m.caizhongshe.cn/news-2568861090673773174.html",
+      "title": "智谱ZCode涉嫌违规向境外传信息",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "承明科技据此要求智谱厘清本次数据上传行为的法律责任归属，并说明是否存在数据出境传输或境外服务器存储情形。 ... 此次争议爆发前，智谱股价便持续承压。"
+    },
+    {
+      "url": "https://k.sina.com.cn/article_5182171545_134e1a99901902jstc.html?from=tech",
+      "title": "智谱Zcode数据上传引争议，AI治理须跟上AI能力",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "公司已向北京智谱华章发出函件，要求智谱说明数据删除情况、加密私钥的保管方式，以及有关数据是否发生跨境传输，并保留索赔和提起诉讼的权利。 ZCode是智 ..."
+    },
+    {
+      "url": "https://www.mrjjxw.com/articles/2026-09-21/4587856.html",
+      "title": "智谱ZCode代码上传风波持续：开源整改回应信任危机",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "一场围绕代码上传的数据安全争议，将智谱旗下AI编程产品ZCode推至舆论中心。近日，有开发者发文称，ZCode会将工作区快照打包，其中包含完整的Git历史 ..."
+    },
+    {
+      "url": "https://wap.eastmoney.com/a/202609223880705926.html",
+      "title": "AI编程狂飙，安全跟得上吗？",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "此前有社交媒体爆料称，智谱（2513.HK）旗下AI编程工具ZCode会未经用户许可“静默上传”其编程开发数据至第三方云服务器。有技术博主发帖称，只要登录ZCode ..."
+    },
+    {
+      "url": "https://zhuanlan.zhihu.com/p/2085476461595588199",
+      "title": "智谱三日渡劫，给公众上了一堂AI安全课",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "9月18日晚，ZCode被曝未经用户允许，把用户代码数据上传到云服务器。该事件在开发者群体引发争议，开发者认为有信息泄密的风险。 “相当于你花钱请了一个 ..."
+    },
+    {
+      "url": "https://m.cls.cn/detail/2488452",
+      "title": "智谱回应数据隐私争议：ZCode即将正式开源并开展安全审计",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "... 承明科技发函披露其6个工作区数据遭上传（最大391.94 MB），直指智谱中文版隐私政策中“数据存储于中国境内”承诺与实际域名指向新加坡主体的矛盾。9月 ..."
+    },
+    {
+      "url": "https://www.stcn.com/article/detail/4193205.html",
+      "title": "智谱宣布ZCode完成安全整改，股价拉升翻红 - 证券时报",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "智谱回应称，相关问题源于默认开启的“代码库索引”功能，数据主要用于生成Repo Wiki，目前相关机制已修复。公司同时邀请中国信通院开展安全审计。 智谱 ..."
+    },
+    {
+      "url": "https://www.donews.com/news/detail/1/6716854.html",
+      "title": "遭智谱ZCode上传公司数据，承明科技发函追责- 商业 - DoNews",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "承明科技要求智谱于2026年10月10日前以书面形式答复并完成以下事项：立即停止处理并彻底删除已上传的全部数据及相关衍生数据、缓存、备份；提供完整处理 ..."
+    },
+    {
+      "url": "https://finance.sina.cn/stock/jdts/2026-09-21/detail-inisqeua8878608.d.html?vt=4",
+      "title": "被指偷传代码企业发函追责，智谱：ZCode将开源并接受第三方审计",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "承明科技提出，尽管智谱声称9月18日已完成问题修复，但在当日凌晨仍检测到上传行为发生，因此对整改的实际效果与彻底性提出质疑。承明科技在函中一共 ..."
+    },
+    {
+      "url": "https://view.inews.qq.com/a/20260921A045S700",
+      "title": "企业用户发函质疑ZCode上传数据，智谱致歉称已整改并引入第三方 ...",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "承明科技称，ZCode部分网络请求指向新加坡主体，而产品服务协议的签约方为北京智谱华章，要求智谱说明实际数据处理者、存储地点，以及是否发生跨境传输或 ..."
+    },
+    {
+      "url": "https://www.huxiu.com/article/4892970.html",
+      "title": "“偷传代码”风波后，智谱把ZCode开源了：三天，三步 - 虎嗅",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "2026年9月18日，独立开发者ferstar曝光智谱ZCode客户端自动打包并加密上传用户完整项目至阿里云OSS。智谱在72小时内致歉、修复、引入信通院与绿盟第 ..."
+    },
+    {
+      "url": "https://www.tradingview.com/news/panews:5586e8c9ee3f9:0/",
+      "title": "承明科技就“智谱ZCode擅自上传公司数据”发函追责 - TradingView",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "承明科技要求智谱于10 月10 日前书面答复并完成以下事项：立即停止处理并彻底删除已上传的全部数据及相关衍生数据、缓存、备份；提供完整处理情况清单； ..."
+    },
+    {
+      "url": "https://www.21jingji.com/article/20260921/herald/a894d798e1e1491d3e0d38a3de6bafc5.html",
+      "title": "智谱股价异动，ZCode整改落地- 21经济网 - 21财经",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "第一，ZCode 项目正式开源，开放代码接受开发者社区监督，从底层提升产品透明度。第二，委托中国信通院、绿盟科技开展第三方安全审计，确认云端存储桶 ..."
+    },
+    {
+      "url": "https://www.iheima.com/article-402231.html",
+      "title": "智谱ZCode被指上传企业数据，承明科技发函追责 - iheima",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "承明科技要求智谱于2026年10月10日前以书面形式完成多项事项，包括彻底删除已上传的全部数据及相关衍生数据与备份、提供完整数据处理清单、说明数据是否 ..."
+    },
+    {
+      "url": "https://www.zhihu.com/question/2084291380302574171/answer/2084368816100984383",
+      "title": "有消息传智谱Zcode会上传用户的全量Git操作",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "ZCode 的行为，意味着你自己项目的所有文件全部都会被上传，而且.git 文件夹下可能包含的token、密钥，以及历史数据也全部被上传了。 例如，你项目下的 ..."
+    },
+    {
+      "url": "https://www.zhihu.com/question/2084291380302574171/answer/2084301529985595228",
+      "title": "有消息传智谱Zcode会上传用户的全量Git操作，这是否属实？",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "git/logs/... 所以基本可以判断就是.git打包之后的加密快照。 .git保存的就是仓库所有的历史修改，比整个代码库携带的信息都要多，你哪怕历史上删掉的文件 ..."
+    },
+    {
+      "url": "https://www.zhihu.com/question/2085304660995457603",
+      "title": "如何看待ZCode道歉三天后开源：零git历史",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "【官方公告】（9.21 08:45，“ZCode”公众号）：针对社区反馈的产品安全问题已完成整改并向所有用户道歉；已开源（http:// ..."
+    },
+    {
+      "url": "https://zhuanlan.zhihu.com/p/2084629727038517696",
+      "title": "智谱ZCode静默上传Git历史被扒，一次313MB直传阿里云",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "在这个345MB 的工作区里，.git 目录占了86.6%。 这个比例是整个事件里最值得琢磨的数字。 编程智能体要干活，读你的源码，天经地义。可它 ..."
+    },
+    {
+      "url": "https://x.com/LinearUncle/status/2100817842170159477",
+      "title": "LinearUncle on X: \"劲爆！智谱用户注意！ 你的代码和提交 ...",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "你的代码和提交记录，可能被传上云了？ 有用户反映，智谱ZCode 客户端疑似未经告知，将源码和整个仓库的Git 历史上传至阿里云OSS。目前尚待智谱核实 ..."
+    },
+    {
+      "url": "https://zhuanlan.zhihu.com/p/2084421520261227907",
+      "title": "ZCode 被曝整仓静默上传，我做了独立取证，我也中招了！",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "在他那份42,411 个文件的快照清单里，86.6% 是 .git 目录：完整提交历史、LFS 大文件、reflog，一个不少。单个会话最多触发过62 次捕获，删掉本地加密包？"
+    },
+    {
+      "url": "https://www.sohu.com/a/1079035278_121046892",
+      "title": "智谱ZCode静默上传用户代码，整改开源后创始人亲自上小红 ...",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "9月18日，开发者抓包发现，ZCode会在用户不知情的情况下，将本地代码仓库静默上传至云端——不只是当前代码，还包括git历史记录、已经删除的提交记录，甚至数据库口令等 ..."
+    },
+    {
+      "url": "https://finance.sina.com.cn/stock/zqgd/2026-09-20/doc-inisnnky6587414.shtml",
+      "title": "智谱ZCode涉嫌违规向境外传信息",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "9月20日，太原承明科技发函向港交所上市企业智谱追责，称其旗下ZCode客户端在用户不知情下批量上传数据资产与商业秘密，提出十余项整改要求并保留追责 ..."
+    },
+    {
+      "url": "https://news.ifeng.com/c/8wZVwrW7hfZ",
+      "title": "智谱偷传数据风波扩大，有企业要求说明是否跨境传输",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "就在智谱道歉后，ZCode“偷传数据”争议又烧向了“数据出境”。 ZCode ... 而据Z.AI平台缔约主体及个人数据控制者为JINGSHENG HENGXING TECHNOLOGY PTE."
+    },
+    {
+      "url": "https://wap.eastmoney.com/a/202609213879972785.html",
+      "title": "智谱回应AI编程工具ZCode隐私争议",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "记者21日获悉，智谱宣布ZCode正式开源，并就此前社区关注的数据安全问题完成整改。中国信息通信研究院与绿盟科技分别开展安全审计，确认zcode-prod阿里云 ..."
+    },
+    {
+      "url": "https://www.tradingview.com/news/panews:25fbdb006acdf:0/",
+      "title": "智谱回应数据隐私争议：ZCode将正式开源，并开展安全审计",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "PANews 9月21日消息，据澎湃报道，智谱旗下AI编程工具ZCode即将正式开源。对于此前发生的问题，完成整改后，智谱邀请了中国信息通信研究院和绿盟科技 ..."
+    },
+    {
+      "url": "https://x.com/_FORAB/status/2101472088792121433/photo/4",
+      "title": "AB Kuai.Dong - 就智谱ZCode 擅自上传开发数据事件",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "还真有较真的公司，就智谱ZCode 擅自上传开发数据事件，公开发函了。 它们指责，ZCode 客户端网络请求指向新加坡主体，而服务协议签约主体， ..."
+    },
+    {
+      "url": "https://www.sohu.com/a/1079318042_121124363",
+      "title": "智谱偷传用户数据，背后藏着大问题",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "9月20日，太原承明科技有限公司在公众平台发表公开函，指责ZCode擅自上传公司数据、商业秘密，要求智谱交代上传内容、处理方，并提供删除凭证。"
+    },
+    {
+      "url": "https://finance.biggo.com.tw/news/89e3b5f2-d487-45e9-a640-9e05c261c40c",
+      "title": "智譜ZCode資料上傳風波升級境外子公司架構引發電子政務 ...",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "智譜旗下AI程式開發工具ZCode被揭露在使用者登入狀態下將整個工作區打包上傳，事件焦點已從產品缺陷轉向資料出境質疑。智譜招股書揭露其在新加坡、 ..."
+    },
+    {
+      "url": "https://open.bigmodel.cn/",
+      "title": "智谱丨BigModel 平台",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "智谱大模型开放平台-新一代国产自主通用AI大模型开放平台，是国内大模型排名前列的大模型网站，研发了多款LLM模型，多模态视觉模型产品，致力于将AI产品技术与行业场景 ..."
+    },
+    {
+      "url": "https://news.qq.com/rain/a/20260920A07KWN00",
+      "title": "Cursor 都狠？智谱ZCode“偷传代码”风波升级，企业发函追责",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "智谱同时表示，上传数据会在Wiki 页面生成后立即销毁、不会保存，相关问题已经修复。公司接下来将开源ZCode 代码库，引入第三方评估人员进行审查，并公开 ..."
+    },
+    {
+      "url": "http://caifuhao.eastmoney.com/news/20260922093133607226040?from=guba&name=5pm66LCx5ZCn&gubaurl=aHR0cDovL2d1YmFwb3N0LmVhc3Rtb25leS5jb20vbGlzdC8saGswMjUxMy5odG1s",
+      "title": "3871亿智谱又双陷代码风波 - 财富号",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "Grok Build 与ZCode 几乎同构：默认开启、上传范围远超任务所需、密钥或服务端单方控制、承诺删除却无法独立核实。Claude Code、Cursor 也都曾因云端 ..."
+    },
+    {
+      "url": "https://www.163.com/dy/article/L7GQ3ESN05199467.html?clickfrom=w_tech",
+      "title": "一份Repo Wiki，绊了下智谱",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "按ferstar的自述，他的那台256GB的MacBook Air空间吃紧，清理磁盘时，发现ZCode的本地数据目录占了700多MB。直觉不对劲的他，继续往里找，发现了一份313MB ..."
+    },
+    {
+      "url": "https://zhuanlan.zhihu.com/p/2085473394431207370",
+      "title": "“偷传代码”风波后，智谱把ZCode开源了：三天",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "这个包之所以还留在本地，是因为上传连续失败了564次。 ferstar当天公开了逆向分析结果：ZCode在用户登录状态下，会自动生成工作区快照，将整个项目打包 ..."
+    },
+    {
+      "url": "https://finance.sina.com.cn/jjxw/2026-09-21/doc-inisqvrx7668167.shtml?froms=ggmp",
+      "title": "一个313MB加密包，撕开智谱等AI编程工具安全暗门",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "9月21日，智谱旗下ZCode就数据安全争议完成整改致歉，将其开源至GitHub，移除Repo Wiki功能，切断本地仓库快照上传链路。经中国信通院评测相关阿里云 ..."
+    },
+    {
+      "url": "https://view.inews.qq.com/a/20260922A0347T00",
+      "title": "3871亿智谱又双陷代码风波 - QQ News",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "Grok Build 与ZCode 几乎同构：默认开启、上传范围远超任务所需、密钥或服务端单方控制、承诺删除却无法独立核实。Claude Code、Cursor 也都曾因云端 ..."
+    },
+    {
+      "url": "https://www.163.com/dy/article/L7CEDC9I0519DDQ2.html",
+      "title": "一个313MB加密包，撕开智谱等AI编程工具安全暗门",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "智谱称，ZCode 3.14.0已经移除Repo Wiki功能（ZCode代码库索引功能的一部分），切断本地仓库快照生成与上传链路。并称中国信通院技术评测显示，相关阿里云 ..."
+    },
+    {
+      "url": "https://blog.csdn.net/qq_34419312/article/details/166245203",
+      "title": "智谱ZCode风波：代码还没写完，仓库已经裸奔原创",
+      "status": "snippet_only",
+      "providers": [
+        "multi-route"
+      ],
+      "snippet": "智谱ZCode风波：代码还没写完，仓库已经裸奔 原创. 2026-09-21 13:32:45 ... 网络不好，连续上传失败564 次，全部卡在本地重试队列里。 564 次 ..."
+    }
+  ],
+  "lead_steps_count": 18,
+  "gate_evaluation": {
+    "gates": "hotspot_detailed",
+    "detail_level": "detailed",
+    "pass": true,
+    "failures": [],
+    "structure_valid": true,
+    "structure_issues": [
+      "insufficient_citations"
+    ],
+    "structure_metadata": {
+      "found_sections": [
+        "tldr",
+        "conclusion",
+        "conflicts",
+        "timeline",
+        "evidence",
+        "confirmed",
+        "references"
+      ],
+      "missing_required": [],
+      "section_lengths": {
+        "tldr": 298,
+        "conclusion": 542,
+        "conflicts": 688,
+        "timeline": 489,
+        "evidence": 853,
+        "confirmed": 325,
+        "references": 1010
+      },
+      "citation_count": 0,
+      "has_conflicts_section": true,
+      "unsourced_number_warnings": [
+        "565",
+        "9.21",
+        "256",
+        "313",
+        "42,411",
+        "86.6%",
+        "196.1",
+        "345"
+      ]
+    },
+    "summary_chars": 5095,
+    "has_confidence_marker": true,
+    "has_conflicts_heading": true,
+    "has_content_analysis": true,
+    "has_mermaid_topology": true,
+    "unsourced_number_warnings": [
+      "565",
+      "9.21",
+      "256",
+      "313",
+      "42,411",
+      "86.6%",
+      "196.1",
+      "345"
+    ]
+  },
+  "error": null
+}

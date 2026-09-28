@@ -1,10 +1,10 @@
 # 谛听研究深度与证据可信度优化方案（评审回填版）
 
 - **日期：** 2026-09-24（v2，回填外部评审意见）
-- **状态：** 评审意见已合入本文档；路线图事项未动工。§0 版本门与撤销机制已提交（`0334af2`），文档回填已提交（`8aa2b9c`）；合并前复核指出的失败/空抓取误计证据与撤销提示预设冲突两处已在工作区修补，并经三轮静态检查 + 全量测试复核（227 项通过，含按工具真实返回协议构造的失败/空正文回归用例），待再复核合并
+- **状态：** §0 已提交（0334af2），失败/空抓取不计证据与中性撤销提示已合入；阶段 A 基线与契约已冻结；M1 已完成离线验收；M2 + Q2/Q3 代码接线已接通；阶段 B 验收清单 fixture 已补齐（见 §阶段 B）；M3/Q4/Q1/M4/M5 的**代码、测试与主流程接线均已落地并逐项核验**（核验记录见 §9.3）。**唯一未完成的是需要真实 LLM 凭据的验收动作**（§9.2）与主动暂缓的 P1/D1–D3；实现层无欠账。
 - **分支：** `feat/diting-research-quality-ui`
 - **v2 变更说明：** 按评审修正两处过期事实（provider 覆盖门槛、API 报告模式）；新增本 PR 合并门槛（§0）、数据契约（阶段 A）、统一完成标准（§7）；Q2/Q3 移出快赢批次改为与 M2 同批交付；移除未实测的工期估计；M3 计数口径、M5 范围按评审裁决收窄。
-- **关联文档：** [2026-09-24-jev-search-borrowing.md](./2026-09-24-jev-search-borrowing.md)（对标评审，已同步更正两处事实错误）
+- **关联文档：** [2026-09-24-jev-search-borrowing.md](./2026-09-24-jev-search-borrowing.md)（对标评审，已同步更正两处事实错误）；[2026-09-24-phase-a-baseline-and-source-contract.md](./2026-09-24-phase-a-baseline-and-source-contract.md)（阶段 A 设计稿：A-1 基线协议 + A-2~A-5 数据契约，代码事实已核实）
 
 ---
 
@@ -23,7 +23,7 @@
 
 **范围纪律：** M1–M5 不混入本修复。
 
-**实现现状（2026-09-24 核实）：** 版本绑定与撤销机制已提交于 `0334af2`（`evidence_revision` 绑定 `_should_early_stop_clue_chase`；`_bump_evidence_revision`；`_revoke_stale_early_stop_countdown`；配套 `test_deep_early_stop_exit.py` / `test_parallel_scrape_budget.py`）。合并前复核要求：按抓取工具返回协议判断成功且正文非空后才递增证据版本；撤销提示改为中性核查措辞。上述两处已在工作区修补：`_classify_scrape_result` 解析工具内层 JSON（`success=false` 计失败、`success=true` 且 `content`/`extracted_info` 为空计空抓取、仅成功且正文非空才递增证据版本并计抓取配额），撤销提示改为“请先重新核查新证据是支持、反驳还是与原结论无关”。已通过三轮复核：`ruff check`/`format` 干净、`apps/miroflow-agent` 全量 227 项测试通过；并按 `scrape_url` 真实错误载荷（`success=false` + `error`，无 `content` 字段）补强回归用例。
+**实现现状（2026-09-24 核实）：** 版本绑定与撤销机制已提交于 `0334af2`（`evidence_revision` 绑定 `_should_early_stop_clue_chase`；`_bump_evidence_revision`；`_revoke_stale_early_stop_countdown`；配套 `test_deep_early_stop_exit.py` / `test_parallel_scrape_budget.py`）。失败/空抓取不计证据：`_classify_scrape_result` 解析工具内层 JSON（`success=false` 计失败、`success=true` 且正文为空计空抓取、仅成功且正文非空才递增证据版本并计抓取配额）；撤销提示为中性核查措辞。`ruff` 干净、`apps/miroflow-agent` 全量 227 项测试通过。
 
 ## 1. 项目定位与取舍判据
 
@@ -38,7 +38,7 @@
 - 能否按部署方实际配置**自动分层运行**：配置参差是常态（有人全配、有人只配部分），同一套代码须在低配档位真跑起来、在高配档位自动升档（见 §5）；
 - 是修完已有半成品，还是开新能力战线。
 
-## 2. 现状核查（已验证的代码事实；v2 修正两处）
+## 2. 阶段 A 核查快照（M1/M2 实施前；v2 修正两处）
 
 ### 2.1 研究循环：平铺，不是递归
 
@@ -107,7 +107,7 @@
 
 - **M1 来源注册表落地：** 来源收集/去重/持久映射先行。
 - **M2 引用契约上移：** 把 Gradio 的 `[N]` 规则上移到核心报告生成与 API 输出；API 与 Demo 共用同一 `source_id → [N] → URL` 契约。聚焦内联引用契约与校验（评审更正后的口径，非「API 只能短答」）。
-- **Q2 References 展示：** 标题 + 可读摘要 + 链接 + 「仅摘要 / 已核查全文」状态。
+- **Q2 References 展示：** 标题 + 可读摘要 + 链接 + 「仅摘要 / 已抓取全文 / 抓取失败（仅摘要）」状态；抓取成功不代表事实核实。
 - **Q3 实时摘要展示：** 搜索过程展示实时返回摘要——**外部不可信内容，渲染必须转义**；未进入注册表的临时命中不可被报告引用。
 - **校验升级：** 不止数 `[N]`——每个 `[N]` 必须存在、指向实际返回过的来源、链接与状态一致；无法解析的引用删除或降级标注，**不造 URL**。
 
@@ -148,7 +148,7 @@
 - 未来图像搜索档：P1 的前置条件（图像搜索 key）本质也是一次升档；
 - 任何档位的硬性要求（如高置信域名数、覆盖门槛）必须随配置自适应，**禁止出现「所选 profile 的要求在当前配置下结构性不可达」的故障形态**（覆盖门槛已按路由钳制，v2 核实；其余门槛照此原则逐一校准可达性）。
 
-**验收材料需现场生成：** `docs/acceptance/` 已删除，跑 `run_acceptance_live.py --out-dir <dir>` 重新产出（阶段 A 基线即由此固定）。
+**基线已冻结：** `docs/acceptance/baseline-2026-09-24/`（07871fd）。M1 本轮按用户要求仅做离线验收，未复跑真实报告，因此不声称耗时、token 或报告质量较基线改善。
 
 ## 6. 评审已裁决事项（2026-09-24，替代 v1 评审要点）
 
@@ -172,3 +172,110 @@
 ## 8. 建议实施顺序
 
 **本 PR 阻塞项（§0）与文档事实修正（已完成）→ 阶段 A（基线/数据契约）→ M1 → M2 + Q2/Q3 → M3 → Q4；Q1、M4、M5 按依赖并行做独立小 PR。** P1 待前置条件齐备后另行立项；D1–D3 维持暂缓。
+
+## 9. 实施现状回填（2026-09-28）
+
+本轮按上表顺序推进，逐项落地代码与验收测试；表中「接入主流程」列已全部为 ✅（M3/M5 的接线在后续提交中补齐），逐项核验记录见 §9.3。
+
+| 项 | 代码 | 测试 | 接入主流程 |
+|---|---|---|---|
+| 阶段 B 验收清单 | —（补 fixture） | ✅ 重定向 / 同 URL 多 provider / 恶意摘要注入 / 压缩后引用 / API↔Demo 编号一致 | ✅ |
+| M3 结论核验 | ✅ `src/core/claim_verification.py` | ✅ 6 项 fixture + fail-closed + 主张抽取 | ✅ `orchestrator.run_main_agent` 在 `prepare_user_facing_report` 前调用，由 `resolve_claim_verification_config` 控制（deep 默认开），fail-closed 不阻断出稿 |
+| Q4 拓扑丰富 | ✅ `report_presentation.ensure_content_analysis_and_topology` | ✅ 支持/反驳/未知边、证据缺口、未登记来源不画 + 真实入口链路 | ✅ 随 M3 接线生效（`claim_map`/`source_registry` 由编排层传入） |
+| Q1 渲染器 | ✅ `static/js/mermaid_render.js` | ✅ strict + 回退契约 | ✅ |
+| M4 线索链 | ✅ `lead_tracker.snapshot()/get_trace()` + `lead_trace` 日志元数据 | ✅ 快照/reason/序列化 | ✅ |
+| M5 分档 | ✅ `providers/tiering.py` | ✅ 单 Serper / 单 SearXNG / 多 provider / 无凭据 / 中途超时 + 门槛消费 | ✅ `search_and_scrape_webpage.perform_search` 解析档位并写入 `searchParameters.provider_tier`，`min_provider_coverage` 作为 confidence 门槛（串行回退路径同样消费） |
+
+**阶段 B 交付物现状：** 字段契约文档 = `2026-09-24-phase-a-baseline-and-source-contract.md` §3.2（已与实现一致）；单元/集成测试 = 本轮补齐；"一份可查看的真实报告" 仍需凭据跑 `run_acceptance_live.py`（离线不可完成）。
+
+**仍未开始：** P1 图像证据管线（前置条件未齐备）、D1–D3（维持暂缓）。
+
+**§7 统一完成标准提醒：** 上述各项均未与阶段 A 基线做"无依据结论数 / 错误引用数 / p50-p95 耗时 / token / 检索抓取量"对比——该对比需真实凭据复测。**对比工具已就位**（§9.4），额度恢复后一条命令即可出表；M3 与 M5 接线后的净收益（额外一次无工具 LLM 调用 vs 无依据结论数下降）同样待实测确认，故 M3 默认只在 deep 档开启。
+
+### 9.1 真实检索验收（M5，已完成）
+
+`scripts/verify_search_provider_tier_live.py` 在真实检索服务上验证 M5，不依赖 LLM 凭据。
+单 provider 部署（仅 Serper）实测结果：
+
+- `provider_tier.tier = single-provider`，`min_provider_coverage = 1`
+- `confidence.constraints.min_provider_coverage = 1`（门槛跟随档位，不再结构性不可达）
+- `degraded_from = ""`（无 profile 概念时诚实留空，不写错误的 provider 名）
+- 真实检索成功返回结果，`retrieval_quality` 显示 `providers=1/1`
+
+### 9.2 端到端验收阻塞（环境，非代码）
+
+`run_acceptance_live.py --cases H5B` 未能跑通，根因有两个，**均已定位且其中一个已修复**：
+
+1. **LLM 账户欠费（未解决，非代码问题）**：直连网关探测返回
+   `HTTP 429 code 1113 余额不足或无可用资源包,请充值`。所有 LLM 调用被拒，
+   主循环 6 轮后 `Final Summary produced no usable answer`，
+   `source_registry` 为空（从未走到检索）。**需充值后重跑**。
+2. **`thinking` 参数不兼容（已修复）**：summary/fast 阶段无条件下发
+   `thinking={"type":"disabled"}`，而部分模型（如 GLM 系）「始终思考」，直接返回
+   `400 code 1210`。因 `SUMMARY_AGENT_TYPES` 的 `max_retries=1` 不重试，
+   `final_summary` 必然失败——**即使余额充足，报告也不会生成，M3 永远没有执行机会**。
+   已改为**提供商中立的能力自适应**：先尝试下发，被 400 拒绝就剥离该可选参数
+   重试一次（**不占 `max_retries`**）。判定只看状态码，不匹配任何模型名或
+   提供商文案——新增模型无需改代码。
+
+**结论：** 9.1 已给出 M5 的真实证据；M3 的端到端证据仍待 LLM 额度恢复后补跑。
+在此之前 M3 的有效性以离线契约测试为准（开关、fail-closed、抽取上限、拓扑渲染）。
+
+### 9.3 逐项目标核验（2026-09-28，离线可核部分全部通过）
+
+对文档列出的每一项「目标」按「落地位置 + 可执行证据」逐一核对，结论：**实现层无欠账**。
+下表只列可离线复现的证据（测试名可 `pytest -k` 直达）。
+
+| 目标 | 落地位置 | 核验证据 |
+|---|---|---|
+| §0 证据版本绑定与旧 AGREE 撤销 | `orchestrator._bump_evidence_revision` / `_revoke_stale_early_stop_countdown` / `_classify_scrape_result` | `test_deep_early_stop_exit.py`（26 例）：新搜索反证、仅抓取反证、冲突解除重新起算、支持性新证据可再 AGREE、裁决失败 fail-closed、无新证据不重裁、3 次上限；`test_parallel_scrape_budget.py`（2 例） |
+| A-1 基线冻结 | `docs/acceptance/baseline-2026-09-24/`（A/B/H1 三组） | `BASELINE.md`；§9.4 工具控制组可复现其全部数字 |
+| A-3 / M1 来源注册表 | `src/core/source_registry.py` | `test_source_registry_contract.py`（16 例）：同 URL 多 provider 合并、重定向别名、抓取失败不覆盖成功、序列化往返（= 历史压缩后引用仍可用） |
+| A-4 URL 规范化（保守） | 同上 | 同文件：scheme/host 小写、去 fragment 与跟踪参数、**路径大小写保留**、保留可能区分内容的查询参数 |
+| A-5 / M2 / Q2 / Q3 引用与展示契约 | `report_structure.enforce_citations`、`build_source_references` | `test_report_citations_contract.py`（13 例）：仅摘要可引用、未登记引用降级、无来源不造 URL、恶意摘要不注入 HTML；`apps/gradio-demo/tests/test_render_markdown.py::test_references_numbering_matches_core_contract`（API↔Demo 同编号同链接） |
+| M3 结论核验 | `src/core/claim_verification.py`，`orchestrator._adjudicate_report_claims` 接线 | `test_claim_verification.py`（25 例）：6 项 fixture（同 URL 两引擎、跨域转载、两来源支持、两可信来源互驳、仅摘要不确定、无依据）+ 抽取上限 + 解析回退；`test_claim_verification_wiring.py`（7 例）钉住编排层调用与 fail-closed |
+| Q4 拓扑丰富 | `report_presentation.ensure_content_analysis_and_topology` | `test_report_presentation.py`（20 例）：支持/反驳/未知边、证据缺口、未登记来源不画、无 claim_map 时不加边、抽取主张端到端入图 |
+| Q1 渲染器 | `apps/gradio-demo/static/js/mermaid_render.js` | `test_static_assets.py::test_mermaid_renderer_is_strict_and_keeps_plaintext_fallback`（strict + 纯文本回退） |
+| M4 线索链 | `lead_tracker.snapshot()` / `get_trace()`；`orchestrator` 日志元数据 `lead_trace` | `test_lead_tracker.py`（11 例）：快照/reason/序列化 |
+| M5 分档 | `providers/tiering.py`，`search_and_scrape_webpage.perform_search` 消费档位与门槛 | `test_provider_tiering.py`（9 例）：单 Serper、单 SearXNG、多 provider 升档、无凭据、中途超时降档、严格路由不静默扩档、每档门槛可达；§9.1 真机证据 |
+
+**本轮额外修复（提供商中立）：** summary/fast 阶段的「关闭思考」参数由**无条件下发**改为
+**能力自适应**——先尝试下发，被 `400` 拒绝即剥离该可选参数重试一次且**不消耗
+`max_retries`**；判定只看状态码，不匹配任何模型名或提供商文案。此前用模型名前缀黑名单
+的做法已废弃（违背「系统不绑定特定 LLM 提供商」的架构约束）。
+
+**测试与 lint 状态：** `apps/miroflow-agent` 338 passed / 7 skipped；
+`libs/miroflow-tools` 129 passed；`ruff check apps libs` 全绿、`format --check` 干净。
+
+**仍未完成（仅此两类）：**
+
+1. **需要真实 LLM 凭据的验收**：M3 端到端（§9.2）、§7 基线对比、阶段 B「一份可查看的
+   真实报告」——均因 LLM 账户欠费阻塞，非代码问题。
+2. **主动暂缓**：P1 图像证据管线（前置条件未齐备）、D1–D3（维持评审裁决）。
+
+### 9.4 §7 基线对比工具（本轮补齐）
+
+§7 要求每个 PR 与阶段 A 基线逐项对比，但此前**没有任何工具能执行它**——这是一处
+「标准已定、无法执行」的缺口。本轮补齐：
+
+```bash
+cd apps/miroflow-agent
+# 控制组（基线自比，应全部为 0）
+python scripts/compare_acceptance_runs.py \
+    --baseline ../../docs/acceptance/baseline-2026-09-24 \
+    --candidate ../../docs/acceptance/baseline-2026-09-24
+
+# 真实对比（额度恢复后）
+python scripts/compare_acceptance_runs.py \
+    --baseline ../../docs/acceptance/baseline-2026-09-24 \
+    --candidate ../../docs/acceptance/artifacts/<new-run> \
+    --out ../../docs/acceptance/artifacts/<new-run>/COMPARISON.md
+```
+
+- **不调用 LLM、不需要凭据**，故额度受限时仍可用（控制组自比即验证工具正确）；
+- 覆盖 §7 全部可计算维度：无依据结论数、错误引用数、冲突处理、p50/p95 耗时、
+  模型调用与 token、检索/抓取量；「实际供应商费用」按约定人工回填，工具不估算；
+- 逐用例 + 运行级汇总，并单列候选新增信号（注册表条目 / 结论核验已跑 / 结论—来源拓扑）
+  作为 M1/M3/Q4 接线后的可观察证据；
+- 出现**方向性回归**时退出码非零，可直接作 CI 卡口；
+- 测试：`tests/test_compare_acceptance_runs.py`（24 例，含用真实冻结基线做控制组的集成用例）。

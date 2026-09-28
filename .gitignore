@@ -226,4 +226,8 @@ CLAUDE.md
 
 .DS_Store
 
+# 验收运行产物：含运行时 API 响应与日志，不入库。
+# 冻结的基线目录 docs/acceptance/baseline-*/ 仍需入库。
+docs/acceptance/artifacts/
+
 apps/collect-trace/scripts/*/*.sh

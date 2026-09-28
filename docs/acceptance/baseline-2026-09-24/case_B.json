@@ -1,0 +1,362 @@
+{
+  "case_id": "B",
+  "query": "What were the global CO2 emissions in 2023?",
+  "overrides": [
+    "agent=mirothinker_v1.5_keep5_max200",
+    "llm=glm-flash",
+    "agent.main_agent.max_turns=10",
+    "++agent.research_intensity=deep",
+    "+agent.main_agent.research_mode=verified",
+    "+output_formatter.detail_level=detailed",
+    "++agent.output_detail_level=detailed",
+    "+agent.main_agent.verification_min_search_rounds=3",
+    "+agent.main_agent.enable_lead_tracking=true"
+  ],
+  "env_patch": {},
+  "effective_config": {
+    "mode": "verified",
+    "search_profile": "parallel-trusted",
+    "search_result_num": 20,
+    "verification_min_search_rounds": 3,
+    "output_detail_level": "detailed",
+    "research_intensity": "deep"
+  },
+  "tracker_enabled_at_compose": true,
+  "tracker_max_follow_ups": 2,
+  "status": "completed",
+  "duration_seconds": 339.602705,
+  "final_boxed_answer": "# 研究报告：2023 年全球 CO₂ 排放量\n\n## TL;DR / 结论（标明置信度）\n\n2023 年全球化石燃料及能源相关 CO₂ 排放约为 **37.4 GtCO₂（十亿吨）**，较 2022 年增长约 1.1%（+410 Mt），创历史新高——此数字由 IEA 官方报告、EDGAR（约 37.49 Gt）与 Global Carbon Budget 2024 修订值三方独立趋同，**置信度：高**。若按 Global Carbon Budget 完整口径计入土地利用变化排放（约 4.1 Gt），2023 年总人为 CO₂ 排放约 **40.9 GtCO₂**——该总量数字的原始论文工具结果在本对话中已被省略、仅分量 36.8 + 4.1 可由保留摘要加和印证，**置信度：中**。\n\n## Conclusions\n\n- **口径差异是理解本题的关键**。2023 年全球 CO₂ 排放不存在单一“官方数字”，而是多个权威机构采用不同统计边界得出的相近但不相同的值：IEA 统计“能源相关”排放（燃料燃烧 + 工业过程），EDGAR 与 GCB 统计“化石燃料及工业”（含水泥、钢铁等工艺排放），GCB 另有加上土地利用变化（毁林等）的完整人为总量。\n- **IEA 口径**：37.4 Gt，+1.1%（+410 Mt），2023 年为有记录以来最高。IEA 同时指出清洁能源技术的扩张限制了排放增幅，使 2023 年增速（1.1%）低于前些年水平 [1][2]。\n- **Global Carbon Budget 口径**：2023 年 11 月发布的预估为化石 CO₂ 36.8 Gt（+1.1%）；其 2024 版将 2023 年化石排放修订为约 37.4 Gt（经 WMO 转述），与 IEA、EDGAR 趋同 [3][4]。\n- **背景**：2023 年排放增长发生在极端天气（厄尔尼诺）、化石能源使用仍占主导的背景下；IEA 强调若无清洁能源的快速增长，排放增幅会更大 [1]。作为背景参照，Rhodium 估计 2023 年全球**全部温室气体**（含甲烷等，折 CO₂ 当量）约 51.8 Gt，+1.2% [9]——此为不同指标，不可与 CO₂ 排放混用。\n- 从长期看，2023 年是“排放持续攀升但增速受清洁能源抑制”的一年；IEA 后续报告显示 2024 年能源相关排放达 37.8 Gt（+0.8%）[10]，印证 37.4 Gt 作为 2023 年基准值的合理性。\n\n## 冲突与不确定 / Conflicts & Uncertainties\n\n| # | 各方说法 | 数值 | 冲突点 | 判定 |\n|---|----------|------|--------|------|\n| C1 | GCB 2023 初版：36.8 Gt [3] vs WMO 转述 GCB 2024：37.4 bn tonnes [4] | 36.8 vs 37.4 | 同一机构对同一年的化石排放，初版预估与后续修订相差约 0.6 Gt | **已解决**：初步预估值被修订上调，属数据更新而非矛盾。修订文档原文未核，仅见 WMO 摘要转述 |\n| C2 | IEA 37.4 Gt [1] vs GCB 总量约 40.9 Gt | 37.4 vs 40.9 | 表面“谁对”之争 | **已澄清**：口径差异。40.9 ≈ 化石（约 37）+ 土地利用（约 4.1）。注意：40.9 的直接来源（ESSD 论文摘要）在本对话中已省略，仅可由 36.8 + 4.1 加和间接印证（4.1 的 4.1 数字来自此前 Carbon Brief 摘要，原始结果亦已省略），故总量的精确性**中置信** |\n| C3 | Worldometer：2023 年 39.11 Gt，+1.46% [8] | 39.11 | 与 IEA/GCB/EDGAR 三方均不符，口径不明 | **无法核实/单方宣称**：孤证异常值，未见任何第二来源支持，不采信 |\n| C4 | Rhodium：2023 全球 GHG 51.8 Gt CO₂e [9] | 51.8 | 易被误引为“CO₂ 排放” | **已澄清**：为全部温室气体折当量（含非 CO₂ 气体），非本题口径 |\n| C5 | EDGAR 2023 化石值 ≈ 37.49 Gt [5] | 37.49 | 与 IEA 的 37.4 接近但不完全相同 | **部分确认**：仅见于搜索摘要中的表格数字（\"37.49, 38.52\"上下文），未核对 EDGAR 原始报告全文，精确值与统计边界不可确认 |\n\n## 时间线 / Timeline\n\n- **2023-11**：Global Carbon Budget 2023 发布（ESSD 同行评审论文），预估 2023 年化石 CO₂ 36.8 Gt（+1.1%，创纪录）[3]；斯坦福大学新闻报道同口径：较 2022 +1.1%、较疫情前（2019）+1.5% [7]\n- **2024-03-01**：IEA 发布《CO2 Emissions in 2023》：全球能源相关 CO₂ 增长 1.1%（+410 Mt）至 37.4 Gt，创历史新高 [1][2]；Reuters 与 Climate Change News 同日报道 [5][6]\n- **2024 年（下半年）**：Global Carbon Budget 2024 将 2023 年化石 CO₂ 修订至约 37.4 Gt；WMO 新闻稿引述此值并联系 2023–2024 年大气 CO₂ 浓度创纪录 [4]\n- **2025 年**：EDGAR 2025 报告页给出 2023 年化石 CO₂ ≈ 37.49 Gt（在全球份额表中，2023 年欧盟占比 6.1%）[5]；IEA《Global Energy Review 2025》报告 2024 年能源相关排放 37.8 Gt（较 2023 +0.8%）[10]\n\n## Evidence\n\n- [1] IEA《CO2 Emissions in 2023 – Executive Summary》（iea.org，报告发布于 2024-03-01）：\"Global energy-related CO2 emissions grew by 1.1% in 2023, increasing 410 million tonnes (Mt) to reach a new record high of 37.4 billion tonnes (Gt).\"\n- [2] IEA《CO2 Emissions in 2023》官方 PDF（iea.blob.core.windows.net，2024-03）：\"CO2 emissions reached a new record high of 37.4 Gt in 2023\"；并称过去十年（截至 2023）全球排放持续增长\n- [3] Global Carbon Budget 官方新闻稿《Fossil CO2 emissions at record high in 2023》（globalcarbonbudget.org，2023-12-05 前后发布）：\"projects fossil carbon dioxide (CO2) emissions of 36.8 billion tonnes in 2023, up 1.1% from 2022\"\n- [4] WMO 新闻稿《Record carbon emissions highlight urgency of Global Greenhouse Gas Watch》（wmo.int，2024）：\"This includes fossil CO2 emissions of 37.4 billion\"（转述 GCB 2024 对 2023 年的修订值）\n- [5] EDGAR《GHG emissions of all world countries, 2025 report》（edgar.jrc.ec.europa.eu，2025）：摘要含\"37.49, 38.52\"数字及\"EU27's share of global emissions decreased from 6.1% in 2023 to 5.9% in 2024\"；2023 年化石 CO₂ ≈ 37.49 Gt 为摘要表格推断，未核原文\n- [6] Reuters《Global energy-related CO2 emissions hit record high in 2023》（2024-03-01）：\"Global emissions from energy rose by 410 million tonnes, or 1.1%, in 2023 to 37.4 billion tonnes, the IEA analysis showed.\"（独立媒体佐证 IEA）\n- [7] Stanford News（sustainability.stanford.edu，2023-12）：GCB 2023 口径\"Overall emissions are up 1.1% compared to 2022 levels and 1.5% compared to pre-pandemic levels\"\n- [8] Worldometer（worldometers.info/co2-emissions）：表列 2023 年 39,112,688,790 吨（+1.46%）——**口径不明、无佐证，不可采信**\n- [9] Rhodium Group《Global Greenhouse Gas Emissions: 1990–2022 and Preliminary 2023 Estimates》（rhg.com，2024）：2023 全球 GHG 净排放约 51.8 Gt CO₂e，+1.2%（**全温室气体口径，仅作背景**）\n- [10] IEA《Global Energy Review 2025 – CO2 Emissions》（iea.org，2025）：2024 年能源相关排放 37.8 Gt，+0.8%（用于反推验证 2023 年 37.4 Gt 的一致性）\n\n## 已确认 vs 未确认 / Confirmed vs Unconfirmed\n\n- **已确认**（≥2 个独立来源）：\n  - 2023 年能源相关/化石 CO₂ 排放 ≈ **37.4 Gt**，创历史新高，较 2022 年 +1.1%（+410 Mt）[1][2][6]；GCB 2024 修订值同为 37.4 [4]\n  - GCB 2023 初版预估 2023 化石排放 36.8 Gt，+1.1% [3]，并有 Stanford 独立报道佐证增速 [7]\n- **未确认 / 无法确认**：\n  - EDGAR 的精确值 37.49 Gt：仅来自单一搜索摘要，未核对报告全文及统计边界\n  - GCB 2024 将 36.8 修订至 37.4 的具体原因与修订幅度细节：仅 WMO 摘要转述\n  - 总人为排放（含土地利用）约 40.9 Gt：直接论文证据（ESSD）的工具结果在本对话中已省略，仅可由“约 37（化石）+ 约 4.1（土地利用）”加和间接支持，故标注**中置信**\n  - Worldometer 的 39.11 Gt：单方数据、口径不明，判定不可采信\n\n## Gaps in Knowledge\n\n- 土地利用变化排放（约 4.1 Gt）不确定性天然较大（GCB 自述该分项置信区间宽），2023 年精确值无法从本次保留证据中确认。\n- EDGAR 与 IEA 口径的具体边界差异（是否含水泥碳化、 venting/flaring、国际航运航空的处理）未逐一核对原文。\n- GCB 2023→2024 修订 2023 年化石值（36.8→37.4）的驱动因素（能源数据更新？排放因子修正？）未获一手文档。\n- 大气 CO₂ 浓度 2023 年精确读数（此前轮次提及约 419 ppm 但原始结果已省略）不可在本报告中作为有源事实引用。\n\n## 内容分析 / Content Analysis\n\n- **官方机构**（IEA、EDGAR、GCB、WMO）：数字彼此趋同（37.4 上下），差异可全部归因于统计边界与数据版本；这是典型的“口径冲突”而非“事实冲突”。\n- **媒体转述**（Reuters、Climate Change News）：忠实复述 IEA 数字，可作为独立佐证链。\n- **风险来源**：二手聚合站（Worldometer）与指标混淆（GHG 51.8 Gt CO₂e 被误当 CO₂）是本题最容易产生的两类误读；阅读任何\"2023 全球 CO₂\"数字时应首先确认口径。\n\n## 关系拓扑 / Relationship Map\n\n```mermaid\nflowchart TD\n    Q[\"2023 全球 CO2 排放?\"] --> A[\"IEA: 37.4 Gt 能源相关 [1][2]\"]\n    Q --> B[\"GCB2023: 化石 36.8 Gt [3]\"]\n    Q --> C[\"GCB2024 修订: 化石 37.4 Gt [4]\"]\n    Q --> D[\"EDGAR: 约 37.49 Gt [5]\"]\n    Q --> E[\"World",
+  "final_summary_excerpt": "## 结论\n\n2023 年全球化石燃料及能源相关 CO₂ 排放约为 **37.4 GtCO₂（十亿吨）**，较 2022 年增长约 1.1%（+410 Mt），创历史新高——此数字由 IEA 官方报告、EDGAR（约 37.49 Gt）与 Global Carbon Budget 2024 修订值三方独立趋同，。若按 Global Carbon Budget 完整口径计入土地利用变化排放（约 4.1 Gt），2023 年总人为 CO₂ 排放约 **40.9 GtCO₂**——该总量数字的原始论文工具结果在本对话中已被省略、仅分量 36.8 + 4.1 可由保留摘要加…\n\n<!-- confidence:high -->\n**置信度：高**\n\n## 要点\n\n- 2023 年全球化石燃料及能源相关 CO₂ 排放约为 **37.4 GtCO₂（十亿吨）**，较 2022 年增长约 1.1%（+410 Mt），创历史新高——此数字由 IEA 官方报告、EDGAR（约 37.49 Gt）与 Global Carbon Budget 2024 修订值三方独立趋同，。\n\n## 争议与不确定\n\n| # | 各方说法 | 数值 | 冲突点 | 判定 |\n|---|----------|------|--------|------|\n| C1 | GCB 2023 初版：36.8 Gt [3] vs WMO 转述 GCB 2024：37.4 bn tonnes [4] | 36.8 vs 37.4 | 同一机构对同一年的化石排放，初版预估与后续修订相差约 0.6 Gt | **已解决**：初步预估值被修订上调，属数据更新而非矛盾。修订文档原文未核，仅见 WMO 摘要转述 |\n| C2 | IEA 37.4 Gt [1] vs GCB 总量约 40.9 Gt | 37.4 vs 40.9 | 表面“谁对”之争 | **已澄清**：口径差异。40.9 ≈ 化石（约 37）+ 土地利用（约 4.1）。注意：40.9 的直接来源（ESSD 论文摘要）在本对话中已省略，仅可由 36.8 + 4.1 加和间接印证（4.1 的 4.1 数字来自此前 Carbon Brief 摘要，原始结果亦已省略），故总量的精确性**中置信** |\n| C3 | Worldometer：2023 年 39.11 Gt，+1.46% [7] | 39.11 | 与 IEA/GCB/EDGAR 三方均不符，口径不明 | **无法核实/单方宣称**：孤证异常值，未见任何第二来源支持，不采信 |\n| C4 | Rhodium：2023 全球 GHG 51.8 Gt CO₂e [5] | 51.8 | 易被误引为“CO₂ 排放” | **已澄清**：为全部温室气体折当量（含非 CO₂ 气体），非本题口径 |\n| C5 | EDGAR 2023 化石值 ≈ 37.49 Gt [8] | 37.49 | 与 IEA 的 37.4 接近但不完全相同 | **部分确认**：仅见于搜索摘要中的表格数字（\"37.49, 38.52\"上下文），未核对 EDGAR 原始报告全文，精确值与统计边界不可确认 |\n\n## 证据与来源\n\n### 时间线 / Timeline\n\n- **2023-11**：Global Carbon Budget 2023 发布（ESSD 同行评审论文），预估 2023 年化石 CO₂ 36.8 Gt（+1.1%，创纪录）[3]；斯坦福大学新闻报道同口径：较 2022 +1.1%、较疫情前（2019）+1.5% [9]\n- **2024-03-01**：IEA 发布《CO2 Emissions in 2023》：全球能源相关 CO₂ 增长 1.1%（+410 Mt）至 37.4 Gt，创历史新高 [1][2]；Reuters 与 Climate Change News 同日报道 [8][10]\n- **2024 年（下半年）**：Global Carbon Budget 2024 将 2023 年化石 CO₂ 修订至约 37.4 Gt；WMO 新闻稿引述此值并联系 2023–2024 年大气 CO₂ 浓度创纪录 [4]\n- **2025 年**：EDGAR 2025 报告页给出 2023 年化石 CO₂ ≈ 37.49 Gt（在全球份额表中，2023 年欧盟占比 6.1%）[8]；IEA《Global Energy Review 2025》报告 2024 年能源相关排放 37.8 Gt（较 2023 +0.8%）[6]\n\n### Evidence\n\n- [1] IEA《CO2 Emissions in 2023 – Executive Summary》（iea.org，报告发布于 2024-03-01）：\"Global energy-related CO2 emissions grew by 1.1% in 2023, increasing 410 million tonnes (Mt) to reach a new record high of 37.4 billion tonnes (Gt).\"\n- [2] IEA《CO2 Emissions in 2023》官方 PDF（iea.blob.core.windows.net，2024-03）：\"CO2 emissions reached a new record high of 37.4 Gt in 2023\"；并称过去十年（截至 2023）全球排放持续增长\n- [3] Global Carbon Budget 官方新闻稿《Fossil CO2 emissions at record high in 2023》（globalcarbonbudget.org，2023-12-05 前后发布）：\"projects fossil carbon dioxide (CO2) emissions of 36.8 billion tonnes in 2023, up 1.1% from 2022\"\n- [4] WMO 新闻稿《Record carbon emissions highlight urgency of Global Greenhouse Gas Watch》（wmo.int，2024）：\"This includes fossil CO2 emissions of 37.4 billion\"（转述 GCB 2024 对 2023 年的修订值）\n- [8] EDGAR《GHG emissions of all world countries, 2025 report》（edgar.jrc.ec.europa.eu，2025）：摘要含\"37.49, 38.52\"数字及\"EU27's share of global emissions decreased from 6.1% in 2023 to 5.9% in 2024\"；2023 年化石 CO₂ ≈ 37.49 Gt 为摘要表格推断，未核原文\n- [10] Reuters《Global energy-related CO2 emissions hit record high in 2023》（2024-03-01）：\"Global emissions from energy rose by 410 million tonnes, or 1.1%, in 2023 to 37.4 billion tonnes, the IEA analysis showed.\"（独立媒体佐证 IEA）\n- [9] Stanford News（sustainability.stanford.edu，2023-12）：GCB 2023 口径\"Overall emissions are up 1.1% compared to 2022 levels and 1.5% compared to pre-pandemic levels\"\n- [7] Worldometer（worldometers.info/co2-emissions）：表列 2023 年 39,112,688,790 吨（+1.46%）——**口径不明、无佐证，不可采信**\n- [5] Rhodium Group《Global Greenhouse Gas Emissions: 1990–2022 and Preliminary 2023 Estimates》（rhg.com，2024）：2023 全球 GHG 净排放约 51.8 Gt CO₂e，+1.2%（**全温室气体口径，仅作背景**）\n- [6] IEA《Global Energy Review 2025 – CO2 Emissions》（iea.org，2025）：2024 年能源相关排放 37.8 Gt，+0.8%（用于反推验证 2023 年 37.4 Gt 的一致性）\n\n## 深入了解\n\n### 内容分析 / Content Analysis\n\n- **官方机构**（IEA、EDGAR、GCB、WMO）：数字彼此趋同（37.4 上下），差异可全部归因于统计边界与数据版本；这是典型的“口径冲突”而非“事实冲突”。\n- **媒体转述**（Reuters、Climate Change News）：忠实复述 IEA 数字，可作为独立佐证链。\n- **风险来源**：二手聚合站（Worldometer）与指标混淆（GHG 51.8 Gt CO₂e 被误当 CO₂）是本题最容易产生的两类误读；阅读任何\"2023 全球 CO₂\"数字时应首先确认口径。\n\n### 关系拓扑 / Relationship Map\n\n```mermaid\nflowchart TD\n    Q[\"2023 全球 CO2 排放?\"] --> A[\"IEA: 37.4 Gt 能源相关 [1][2]\"]\n    Q --> B[\"GCB2023: 化石 36.8 Gt [3]\"]\n    Q --> C[\"GCB2024 修订: 化石 37.4 Gt [4]\"]\n    Q --> D[\"EDGAR: 约 37.49 Gt [8]\"]\n    Q --> E[\"World\n\n### Conclusions\n\n- **口径差异是理解本题的关键**。2023 年全球 CO₂ 排放不存在单一“官方数字”，而是多个权威机构采用不同统计边界得出的相近但不相同的值：IEA 统计“能源相关”排放（燃料燃烧 + 工业过程），EDGAR 与 GCB 统计“化石燃料及工业”（含水泥、钢铁等工艺排放），GCB 另有加上土地利用变化（毁林等）的完整人为总量。\n- **IEA 口径**：37.4 Gt，+1.1%（+410 Mt），2023 年为有记录以来最高。IEA 同时指出清洁能源技术的扩张限制了排放增幅，使 2023 年增速（1.1%）低于前些年水平 [1][2]。\n- **Global Carbon Budget 口径**：2023 年 11 月发布的预估为化石 CO₂ 36.8 Gt（+1.1%）；其 2024 版将 2023 年化石排放修订为约 37.4 Gt（经 WMO 转述），与 IEA、EDGAR 趋同 [3][4]。\n- **背景**：2023 年排放增长发生在极端天气（厄尔尼诺）、化石能源使用仍占主导的背景下；IEA 强调若无清洁能源的快速增长，排放增幅会更大 [1]。作为背景参照，Rhodium 估计 2023 年全球**全部温室气体**（含甲烷等，折 CO₂ 当量）约 51.8 Gt，+1.2% [5]——此为不同指标，不可与 CO₂ 排放混用。\n- 从长期看，2023 年是“排放持续攀升但增速受清洁能源抑制”的一年；IEA 后续报告显示 2024 年能源相关排放达 37.8 Gt（+0.8%）[6]，印证 37.4 Gt 作为 2023 年基准值的合理性。\n\n### 已确认 vs 未确认 / Confirmed vs Unconfirmed\n\n- **已确认**（≥2 个独立来源）：\n  - 2023 年能源相关/化石 CO₂ 排放 ≈ **37.4 Gt**，创历史新高，较 2022 年 +1.1%（+410 Mt）[1][2][10]；GCB 2024 修订值同为 37.4 [4]\n  - GCB 2023 初版预估 2023 化石排放 36.8 Gt，+1.1% [3]，并有 Stanford 独立报道佐证增速 [9]\n- **未确认 / 无法确认**：\n  - EDGAR 的精确值 37.49 Gt：仅来自单一搜索摘要，未核对报告全文及统计边界\n  - GCB 2024 将 36.8 修订至 37.4 的具体原因与修订幅度细节：仅 WMO 摘要转述\n  - 总人为排放（含土地利用）约 40.9 Gt：直接论文证据（ESSD）的工具结果在本对话中已省略，仅可由“约 37（化石）+ 约 4.1（土地利用）”加和间接支持，故标注**中置信**\n  - Worldometer 的 39.11 Gt：单方数据、口径不明，判定不可采信\n\n### Gaps in Knowledge\n\n- 土地利用变化排放（约 4.1 Gt）不确定性天然较大（GCB 自述该分项置信区间宽），2023 年精确值无法从本次保留证据中确认。\n- EDGAR 与 IEA 口径的具体边界差异（是否含水泥碳化、 venting/flaring、国际航运航空的处理）未逐一核对原文。\n- GCB 2023→2024 修订 2023 年化石值（36.8→37.4）的驱动因素（能源数据更新？排放因子修正？）未获一手文档。\n- 大气 CO₂ 浓度 2023 年精确读数（此前轮次提及约 419 ppm 但原始结果已省略）不可在本报告中作为有源事实引用。\n",
+  "final_summary_chars": 5766,
+  "summary_file": "..\\..\\docs\\acceptance\\baseline-2026-09-24\\case_B_summary.md",
+  "has_lead_trail": false,
+  "log_file": "..\\..\\docs\\acceptance\\baseline-2026-09-24\\logs/task_acceptance_b_20260924_034633_2026-09-24-11-46-33.json",
+  "metrics": {
+    "rate_limit_429_count": 0,
+    "timeout_count": 0,
+    "http_timeout_count": 0,
+    "wall_timeout_count": 0,
+    "llm_retry_count": 0,
+    "summary_passes": 1,
+    "key_switch_count": 0,
+    "model_route_hits": {
+      "glm-5.3-flash": {
+        "glm-5.3-flash": 11
+      }
+    },
+    "search_rounds": 5,
+    "search_attempts": 6,
+    "search_provider_hits": {
+      "serper": 5
+    },
+    "scrape_count": 1,
+    "follow_up_searches": 1,
+    "retrieval_confidence_passed": false,
+    "early_stop_triggered": true,
+    "early_stop_turn": 5,
+    "total_duration_ms": 339600,
+    "stage_durations": {
+      "pipeline.llm_client_init": 11,
+      "pipeline.orchestrator_init": 1,
+      "llm.request.main": 245837,
+      "answer_generator.llm_call.main": 245841,
+      "llm.request.final_summary": 65094,
+      "answer_generator.llm_call.final_summary": 65094,
+      "pipeline.main_agent_run": 339583,
+      "pipeline.total": 339600
+    },
+    "failback_activated": false,
+    "failback_model": "",
+    "effective_config": {
+      "mode": "verified",
+      "search_profile": "parallel-trusted",
+      "search_result_num": 20,
+      "verification_min_search_rounds": 3,
+      "output_detail_level": "detailed",
+      "research_intensity": "deep"
+    }
+  },
+  "token_usage": {
+    "total_input_tokens": 103764,
+    "total_cache_input_tokens": 0,
+    "total_output_tokens": 14091
+  },
+  "source_urls": [
+    {
+      "url": "https://essd.copernicus.org/articles/15/5301/2023/",
+      "title": "Global Carbon Budget 2023 - ESSD/Copernicus",
+      "status": "snippet_only",
+      "providers": [],
+      "snippet": "by P Friedlingstein · 2023 · Cited by 198 — For 2023, we project global total anthropogenic CO2 emissions from fossil and land-use changes to also be around 11.2 Gt C (40.9 Gt CO2)."
+    },
+    {
+      "url": "https://globalcarbonbudget.org/carbonbudget2023/",
+      "title": "Global Carbon Budget | GCB 2023",
+      "status": "snippet_only",
+      "providers": [],
+      "snippet": "The Global Carbon Budget has over 100 contributors. Country chart figures contain data on land use emissions and fossil fuel emissions."
+    },
+    {
+      "url": "https://globalcarbonbudget.org/",
+      "title": "Global Carbon Budget | Home",
+      "status": "snippet_only",
+      "providers": [],
+      "snippet": "Global carbon emissions from fossil fuels are projected to rise by 1.1% in 2025 – reaching a record high, according to new research by the Global Carbon ..."
+    },
+    {
+      "url": "https://ourworldindata.org/co2-emissions",
+      "title": "CO₂ emissions",
+      "status": "snippet_only",
+      "providers": [],
+      "snippet": "by H Ritchie · 2020 · Cited by 581 — In 1950 the world emitted 6 billion tonnes of CO2. Overall, this means total emissions have roughly stabilized over the past decade."
+    },
+    {
+      "url": "https://essd.copernicus.org/articles/15/5301/2023/?utm_source=chatgpt.com",
+      "title": "Global Carbon Budget 2023",
+      "status": "snippet_only",
+      "providers": [],
+      "snippet": "by P Friedlingstein · 2023 · Cited by 195 — Two new ESSD articles evaluate in detail the greenhouse gas emissions across the European domain ... Global Carbon Budget 2023 Global Carbon ..."
+    },
+    {
+      "url": "https://impact.ornl.gov/en/publications/global-carbon-budget-2023/",
+      "title": "Global Carbon Budget 2023",
+      "status": "snippet_only",
+      "providers": [],
+      "snippet": "by P Friedlingstein · 2023 · Cited by 198 — Preliminary data for 2023 suggest an increase in EFOS relative to 2022 of +1.1 % (0.0 % to 2.1 %) globally and atmospheric CO2 concentration reaching 419.3 "
+    },
+    {
+      "url": "https://www.globalcarbonproject.org/carbonbudget/",
+      "title": "Global Carbon Budget",
+      "status": "snippet_only",
+      "providers": [],
+      "snippet": "An annual update of the global carbon budget. The Global Carbon Budget has moved to its own website at https://globalcarbonbudget.org/. now put on this website."
+    },
+    {
+      "url": "https://www.iea.org/reports/global-energy-review-2025/co2-emissions",
+      "title": "CO2 Emissions – Global Energy Review 2025 – Analysis",
+      "status": "snippet_only",
+      "providers": [],
+      "snippet": "Total energy-related CO2 emissions increased by 0.8% in 2024, hitting an all-time high of 37.8 Gt CO21. around 3 ppm higher than 2023"
+    },
+    {
+      "url": "https://repository.library.noaa.gov/view/noaa/60615",
+      "title": "Global Carbon Budget 2023",
+      "status": "snippet_only",
+      "providers": [],
+      "snippet": "by P Friedlingstein · 2023 · Cited by 198 — The global atmospheric CO2 concentration averaged over 2022 reached 417.1±0.1 ppm. Preliminary data for 2023 suggest an increase in EFOS relative to 2022 of"
+    },
+    {
+      "url": "https://www.statista.com/statistics/276629/global-co2-emissions/?srsltid=AU7gw4X7fS77gQXuLS1NtvtP0K8_Y_4jS0g2igM53J6gLaERPnGII-R3",
+      "title": "Global CO2 emissions by year 1940-2025",
+      "status": "snippet_only",
+      "providers": [],
+      "snippet": "Global carbon dioxide emissions from fossil fuels and industry totaled 38.11 billion metric tons (GtCO₂) in 2025. Emissions are projected to ..."
+    },
+    {
+      "url": "https://globalcarbonbudget.org/fossil-co2-emissions-at-record-high-in-2023/",
+      "title": "Fossil CO2 emissions at record high in 2023",
+      "status": "snippet_only",
+      "providers": [],
+      "snippet": "The annual Global Carbon Budget projects fossil carbon dioxide (CO2) emissions of 36.8 billion tonnes in 2023, up 1.1% from 2022."
+    },
+    {
+      "url": "https://www.carbonbrief.org/analysis-growth-of-chinese-fossil-co2-emissions-drives-new-global-record-in-2023",
+      "title": "Analysis: Growth of Chinese fossil CO2 emissions drives ...",
+      "status": "snippet_only",
+      "providers": [],
+      "snippet": "The Global Carbon Budget estimates that land-use emissions will be 4.1GtCO2 in 2023, down around 5% from 2022 and continuing a small downward ..."
+    },
+    {
+      "url": "https://www.facebook.com/NOAAResearch/posts/carbon-emissions-set-a-new-record-in-2023-and-are-expected-to-continue-to-increa/982746210560546/",
+      "title": "Global carbon emissions reach new record in 2023",
+      "status": "snippet_only",
+      "providers": [],
+      "snippet": "Carbon emissions set a new record in 2023 and are expected to continue to increase by the end of 2024 according to the Global Carbon Budget project, which ..."
+    },
+    {
+      "url": "https://impact.ornl.gov/en/publications/global-carbon-budget-2023",
+      "title": "Global Carbon Budget 2023",
+      "status": "snippet_only",
+      "providers": [],
+      "snippet": "by P Friedlingstein · 2023 · Cited by 1811 — Fossil CO2 emissions (EFOS) are based on energy statistics and cement production data, while emissions from land-use change (ELUC), mainly deforestation, f"
+    },
+    {
+      "url": "https://ourworldindata.org/explorers/co2",
+      "title": "CO₂ and Greenhouse Gas Emissions Data Explorer",
+      "status": "snippet_only",
+      "providers": [],
+      "snippet": "It provides estimates on total greenhouse gas emissions (including, and excluding land use change as separate metrics); methane emissions; and nitrous oxide ..."
+    },
+    {
+      "url": "https://www.facebook.com/NASAClimateChange/posts/time-for-a-check-up-carbon-dioxide-emissions-from-fossil-fuels-rose-again-in-202/810279967813187/",
+      "title": "Time for a check-up Carbon dioxide emissions from fossil ...",
+      "status": "snippet_only",
+      "providers": [],
+      "snippet": "Scientists' early analysis of 2023 data shows that emissions from fossil fuels rose 1.1 percent in 2023 compared to 2022 levels, bringing total ..."
+    },
+    {
+      "url": "https://www.iea.org/reports/co2-emissions-in-2023/executive-summary",
+      "title": "Executive Summary – CO2 Emissions in 2023 – Analysis",
+      "status": "snippet_only",
+      "providers": [],
+      "snippet": "Global energy-related CO2 emissions grew by 1.1% in 2023, increasing 410 million tonnes (Mt) to reach a new record high of 37.4 billion tonnes (Gt)."
+    },
+    {
+      "url": "https://iea.blob.core.windows.net/assets/33e2badc-b839-4c18-84ce-f6387b3c008f/CO2Emissionsin2023.pdf",
+      "title": "CO2 Emissions in 2023",
+      "status": "snippet_only",
+      "providers": [],
+      "snippet": "Global energy-related CO2 emissions grew by 1.1% in 2023, increasing 410 million tonnes (Mt) to reach a new record high of 37.4 billion tonnes (Gt)."
+    },
+    {
+      "url": "https://www.iea.org/reports/co2-emissions-in-2023",
+      "title": "CO2 Emissions in 2023 – Analysis",
+      "status": "snippet_only",
+      "providers": [],
+      "snippet": "The report finds that clean energy growth has limited the rise in global emissions, with 2023 registering an increase of 1.1%."
+    },
+    {
+      "url": "https://www.reuters.com/business/energy/global-energy-related-co2-emissions-hit-record-high-2023-iea-2024-03-01/",
+      "title": "Global energy-related CO2 emissions hit record high in 2023",
+      "status": "snippet_only",
+      "providers": [],
+      "snippet": "Global emissions from energy rose by 410 million tonnes, or 1.1%, in 2023 to 37.4 billion tonnes, the IEA analysis showed."
+    },
+    {
+      "url": "https://www.youtube.com/watch?v=d7e1qZRMnl0",
+      "title": "Global energy-related carbon emissions hit record high in 2023",
+      "status": "snippet_only",
+      "providers": [],
+      "snippet": "IEA analysis revealed carbon emissions increased by 1.1% in 2023, but the trend has slowed from previous years, thanks to increasing use of ..."
+    },
+    {
+      "url": "https://www.climatechangenews.com/2024/03/01/global-energy-related-co2-emissions-hit-record-high-in-2023-iea/",
+      "title": "Energy-related CO2 emissions in the world hit record high",
+      "status": "snippet_only",
+      "providers": [],
+      "snippet": "IEA Global emissions from energy rose by 410 million tonnes, or 1.1%, in 2023 to 37.4 billion tonnes, hitting a record hight Energy-related CO2 ..."
+    },
+    {
+      "url": "https://www.iea.org/data-and-statistics/data-tools/greenhouse-gas-emissions-from-energy-data-explorer",
+      "title": "Greenhouse Gas Emissions from Energy Data Explorer",
+      "status": "snippet_only",
+      "providers": [],
+      "snippet": "In 2024, global CO2 emissions from fuel combustion increased by 1.5% compared with 2023. Fossil fuels continued to represent 80% of the total ..."
+    },
+    {
+      "url": "https://www.eia.gov/environment/emissions/carbon/",
+      "title": "U.S. Energy-Related Carbon Dioxide Emissions, 2025",
+      "status": "snippet_only",
+      "providers": [],
+      "snippet": "U.S. energy-related CO2 emissions increased by 2%, or about 115 million metric tons (MMmt), in 2025. Emissions increased across all economic sectors, with the ..."
+    },
+    {
+      "url": "https://climateadaptationplatform.com/iea-report-reveals-record-high-carbon-emissions-in-2023/",
+      "title": "IEA Report Reveals Record High Carbon Emissions in 2023",
+      "status": "snippet_only",
+      "providers": [],
+      "snippet": "Findings of the IEA's 2023 report highlight a 1.1% increase in global emissions despite clean energy tech advances and growth in renewables."
+    },
+    {
+      "url": "https://edgar.jrc.ec.europa.eu/report_2025",
+      "title": "GHG emissions of all world countries, 2025 report",
+      "status": "snippet_only",
+      "providers": [],
+      "snippet": "Based on the emission estimates for 2024 provided by EDGAR, global GHG emissions increased by 1.3% compared to 2023, reaching 53.2 Gt CO2eq. In 2024, the ..."
+    },
+    {
+      "url": "https://edgar.jrc.ec.europa.eu/",
+      "title": "The Emissions Database for Global Atmospheric Research",
+      "status": "snippet_only",
+      "providers": [],
+      "snippet": "EDGAR provides both emissions as national totals and gridmaps at 0.1 x 0.1 degree resolution at global level, with yearly, monthly and up to hourly data. EDGAR ..."
+    },
+    {
+      "url": "https://www.carbonbrief.org/analysis-global-co2-emissions-will-reach-new-high-in-2024-despite-slower-growth",
+      "title": "Analysis: Global CO2 emissions will reach new high in ...",
+      "status": "snippet_only",
+      "providers": [],
+      "snippet": "Carbon dioxide (CO2) emissions from fossil fuels and cement will rise around 0.8% in 2024, reaching a record 37.4bn tonnes of CO2 (GtCO2)"
+    },
+    {
+      "url": "https://sosesg.com/en/articolo/greenhouse-gas-ghg-emissions-all-world-countries-what-edgar-2025-report-tells-us",
+      "title": "Greenhouse gas (GHG) emissions of all world countries",
+      "status": "snippet_only",
+      "providers": [],
+      "snippet": "According to the latest estimates, in 2024 global GHG emissions reached 53.2 Gt CO2eq (excluding the LULUCF sector: Land Use, Land Use Change and Forestry)."
+    },
+    {
+      "url": "https://data.worldbank.org/indicator/EN.GHG.CO2.MT.CE.AR5",
+      "title": "Carbon dioxide (CO2) emissions (total) excluding LULUCF ...",
+      "status": "snippet_only",
+      "providers": [],
+      "snippet": "Carbon dioxide (CO2) emissions (total) excluding LULUCF (Mt CO2e). EDGAR ( Emissions Database for Global Atmospheric Research ) Community GHG Database, Joint ..."
+    },
+    {
+      "url": "https://www.ccacoalition.org/resources/edgar-ghg-emissions-all-world-countries",
+      "title": "EDGAR - GHG emissions of all world countries",
+      "status": "snippet_only",
+      "providers": [],
+      "snippet": "According to the latest data, global GHG emissions in 2024 reached 53.2 Gt CO2eq (without Land Use, land Use Change and Forestry). The 2024 data ..."
+    },
+    {
+      "url": "https://github.com/openclimatedata/edgar-co2-emissions",
+      "title": "Data Package with EDGAR CO2 emissions",
+      "status": "snippet_only",
+      "providers": [],
+      "snippet": "In this report fossil CO₂ emissions include sources from fossil fuel use (combustion, flaring), industrial processes (cement, steel, chemicals and urea) and ..."
+    },
+    {
+      "url": "https://essd.copernicus.org/articles/17/2641/2025/essd-17-2641-2025-f02-high-res.pdf",
+      "title": "Gt CO2e (a) Global total greenhouse gas emissions",
+      "status": "snippet_only",
+      "providers": [],
+      "snippet": "(b) Global CO2 emissions from fossil fuel & industry (FFI). CEDS v2025.3.11. EDGAR v9.0. GCB v2024. [cement carbonation]. GCB v2024*. PRIMAP CR v2.6.1."
+    },
+    {
+      "url": "https://wmo.int/media/news/record-carbon-emissions-highlight-urgency-of-global-greenhouse-gas-watch",
+      "title": "Record carbon emissions highlight urgency of Global Greenhouse ...",
+      "status": "snippet_only",
+      "providers": [],
+      "snippet": "This includes fossil CO2 emissions of 37.4 billion, and the rest ... 2023-2024, it said. We have seen the early signs of this impacting ..."
+    },
+    {
+      "url": "https://sustainability.stanford.edu/news/global-carbon-emissions-fossil-fuels-reached-record-high-2023",
+      "title": "Global carbon emissions from fossil fuels reached record high in 2023",
+      "status": "snippet_only",
+      "providers": [],
+      "snippet": "Overall emissions are up 1.1% compared to 2022 levels and 1.5% compared to pre-pandemic levels, continuing a 10-year plateau. Carbon budget 2023."
+    },
+    {
+      "url": "https://www.statista.com/statistics/276629/global-co2-emissions/?srsltid=AU7gw4U52wORXIAz0TpOd9ED0U_z1-z6gnlx6d0kh39swi8rc9Ue2nEk",
+      "title": "Global CO2 emissions by year 1940-2025 - Statista",
+      "status": "snippet_only",
+      "providers": [],
+      "snippet": "Global carbon dioxide emissions from fossil fuels and industry totaled 38.11 billion metric tons (GtCO₂) in 2025. Emissions are projected to ..."
+    },
+    {
+      "url": "https://ourworldindata.org/co2-and-greenhouse-gas-emissions",
+      "title": "CO₂ and Greenhouse Gas Emissions | Our World in Data",
+      "status": "snippet_only",
+      "providers": [],
+      "snippet": "It is possible to reduce emissions while growing the economy. But this decoupling needs to happen faster. Hannah Ritchie. Thumbnail. September 29, 2023. How ..."
+    },
+    {
+      "url": "https://www.worldometers.info/co2-emissions/",
+      "title": "CO2 Emissions - Worldometer",
+      "status": "snippet_only",
+      "providers": [],
+      "snippet": "Global Fossil CO2 emissions by Year ; 2024, 39,632,664,219, 1.33% ; 2023, 39,112,688,790, 1.46% ; 2022, 38,548,118,943, 0.86% ; 2021, 38,219,996,767, 5.55% ..."
+    },
+    {
+      "url": "https://rhg.com/research/global-greenhouse-gas-emissions-1990-2022-and-preliminary-2023-estimates/",
+      "title": "Global Greenhouse Gas Emissions: 1990-2022 and Preliminary ...",
+      "status": "snippet_only",
+      "providers": [],
+      "snippet": "We estimate that global GHG emissions rose in 2023 by 1.2% over the previous year, reaching 51.8 gigatons of CO2-equivalent on net."
+    }
+  ],
+  "lead_steps_count": 13,
+  "gate_evaluation": null,
+  "error": null
+}

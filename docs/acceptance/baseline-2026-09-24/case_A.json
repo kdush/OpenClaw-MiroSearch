@@ -1,0 +1,84 @@
+{
+  "case_id": "A",
+  "query": "What is the capital of France?",
+  "overrides": [
+    "agent=mirothinker_v1.5_keep5_max200",
+    "llm=glm-flash",
+    "agent.main_agent.max_turns=5",
+    "++agent.research_intensity=light",
+    "++agent.enable_lead_tracking=false",
+    "+output_formatter.detail_level=compact",
+    "++agent.output_detail_level=compact"
+  ],
+  "env_patch": {},
+  "effective_config": {
+    "mode": "balanced",
+    "search_profile": "parallel-trusted",
+    "search_result_num": 10,
+    "verification_min_search_rounds": 1,
+    "output_detail_level": "compact",
+    "research_intensity": "light"
+  },
+  "tracker_enabled_at_compose": false,
+  "tracker_max_follow_ups": 3,
+  "status": "completed",
+  "duration_seconds": 34.764444,
+  "final_boxed_answer": "Paris",
+  "final_summary_excerpt": "## 结论\n\nParis\n\n<!-- confidence:high -->\n**置信度：高**\n",
+  "final_summary_chars": 49,
+  "summary_file": "..\\..\\docs\\acceptance\\baseline-2026-09-24\\case_A_summary.md",
+  "has_lead_trail": false,
+  "log_file": "..\\..\\docs\\acceptance\\baseline-2026-09-24\\logs/task_acceptance_a_20260924_034558_2026-09-24-11-45-58.json",
+  "metrics": {
+    "rate_limit_429_count": 0,
+    "timeout_count": 0,
+    "http_timeout_count": 0,
+    "wall_timeout_count": 0,
+    "llm_retry_count": 0,
+    "summary_passes": 1,
+    "key_switch_count": 0,
+    "model_route_hits": {
+      "glm-5.3-flash": {
+        "glm-5.3-flash": 2
+      }
+    },
+    "search_rounds": 0,
+    "search_attempts": 0,
+    "search_provider_hits": {},
+    "scrape_count": 0,
+    "follow_up_searches": 0,
+    "retrieval_confidence_passed": false,
+    "early_stop_triggered": false,
+    "early_stop_turn": 0,
+    "total_duration_ms": 34763,
+    "stage_durations": {
+      "pipeline.llm_client_init": 26,
+      "pipeline.orchestrator_init": 1,
+      "llm.request.main": 4447,
+      "answer_generator.llm_call.main": 4448,
+      "llm.request.final_summary": 28202,
+      "answer_generator.llm_call.final_summary": 28202,
+      "pipeline.main_agent_run": 34732,
+      "pipeline.total": 34763
+    },
+    "failback_activated": false,
+    "failback_model": "",
+    "effective_config": {
+      "mode": "balanced",
+      "search_profile": "parallel-trusted",
+      "search_result_num": 10,
+      "verification_min_search_rounds": 1,
+      "output_detail_level": "compact",
+      "research_intensity": "light"
+    }
+  },
+  "token_usage": {
+    "total_input_tokens": 8008,
+    "total_cache_input_tokens": 0,
+    "total_output_tokens": 34
+  },
+  "source_urls": [],
+  "lead_steps_count": 1,
+  "gate_evaluation": null,
+  "error": null
+}
