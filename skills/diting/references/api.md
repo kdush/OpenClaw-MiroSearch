@@ -168,7 +168,7 @@ curl -sS "http://127.0.0.1:8090/v1/metrics/last"
 ### 脚本调用
 
 ```bash
-python3 scripts/call_openclaw_mirosearch.py \
+python3 scripts/call_diting.py \
   --api-mode fastapi \
   --base-url "http://127.0.0.1:8090" \
   --query "量子计算最新进展" \
@@ -221,7 +221,7 @@ curl -sS "$BASE_URL/gradio_api/call/run_research_once/$EVENT_ID"
 ### 脚本调用
 
 ```bash
-python3 scripts/call_openclaw_mirosearch.py \
+python3 scripts/call_diting.py \
   --api-mode gradio \
   --base-url "http://127.0.0.1:8080" \
   --query "量子计算最新进展" \

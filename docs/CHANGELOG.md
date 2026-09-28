@@ -9,6 +9,25 @@ and the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## \[Unreleased\]
 
+### Fixed
+
+- **Summary failures no longer drop the report**: when the final summarization model returns an unusable result (timeout, rate limit, content filtering, …) and no further retry remains (product profiles with `retry_with_summary=false`, or the final evaluation round), the pipeline now delivers a degraded report assembled deterministically from the evidence gathered during research, marking the conclusion section in bold as product copy 「系统说明」, instead of failing the whole task with `Final summary produced no usable answer.`. Quality metadata gains a `degraded_report_fallback` issue, and such results stay out of the shared cache so a one-off summarization hiccup is not frozen into a long-lived result.
+- **Placeholder conclusion blocks are no longer rendered**: when `\boxed{}` is missing, the placeholder string is no longer pushed to the frontend as a body block (it would be rewritten into a 「未收敛」 hint contradicting the delivered report); the conclusion shown to users always comes from the conclusion section of the report body.
+
+### Changed
+
+- **Brand rename**: the project is renamed to 谛听 / Diting, updating the header logo and favicon, page titles, skill package and script names, Docker image names, SearXNG instance name, export filename prefix (`diting-conclusion.*`) and documentation wording; upstream MiroThinker / MiroFlow attribution and historical records are unchanged.
+- **Report layout**: final reports drop token/billing noise and truncated URLs; pending leads become a 「未跟进」 summary; the detailed level may append a content analysis and a Mermaid relationship map (see `docs/REPORT_LAYOUT.md`).
+- **Result area visual tightening**: on wide screens (≥1200px) the result area widens to 960px while body paragraphs keep a 42em measure; the static 「研究进度」 heading in the result area and Gradio's default streaming progress bar are removed, leaving the status line in the body as the single in-progress indicator.
+- **Unified progress status wording**: running status lines converge on one colloquial vocabulary (「准备中 / 正在分析 / 正在检索 / 正在调用工具 / 正在交叉校验 / 正在生成报告」), dropping duplicated or internal phrasings such as 「研究进行中」 and 「第 N 回合」 and rephrasing search rounds as 「已完成 N 次检索」; tool names use Chinese display names and `scrape_url` is added, so status lines and tool cards no longer expose English tool ids; the first empty frame reads 「研究已启动…」 instead of duplicating the status line; terminal states gain visible copy — 「已停止」 after a stop and 「研究中断：原因」 on failure (deduplicated against the error event) — and completion or a cache hit no longer leaves a running state behind.
+- **Elapsed time on the status line**: 「已用 m:ss」 is shown at the right of the status line, incremented client-side every second (without depending on server frames); after a stop it freezes at the moment of the stop instead of counting on.
+- **Deep-space theme and search row**: the page background becomes a near-black void (`#000208`) with localized nebulae, overlaid with a parallax starfield and a meteor canvas; the search box becomes a translucent glass capsule (max width 584px), and 「开始研究 / 停止 / 设置」 collapse into three 36px round ghost icons inside the input (their labels kept in the DOM as tooltips and accessible names), with start and stop mutually exclusive per run state (magnifier ↔ stop square) and no wrapping on narrow screens. The settings modal loses its double box, its input surfaces switch to a layer lighter than the card with a light outline, and field descriptions are raised to a 12px floor.
+
+### Compatibility
+
+- **Skill package rename**: `skills/openclaw-mirosearch/` is renamed to `skills/diting/`, its invocation script to `scripts/call_diting.py`, and its packaged file to `skills/diting.zip` (archive root `diting/`); callers that installed the old skill must reinstall it from the new path.
+- **Image name change**: the default image names in Compose and `scripts/deploy/build_images.sh` become `diting:latest` and `diting-api:latest`; existing deployments must rebuild or explicitly override `IMAGE_TAG_*`.
+
 ## \[0.2.11\] - 2026-08-13
 
 ### Changed

@@ -1,0 +1,612 @@
+/* Document-style report / markdown */
+    /* ===== Dark progress + report presentation ===== */
+    .runtime-status {
+        display: flex !important;
+        align-items: center !important;
+        gap: 10px !important;
+        margin: 16px 0 10px !important;
+        padding: 12px 14px !important;
+        border-radius: 12px !important;
+        border: 1px solid rgba(100, 180, 200, 0.2) !important;
+        background: rgba(36, 52, 72, 0.7) !important;
+        color: #bae6fd !important;
+        font-size: 13px !important;
+    }
+    .runtime-spinner {
+        width: 16px !important;
+        height: 16px !important;
+        border: 2px solid rgba(165, 243, 252, 0.25) !important;
+        border-top-color: #22d3ee !important;
+        border-radius: 50% !important;
+        animation: miro-spin 0.8s linear infinite !important;
+        flex: 0 0 16px !important;
+    }
+    @keyframes miro-spin { to { transform: rotate(360deg); } }
+    .runtime-elapsed {
+        margin-left: auto !important;
+        flex: 0 0 auto !important;
+        color: rgba(186, 230, 253, 0.75) !important;
+        font-size: 12px !important;
+        font-variant-numeric: tabular-nums !important;
+        letter-spacing: 0.02em !important;
+    }
+
+    #log-view .thought-card,
+    #log-view .tool-card,
+    #log-view .process-details,
+    #log-view .search-step-board {
+        background: transparent !important;
+        border: none !important;
+        border-left: 2px solid rgba(148, 163, 184, 0.22) !important;
+        border-radius: 0 !important;
+        color: #cbd5e1 !important;
+        box-shadow: none !important;
+        padding: 6px 0 6px 12px !important;
+        margin: 10px 0 !important;
+    }
+    #log-view .thought-card > summary,
+    #log-view .process-details > summary,
+    #log-view .tool-header {
+        color: #e2e8f0 !important;
+    }
+    #log-view .thought-content,
+    #log-view .tool-brief,
+    #log-view p,
+    #log-view li {
+        color: #cbd5e1 !important;
+    }
+    #log-view .search-step-item {
+        border-bottom: 1px solid rgba(148, 163, 184, 0.12) !important;
+        color: #e2e8f0 !important;
+        padding: 8px 4px !important;
+        font-size: 13px !important;
+    }
+    #log-view h1, #log-view h2, #log-view h3 {
+        color: #e2e8f0 !important;
+        border-color: rgba(100, 180, 200, 0.2) !important;
+    }
+    #log-view blockquote {
+        background: rgba(34, 211, 238, 0.08) !important;
+        border-left-color: #22d3ee !important;
+        color: #e2e8f0 !important;
+    }
+    #log-view pre {
+        background: #1e293b !important;
+        color: #e2e8f0 !important;
+        border: 1px solid rgba(34, 211, 238, 0.15) !important;
+    }
+    #log-view code {
+        background: rgba(34, 211, 238, 0.12) !important;
+        color: #a5f3fc !important;
+    }
+
+    /* ===== Document-style report (compact, not card wall) ===== */
+    /* Document typography in report body */
+    #log-view h1 {
+        font-size: 1.45rem !important;
+        font-weight: 700 !important;
+        color: #e2e8f0 !important;
+        margin: 1.4em 0 0.55em !important;
+        letter-spacing: -0.01em !important;
+        border: none !important;
+        padding: 0 !important;
+    }
+    #log-view h2 {
+        font-size: 1.15rem !important;
+        font-weight: 650 !important;
+        color: #e2e8f0 !important;
+        margin: 1.35em 0 0.45em !important;
+        border: none !important;
+        padding: 0 !important;
+        border-bottom: none !important;
+    }
+    #log-view h3 {
+        font-size: 1.02rem !important;
+        font-weight: 600 !important;
+        color: #cbd5e1 !important;
+        margin: 1.15em 0 0.4em !important;
+        border: none !important;
+        padding: 0 !important;
+    }
+    #log-view p {
+        margin: 0 0 0.85em !important;
+        line-height: 1.75 !important;
+        color: #cbd5e1 !important;
+        max-width: none !important;
+    }
+    #log-view li {
+        margin: 0.25em 0 !important;
+        line-height: 1.65 !important;
+        color: #cbd5e1 !important;
+    }
+    #log-view strong, #log-view b {
+        color: #e2e8f0 !important;
+        font-weight: 650 !important;
+    }
+    #log-view a {
+        color: #7dd3fc !important;
+        text-decoration: underline !important;
+        text-underline-offset: 2px !important;
+        text-decoration-color: rgba(125, 211, 252, 0.35) !important;
+    }
+    #log-view blockquote {
+        background: transparent !important;
+        border: none !important;
+        border-left: 3px solid rgba(56, 189, 248, 0.4) !important;
+        padding: 2px 0 2px 14px !important;
+        margin: 0.9em 0 !important;
+        border-radius: 0 !important;
+        color: #94a3b8 !important;
+        font-style: normal !important;
+    }
+
+    .report-glance {
+        margin: 4px 0 20px !important;
+        padding: 0 0 14px !important;
+        border: none !important;
+        border-bottom: 1px solid rgba(148, 163, 184, 0.16) !important;
+        border-radius: 0 !important;
+        background: transparent !important;
+        box-shadow: none !important;
+    }
+    .report-glance-meta {
+        display: flex !important;
+        align-items: center !important;
+        justify-content: flex-start !important;
+        flex-wrap: wrap !important;
+        gap: 10px !important;
+        margin: 0 0 8px !important;
+    }
+    .report-glance-kicker {
+        font-size: 12px !important;
+        letter-spacing: 0.08em !important;
+        text-transform: uppercase !important;
+        color: #94a3b8 !important;
+        margin: 0 !important;
+        font-weight: 600 !important;
+    }
+    .report-glance-head {
+        display: none !important; /* legacy */
+    }
+    .report-glance-body {
+        display: block !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        color: #e2e8f0 !important;
+        font-size: 1.15rem !important;
+        font-weight: 650 !important;
+        line-height: 1.65 !important;
+        white-space: pre-wrap !important;
+        word-break: break-word !important;
+    }
+    .report-fold {
+        margin: 10px 0 12px !important;
+        padding: 0 !important;
+        border-radius: 0 !important;
+        border: none !important;
+        border-top: 1px solid rgba(148, 163, 184, 0.12) !important;
+        background: transparent !important;
+        box-shadow: none !important;
+        overflow: visible !important;
+    }
+    .report-fold > summary {
+        cursor: pointer !important;
+        list-style: none !important;
+        padding: 10px 0 !important;
+        color: #94a3b8 !important;
+        font-weight: 550 !important;
+        font-size: 0.92rem !important;
+        user-select: none !important;
+    }
+    .report-fold > summary::-webkit-details-marker { display: none !important; }
+    .report-fold > summary::before {
+        content: "▸" !important;
+        display: inline-block !important;
+        margin-right: 6px !important;
+        color: #64748b !important;
+        opacity: 0.9 !important;
+        transition: transform 0.15s ease !important;
+    }
+    .report-fold[open] > summary::before {
+        transform: rotate(90deg) !important;
+    }
+    .report-fold[open] > summary {
+        border-bottom: none !important;
+        color: #cbd5e1 !important;
+    }
+    .report-fold > *:not(summary) {
+        padding: 0 0 8px 14px !important;
+        color: #cbd5e1 !important;
+        border-left: 2px solid rgba(148, 163, 184, 0.18) !important;
+        margin-left: 4px !important;
+    }
+    /* 折叠区内的来源条目：报告正文的 #log-view li/a 规则带 !important，
+       需按同级作用域覆盖，条目间距与悬挂缩进才能生效。 */
+    #log-view .report-fold h3 {
+        font-size: 0.95rem !important;
+        font-weight: 600 !important;
+        color: #cbd5e1 !important;
+        margin: 10px 0 4px !important;
+        border-bottom: none !important;
+        padding-bottom: 0 !important;
+    }
+    #log-view .report-fold ol,
+    #log-view .report-fold ul {
+        margin: 4px 0 2px !important;
+        padding-left: 26px !important;
+        list-style-position: outside !important;
+    }
+    #log-view .report-fold ol > li,
+    #log-view .report-fold ul > li {
+        margin: 7px 0 !important;
+    }
+    #log-view .report-fold a:not(.ref-citation):not(.ref-chip) {
+        color: #7dd3fc !important;
+        text-decoration: none !important;
+        border-bottom: 1px dashed rgba(125, 211, 252, 0.4) !important;
+        word-break: break-all !important;
+        overflow-wrap: anywhere !important;
+    }
+    #log-view .report-fold a:not(.ref-citation):not(.ref-chip):hover {
+        color: #22d3ee !important;
+        border-bottom-color: rgba(34, 211, 238, 0.7) !important;
+    }
+    .report-tldr {
+        margin: 4px 0 18px !important;
+        padding: 0 0 12px !important;
+        border-radius: 0 !important;
+        border: none !important;
+        border-left: 3px solid rgba(56, 189, 248, 0.45) !important;
+        padding-left: 14px !important;
+        background: transparent !important;
+        box-shadow: none !important;
+    }
+    .report-tldr-head {
+        display: flex !important;
+        align-items: center !important;
+        justify-content: space-between !important;
+        gap: 10px !important;
+        margin-bottom: 6px !important;
+        color: #e2e8f0 !important;
+        font-size: 0.95rem !important;
+    }
+    .confidence-badge {
+        display: inline-flex !important;
+        align-items: center !important;
+        padding: 1px 8px !important;
+        border-radius: 6px !important;
+        font-size: 11px !important;
+        font-weight: 600 !important;
+        border: 1px solid transparent !important;
+        white-space: nowrap !important;
+        letter-spacing: 0.02em !important;
+    }
+    .confidence-high { background: rgba(16,185,129,0.18) !important; color: #6ee7b7 !important; border-color: rgba(16,185,129,0.35) !important; }
+    .confidence-mid { background: rgba(234,179,8,0.16) !important; color: #fde68a !important; border-color: rgba(234,179,8,0.35) !important; }
+    .confidence-low { background: rgba(248,113,113,0.16) !important; color: #fecaca !important; border-color: rgba(248,113,113,0.35) !important; }
+
+    .conflict-heading { display: flex !important; align-items: center !important; gap: 8px !important; flex-wrap: wrap !important; }
+    .conflict-tag {
+        display: inline-flex !important;
+        padding: 1px 8px !important;
+        border-radius: 999px !important;
+        font-size: 11px !important;
+        font-weight: 600 !important;
+        background: rgba(251, 146, 60, 0.16) !important;
+        color: #fdba74 !important;
+        border: 1px solid rgba(251, 146, 60, 0.35) !important;
+    }
+
+    .mermaid-card {
+        margin: 12px 0 18px !important;
+        padding: 12px 14px !important;
+        border-radius: 14px !important;
+        border: 1px solid rgba(34, 211, 238, 0.2) !important;
+        background: rgba(2, 6, 23, 0.65) !important;
+        overflow-x: auto !important;
+    }
+
+    a.ref-citation, a.ref-chip {
+        display: inline-flex !important;
+        align-items: center !important;
+        padding: 0 6px !important;
+        margin: 0 2px !important;
+        border-radius: 6px !important;
+        background: rgba(34, 211, 238, 0.12) !important;
+        color: #67e8f9 !important;
+        text-decoration: none !important;
+        font-weight: 600 !important;
+        font-size: 0.92em !important;
+        border: 1px solid rgba(34, 211, 238, 0.22) !important;
+    }
+    a.ref-citation:hover { background: rgba(34, 211, 238, 0.22) !important; }
+
+    /* e2e-hide-textbox-word */
+    #question-input label > span:not(.svelte-input),
+    #question-input [data-testid="block-info"],
+    #gr-task-id-bridge [data-testid="block-info"],
+    #gr-task-id-bridge label > span {
+        position: absolute !important;
+        width: 1px !important;
+        height: 1px !important;
+        padding: 0 !important;
+        margin: -1px !important;
+        overflow: hidden !important;
+        clip: rect(0,0,0,0) !important;
+        white-space: nowrap !important;
+        border: 0 !important;
+        font-size: 0 !important;
+        line-height: 0 !important;
+        color: transparent !important;
+    }
+    /* Hide idle output section chrome completely */
+    #output-section.hidden, #output-section[style*="display: none"],
+    #output-section:not(.show) {
+        /* Gradio uses visible=False — ensure no leftover min-height */
+    }
+    #output-section {
+        margin-top: 8px !important;
+    }
+
+    /* Kill visible Gradio default "Textbox" chrome on search + bridge */
+    #question-input span[data-testid="block-info"],
+    #gr-task-id-bridge span[data-testid="block-info"],
+    #question-input .sr-only.hide,
+    #gr-task-id-bridge .sr-only.hide,
+    #layout-shell > .form > label > span[data-testid="block-info"] {
+        position: absolute !important;
+        width: 1px !important;
+        height: 1px !important;
+        margin: -1px !important;
+        padding: 0 !important;
+        overflow: hidden !important;
+        clip: rect(0, 0, 0, 0) !important;
+        border: 0 !important;
+        color: transparent !important;
+        font-size: 0 !important;
+    }
+    #gr-task-id-bridge {
+        position: absolute !important;
+        left: -10000px !important;
+        width: 1px !important;
+        height: 1px !important;
+        opacity: 0 !important;
+        pointer-events: none !important;
+        overflow: hidden !important;
+    }
+
+    /* hide Gradio queue ETA / settings chrome that collides with top-right utilities */
+    .progress-text,
+    .meta-text,
+    .eta-bar,
+    .wrap > .progress-bar,
+    footer,
+    .footer,
+    .icon-button-wrapper {
+        display: none !important;
+    }
+    #top-utility-bar {
+        isolation: isolate !important;
+        z-index: 200 !important;
+    }
+    #top-utility-bar .progress-text,
+    #top-utility-bar .meta-text,
+    #top-utility-bar .eta-bar,
+    #lang-toggle-btn .progress-text,
+    #lang-toggle-btn .meta-text {
+        display: none !important;
+    }
+    #lang-toggle-btn {
+        position: relative !important;
+        overflow: hidden !important;
+        white-space: nowrap !important;
+        line-height: 36px !important;
+    }
+
+    /* anti-lang-switch-stack */
+    /* Gradio can briefly keep previous HTML siblings when value updates */
+    #top-utility-bar > .html-container > .prose:not(:last-child),
+    #top-utility-bar .html-container > div:not(:last-child),
+    .hero-section-parent > .html-container > div:not(:last-child),
+    #layout-shell > .html-container > .hero-section:not(:last-of-type),
+    #layout-shell .html-container .hero-section ~ .hero-section {
+        display: none !important;
+    }
+    /* Never show offscreen bridges / hidden text as page background noise */
+    #gr-task-id-bridge,
+    #gr-task-id-bridge textarea,
+    .gr-task-id-bridge,
+    textarea[data-testid="textbox"]:not([aria-label]):is([style*="-9999"], [style*="opacity: 0"]) {
+        position: absolute !important;
+        left: -10000px !important;
+        width: 1px !important;
+        height: 1px !important;
+        opacity: 0 !important;
+        overflow: hidden !important;
+        pointer-events: none !important;
+    }
+
+    #top-utility-bar {
+        position: fixed !important;
+        top: 12px !important;
+        right: 16px !important;
+        left: auto !important;
+        z-index: 120 !important;
+        display: inline-flex !important;
+        flex-direction: row !important;
+        flex-wrap: nowrap !important;
+        justify-content: flex-end !important;
+        align-items: center !important;
+        gap: 8px !important;
+        width: auto !important;
+        max-width: none !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        background: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
+        min-height: 36px !important;
+    }
+
+    #top-utility-bar > *,
+    #top-utility-bar > .block,
+    #top-utility-bar > .form,
+    #top-utility-bar .svelte-1svsvh2 {
+        flex: 0 0 auto !important;
+        width: auto !important;
+        max-width: none !important;
+        min-width: 0 !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        background: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
+    }
+
+    #lang-toggle-btn.ui-lang-chip,
+    #lang-toggle-btn {
+        height: 36px !important;
+        min-height: 36px !important;
+        min-width: 72px !important;
+        padding: 0 12px !important;
+        border-radius: 10px !important;
+        border: 1px solid var(--panel-border, rgba(34, 211, 238, 0.18)) !important;
+        background: var(--glass-bg, rgba(15, 23, 42, 0.72)) !important;
+        color: var(--ink-body, #cbd5e1) !important;
+        font-size: 13px !important;
+        font-weight: 500 !important;
+        letter-spacing: 0.02em !important;
+        box-shadow: none !important;
+        width: auto !important;
+    }
+
+    #lang-toggle-btn:hover {
+        border-color: rgba(34, 211, 238, 0.45) !important;
+        color: var(--accent, #22d3ee) !important;
+        background: rgba(34, 211, 238, 0.08) !important;
+    }
+
+    .top-nav-minimal {
+        display: inline-flex !important;
+        justify-content: flex-end !important;
+        align-items: center !important;
+        width: auto !important;
+        max-width: none !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        border: none !important;
+        background: transparent !important;
+        box-shadow: none !important;
+    }
+
+    .top-nav-minimal .nav-left {
+        display: none !important;
+    }
+
+    .top-nav-minimal .nav-right {
+        margin: 0 !important;
+        display: inline-flex !important;
+        align-items: center !important;
+    }
+
+    /* Hide Gradio stock footer strip */
+    footer,
+    .footer,
+    .gradio-container > footer {
+        display: none !important;
+    }
+
+    /* Hide app disclaimer footer + divider */
+    .app-footer,
+    #app-footer-slot {
+        display: none !important;
+        height: 0 !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        border: none !important;
+    }
+
+    .nav-brand,
+    .nav-brand-text,
+    .brand-logo {
+        display: none !important;
+    }
+
+    .app-footer {
+        display: none !important;
+    }
+
+    /* Action buttons: shared outline icons via CSS masks（尺寸由下方按钮规则统一给定） */
+    .ui-action-btn {
+        display: inline-flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        gap: 8px !important;
+    }
+
+    .ui-action-btn::before {
+        content: "" !important;
+        display: inline-block !important;
+        width: 20px !important;
+        height: 20px !important;
+        flex: 0 0 20px !important;
+        background-color: currentColor !important;
+        -webkit-mask-repeat: no-repeat !important;
+        mask-repeat: no-repeat !important;
+        -webkit-mask-position: center !important;
+        mask-position: center !important;
+        -webkit-mask-size: contain !important;
+        mask-size: contain !important;
+    }
+
+    /* 滑杆图标：语义=参数调节，替代原先的太阳形图标 */
+    .ui-icon-settings::before {
+        -webkit-mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%271.75%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Cpath%20d%3D%22M20%207h-9%22%2F%3E%3Cpath%20d%3D%22M14%2017H5%22%2F%3E%3Ccircle%20cx%3D%2217%22%20cy%3D%2217%22%20r%3D%223%22%2F%3E%3Ccircle%20cx%3D%227%22%20cy%3D%227%22%20r%3D%223%22%2F%3E%3C%2Fsvg%3E") !important;
+        mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%271.75%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Cpath%20d%3D%22M20%207h-9%22%2F%3E%3Cpath%20d%3D%22M14%2017H5%22%2F%3E%3Ccircle%20cx%3D%2217%22%20cy%3D%2217%22%20r%3D%223%22%2F%3E%3Ccircle%20cx%3D%227%22%20cy%3D%227%22%20r%3D%223%22%2F%3E%3C%2Fsvg%3E") !important;
+    }
+    .ui-icon-stop::before {
+        -webkit-mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%271.75%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Crect%20x%3D%226%22%20y%3D%226%22%20width%3D%2212%22%20height%3D%2212%22%20rx%3D%221.5%22%2F%3E%3C%2Fsvg%3E") !important;
+        mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%271.75%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Crect%20x%3D%226%22%20y%3D%226%22%20width%3D%2212%22%20height%3D%2212%22%20rx%3D%221.5%22%2F%3E%3C%2Fsvg%3E") !important;
+    }
+    /* 放大镜图标：语义=「提交检索」，与问题输入框组成的搜索习惯一致 */
+    .ui-icon-run::before {
+        -webkit-mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%271.75%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Ccircle%20cx%3D%2211%22%20cy%3D%2211%22%20r%3D%228%22%2F%3E%3Cpath%20d%3D%22m21%2021-4.3-4.3%22%2F%3E%3C%2Fsvg%3E") !important;
+        mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%271.75%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Ccircle%20cx%3D%2211%22%20cy%3D%2211%22%20r%3D%228%22%2F%3E%3Cpath%20d%3D%22m21%2021-4.3-4.3%22%2F%3E%3C%2Fsvg%3E") !important;
+    }
+
+
+    #lang-toggle-btn {
+        background: var(--btn-gray) !important;
+        color: var(--ink-body) !important;
+        border: 1px solid var(--glass-border) !important;
+    }
+
+    #lang-toggle-btn:hover {
+        color: var(--accent) !important;
+        border-color: rgba(34, 211, 238, 0.35) !important;
+    }
+
+    /* Progress cards on dark */
+    .thought-card,
+    .tool-card {
+        background: transparent !important;
+        border-color: transparent !important;
+        color: var(--ink-body) !important;
+    }
+
+    #log-view pre {
+        background: rgba(4, 8, 16, 0.78) !important;
+        color: #e8eef8 !important;
+        border: 1px solid rgba(140, 170, 220, 0.14) !important;
+    }
+
+    #log-view code {
+        background: rgba(34, 211, 238, 0.1) !important;
+        color: #a5f3fc !important;
+    }
+
+    #log-view p,
+    #log-view li {
+        color: var(--ink-body) !important;
+    }
+

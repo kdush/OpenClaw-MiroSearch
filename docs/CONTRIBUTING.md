@@ -2,7 +2,7 @@
 
 # Contributing Guide
 
-Thank you for contributing to OpenClaw-MiroSearch.
+Thank you for contributing to Diting.
 
 ## Development Environment
 

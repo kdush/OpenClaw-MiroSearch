@@ -1,0 +1,139 @@
+/* Hero section */
+    /* ===== Hero Section ===== */
+    /* Gradio HTML wrappers must not stack old+new text during updates */
+    #top-utility-bar,
+    #main-content-column > .html-container,
+    .hero-wrap {
+        overflow: visible;
+    }
+
+    .hero-section {
+        position: relative !important;
+        isolation: isolate;
+        text-align: center;
+        padding: 56px 16px 22px;
+        max-width: 584px;
+        margin: 0 auto 0;
+    }
+
+    .hero-brand {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        margin-bottom: 16px;
+    }
+
+    .hero-logo {
+        width: min(200px, 44vw);
+        max-height: 88px;
+        height: auto;
+        object-fit: contain;
+        box-shadow: none;
+        border-radius: 0;
+        flex-shrink: 0;
+        opacity: 1;
+    }
+
+    .hero-brand-name {
+        display: none;
+    }
+
+    .hero-title {
+        font-size: 22px;
+        font-weight: 500;
+        color: #e2e8f0;
+        background: none;
+        -webkit-text-fill-color: #e2e8f0;
+        margin: 0 0 8px 0;
+        letter-spacing: 0.01em;
+        line-height: 1.3;
+    }
+
+    .hero-subtitle {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        color: #b8c5d6;
+        font-size: 13px;
+        font-weight: 400;
+        letter-spacing: 0.02em;
+    }
+
+    .hero-line {
+        display: none;
+    }
+
+    #layout-shell {
+        width: 100% !important;
+        max-width: 680px !important;
+        margin: 0 auto !important;
+        padding: 0 16px 48px !important;
+        gap: 0 !important;
+    }
+
+    #output-section {
+        max-width: 680px !important;
+        margin: 36px auto 0 !important;
+        padding-bottom: 48px !important;
+    }
+
+    #log-view {
+        padding: 8px 4px 24px !important;
+        min-height: 120px !important;
+        border-radius: 0 !important;
+        border: none !important;
+        background: transparent !important;
+        box-shadow: none !important;
+        backdrop-filter: none;
+        font-size: 15px !important;
+        color: var(--ink-body) !important;
+        line-height: 1.7 !important;
+    }
+
+    #log-view h3 {
+        font-size: 16px !important;
+        font-weight: 600 !important;
+        color: var(--accent) !important;
+        margin: 0 0 6px !important;
+        border-bottom: none !important;
+        padding-bottom: 0 !important;
+    }
+
+    #log-view p {
+        font-size: 14px !important;
+        color: var(--ink-soft) !important;
+        line-height: 1.55 !important;
+    }
+
+    .top-nav {
+        max-width: 980px !important;
+        width: calc(100% - 32px) !important;
+        margin: 8px auto 0 !important;
+        padding: 8px 4px !important;
+    }
+
+    .nav-brand-text {
+        font-size: 14px !important;
+        font-weight: 500 !important;
+        color: #94a3b8 !important;
+    }
+
+    .skills-top-link {
+        font-size: 13px !important;
+        color: #1a73e8 !important;
+        font-weight: 500 !important;
+    }
+
+    .app-footer {
+        font-size: 12px !important;
+        color: #94a3b8 !important;
+    }
+
+    #main-content-column {
+        width: 100% !important;
+        padding: 0 !important;
+        gap: 0 !important;
+    }
+

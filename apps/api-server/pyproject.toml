@@ -1,7 +1,7 @@
 [project]
 name = "api-server"
 version = "0.2.0"
-description = "FastAPI API server for MiroSearch, independent from Gradio demo"
+description = "FastAPI API server for Diting, independent from Gradio demo"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

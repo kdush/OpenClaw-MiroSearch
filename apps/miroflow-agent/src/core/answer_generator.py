@@ -12,6 +12,7 @@ This module provides the AnswerGenerator class that handles:
 """
 
 import asyncio
+import json
 import logging
 import os
 import time
@@ -20,7 +21,14 @@ from typing import Any, Dict, List, Optional, Tuple
 from omegaconf import DictConfig
 
 from ..io.output_formatter import OutputFormatter
-from ..llm.base_client import BaseClient
+from ..io.report_structure import ReportStructureValidator
+from ..llm.base_client import (
+    INTERNAL_MESSAGE_TYPE_KEY,
+    OMITTED_TOOL_RESULT_TEXT,
+    SUMMARY_AGENT_TYPES,
+    TOOL_RESULT_MESSAGE_TYPE,
+    BaseClient,
+)
 from ..logging.task_logger import TaskLog
 from ..utils.parsing_utils import (
     extract_failure_experience_summary,
@@ -30,10 +38,19 @@ from ..utils.prompt_utils import (
     FAILURE_SUMMARY_ASSISTANT_PREFIX,
     FAILURE_SUMMARY_PROMPT,
     FORMAT_ERROR_MESSAGE,
-    generate_cross_verification_prompt,
     generate_agent_summarize_prompt,
+    generate_agreement_check_prompt,
+    generate_cross_verification_prompt,
+    parse_agreement_verdict,
 )
 from ..utils.wrapper_utils import ErrorBox, ResponseBox
+from .deep_efficiency import (
+    resolve_max_final_answer_retries,
+    resolve_oneshot_final_report,
+    resolve_research_intensity,
+    resolve_summary_keep_tool_result,
+    resolve_summary_max_tokens_cap,
+)
 from .stream_handler import StreamHandler
 
 logger = logging.getLogger(__name__)
@@ -103,6 +120,16 @@ RESEARCH_DETAILED_RETRY_MIN_CHARS = _read_env_int(
     minimum=RESEARCH_BALANCED_RETRY_MIN_CHARS,
 )
 
+# 总结不可用且无后续重试机会时的降级报告：直接交付研究阶段已有产出，
+# 避免单个步骤失败导致整任务无结果。通知行保持独立成行加粗：前端据首个
+# 加粗单行生成结论卡片，降级状态必须出现在报告最显眼处。
+DEGRADED_REPORT_NOTICE = (
+    "**系统说明：最终总结模型未返回可用结果；以下报告由系统从研究阶段已收集的"
+    "证据自动汇总，未经总结模型润色与结构校验，请结合文末来源谨慎参考。**"
+)
+DEGRADED_REPORT_MIN_DRAFT_CHARS = 200
+DEGRADED_REPORT_MAX_SOURCES = 12
+
 
 def _parse_bool_flag(value: Any, default: bool = False) -> bool:
     """将多种输入类型安全解析为布尔值。"""
@@ -158,13 +185,13 @@ class AnswerGenerator:
 
         # Context management settings
         self.context_compress_limit = cfg.agent.get("context_compress_limit", 0)
+        # Round 7: deep/research defaults to 1 summary pass; explicit cfg still wins
         try:
-            configured_final_answer_retries = int(
-                cfg.agent.get(
-                    "max_final_answer_retries",
-                    DEFAULT_MAX_FINAL_ANSWER_RETRIES,
-                )
-            )
+            explicit_retries = cfg.agent.get("max_final_answer_retries", None)
+            if explicit_retries is not None:
+                configured_final_answer_retries = int(explicit_retries)
+            else:
+                configured_final_answer_retries = resolve_max_final_answer_retries(cfg)
         except (TypeError, ValueError):
             configured_final_answer_retries = DEFAULT_MAX_FINAL_ANSWER_RETRIES
         self.max_final_answer_retries = max(1, configured_final_answer_retries)
@@ -200,6 +227,34 @@ class AnswerGenerator:
         self.verification_high_conf_domains = [
             str(domain).strip().lower() for domain in raw_domains if str(domain).strip()
         ]
+
+        # Round 8: oneshot skeleton final report + summary-stage context cap
+        self.oneshot_final_report = resolve_oneshot_final_report(cfg)
+        # 只有 deep 档把核验折叠进骨架提示词：standard 档保留高模型核验轮与
+        # 交叉校验说明，避免默认档为省一轮调用而降质
+        self.fold_verification_into_summary = (
+            self.oneshot_final_report and resolve_research_intensity(cfg) == "deep"
+        )
+        # 骨架提示词只服务详细报告；其他档位不得因此丢掉“过短扩写”重试
+        self.oneshot_skeleton_active = (
+            self.oneshot_final_report
+            and self.research_report_mode
+            and self.output_detail_level == "detailed"
+        )
+        try:
+            research_keep = int(cfg.agent.get("keep_tool_result", -1))
+        except (TypeError, ValueError):
+            research_keep = -1
+        self.summary_keep_tool_result = resolve_summary_keep_tool_result(
+            cfg, research_keep=research_keep
+        )
+        summary_cap = resolve_summary_max_tokens_cap(cfg)
+        if summary_cap is not None:
+            try:
+                current = int(self.llm_client.summary_max_tokens)
+            except (TypeError, ValueError):
+                current = summary_cap
+            self.llm_client.summary_max_tokens = min(current, summary_cap)
 
         # 阶段心跳同名去重，避免高频心跳刷 stderr
         self._last_stage_log_key: Optional[Tuple[Any, ...]] = None
@@ -245,7 +300,35 @@ class AnswerGenerator:
         根据输出档位和运行模式构建最终总结提示词。
 
         research_report_mode=true 时，覆盖短答案模板约束，强制按研究报告输出。
+        Round 8 oneshot: fill a strict skeleton once; local enforce_structure patches gaps.
         """
+        if self.oneshot_skeleton_active:
+            template = ReportStructureValidator.get_structure_template("detailed")
+            summary_prompt = (
+                f"Task:\n{task_description}\n\n"
+                "ONE-SHOT structured research report (最高优先级，Round 8)：\n"
+                "1) 仅用一轮输出填满下方骨架；禁止多轮重写/扩写；结构缺口由本地补丁修复。\n"
+                "2) 只依据对话中仍保留的完整工具结果（较早的已省略，勿假装读过）。"
+                "禁止编造来源、数字或共识。\n"
+                "3) 正文字数目标约 2500–6000 中文字符：优先覆盖硬性章节与可核验事实，"
+                "而非堆砌全文转写。\n"
+                "4) 必须保留独立一级标题："
+                "TL;DR（含置信度）、Conflicts & Uncertainties / 冲突与不确定、"
+                "Timeline / 时间线、Evidence / 证据、Confirmed vs Unconfirmed / 已确认 vs 未确认、"
+                "References。\n"
+                "5) Conflicts 硬性必填：并列各方说法；信息不足时写明“无法核实/单方宣称”。\n"
+                "6) Evidence 中每个数字带来源与日期；无来源数字不得写出。\n"
+                "7) 结尾额外给出一条 \\boxed{一句话核心结论}。\n\n"
+                "骨架（按此填空，可微调标题中英别名但勿删节）：\n"
+                f"{template}"
+            )
+            if self.verification_enabled:
+                summary_prompt += (
+                    "\n\n核验约束：绝对时间锚点；冲突给区间而非伪造单值；"
+                    "优先高置信来源并标明等级。"
+                )
+            return summary_prompt
+
         summary_prompt = generate_agent_summarize_prompt(
             task_description,
             agent_type="main",
@@ -262,10 +345,23 @@ class AnswerGenerator:
                     "   - 绝对禁止为了控制篇幅而省略、压缩或概括检索到的具体信息。\n"
                     f"3) 正文字数目标：在信息充分时不少于 {RESEARCH_DETAILED_TARGET_MIN_CHARS} 个中文字符。最终报告必须比任何单轮检索输出都更长、更完整。\n"
                     f"4) 至少包含 {RESEARCH_DETAILED_MIN_SECTIONS} 个一级小节，且每节提供可核验事实、时间锚点与来源线索。\n"
-                    "5) 必须包含：关键结论速览、详细时间线、关键数字表（含来源）、已知/不确定/冲突信息对照、深度背景分析、风险与后续观察。\n"
+                    "5) 必须使用以下一级标题（中英均可，不得省略）：\n"
+                    "   - `## TL;DR / 结论（标明置信度）`\n"
+                    "   - `## 冲突与不确定 / Conflicts & Uncertainties`"
+                    "（**硬性必填**：列出各方说法冲突、口径差异；"
+                    "即使信息不足也要写明“无法核实/单方宣称”，禁止消抹分歧或伪造共识）\n"
+                    "   - `## 时间线 / Timeline`（绝对日期）\n"
+                    "   - `## Evidence` / `## 证据` / `## 临床证据` / "
+                    "`## 证据与来源`（证据含来源与日期；数字无来源不得写出）\n"
+                    "   - `## 已确认 vs 未确认 / Confirmed vs Unconfirmed`\n"
+                    "   - 另含关键数字表、深度背景、风险与后续观察、References\n"
                     "6) 每个要点必须展开论述，包含具体描述、原因背景、数据证据、来源引用，而非一句话带过。\n"
                     "7) 禁止空泛总结；若数据不足，明确缺口、已尝试口径和下一步补证方案。\n"
-                    "8) 结尾额外给出一条 \\boxed{一句话核心结论}，用于结构化提取；但正文必须完整保留。"
+                    "8) 热点事件交叉核验：对相互矛盾的宣称并列呈现，不要偏信单方；置信度必须显式标注。\n"
+                    "9) 效率提示：同一回合可并行发起多个互不依赖的搜索；优先用搜索摘要，"
+                    "仅对冲突关键 URL 全文抓取；若同一争议点已有≥2个独立来源且 Conflicts 可成文，"
+                    "停止追线索并直接写报告。\n"
+                    "10) 结尾额外给出一条 \\boxed{一句话核心结论}，用于结构化提取；但正文必须完整保留。"
                 )
             elif self.output_detail_level == "balanced":
                 summary_prompt += (
@@ -288,11 +384,14 @@ class AnswerGenerator:
                 summary_prompt += (
                     "\n\nDetailed Output Requirements:\n"
                     "1) Provide a complete, structured report with clear section headings.\n"
-                    "2) Include a timeline/time anchor section using absolute dates.\n"
-                    "3) Include a 'Key Figures' section with as many verifiable numbers as available.\n"
-                    "4) Include 'What is known / uncertain / conflicting' sections.\n"
-                    "5) Include actionable next steps or monitoring points when applicable.\n"
-                    "6) Do not be overly concise; prioritize completeness and traceable detail."
+                    "2) REQUIRED heading: `## TL;DR` with explicit confidence (high/medium/low).\n"
+                    "3) REQUIRED heading: `## Conflicts & Uncertainties` — surface multi-source "
+                    "disagreements explicitly; never invent consensus.\n"
+                    "4) REQUIRED heading: `## Timeline` with absolute dates.\n"
+                    "5) REQUIRED heading: `## Evidence` — every number needs a source+date.\n"
+                    "6) REQUIRED heading: `## Confirmed vs Unconfirmed`.\n"
+                    "7) Include actionable next steps or monitoring points when applicable.\n"
+                    "8) Do not be overly concise; prioritize completeness and traceable detail."
                 )
             elif self.output_detail_level == "compact":
                 summary_prompt += (
@@ -310,6 +409,47 @@ class AnswerGenerator:
             )
         return summary_prompt
 
+    @staticmethod
+    def _message_text_content(message: Dict[str, Any]) -> str:
+        """Flatten message content to plain text for omission checks."""
+        content = message.get("content")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: List[str] = []
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    parts.append(str(item.get("text") or ""))
+                elif isinstance(item, str):
+                    parts.append(item)
+            return "\n".join(parts)
+        return ""
+
+    def _strip_omitted_tool_stubs(
+        self, message_history: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Remove omitted-tool placeholders so final summary does not re-digest stubs.
+
+        Round 8: once a dump was condensed away, do not ask the model to
+        summarize the omission marker again.
+        """
+        cleaned: List[Dict[str, Any]] = []
+        for msg in message_history:
+            text = self._message_text_content(msg).strip()
+            if text == OMITTED_TOOL_RESULT_TEXT:
+                continue
+            cleaned.append(msg)
+        return cleaned
+
+    def _resolve_keep_tool_result_for_call(self, agent_type: str) -> int:
+        """Research turns use agent.keep_tool_result; summary uses Round-8 cap."""
+        if agent_type in SUMMARY_AGENT_TYPES:
+            return self.summary_keep_tool_result
+        try:
+            return int(self.cfg.agent.keep_tool_result)
+        except (TypeError, ValueError, AttributeError):
+            return -1
+
     def _get_summary_retry_min_chars(self) -> int:
         """
         返回当前档位触发“总结过短重试”的最小字符阈值。
@@ -325,12 +465,40 @@ class AnswerGenerator:
     def _is_summary_too_short(self, final_answer_text: str) -> bool:
         """
         判断最终总结是否短于当前档位阈值。
+
+        Round 7: if structure already has Conflicts/Evidence/Confirmed cues,
+        skip length-driven LLM re-summarization (local enforce_structure is enough).
+        Round 8 oneshot: never expand-rewrite when the skeleton prompt is in use;
+        surgical patch only.
         """
+        if self.oneshot_skeleton_active:
+            return False
         if self.summary_retry_min_chars <= 0:
             return False
         display_text = self.output_formatter.clean_final_answer_text(final_answer_text)
         normalized_text = "".join(display_text.split())
-        return len(normalized_text) < self.summary_retry_min_chars
+        if len(normalized_text) >= self.summary_retry_min_chars:
+            return False
+        # Prefer single-pass + local repair when hard sections are already present
+        lower = display_text.lower()
+        has_conflicts = (
+            "conflicts" in lower or "冲突" in display_text or "不确定" in display_text
+        )
+        has_evidence = "evidence" in lower or "证据" in display_text
+        has_confirmed = (
+            "confirmed" in lower or "已确认" in display_text or "可确认" in display_text
+        )
+        if has_conflicts and has_evidence and has_confirmed:
+            self.task_log.log_step(
+                "info",
+                "Main Agent | Final Answer",
+                (
+                    "Summary under length threshold but required sections present; "
+                    "accepting without expand retry (Round 7 single-pass)."
+                ),
+            )
+            return False
+        return True
 
     def _build_expand_summary_prompt(self) -> str:
         """
@@ -342,10 +510,12 @@ class AnswerGenerator:
                 "1) 逐一检查每轮检索结果，确保每轮中的每个独立事实、数据、引述都在报告中体现。\n"
                 "2) 全量保留所有信息，通过去重整合（而非压缩精简）来组织内容。\n"
                 "3) 多轮重复信息合并为最完整版本，不同角度的互补信息全部保留。\n"
-                "4) 明确区分：核心结论、关键数字（含来源）、来源分歧、不确定项、深度背景。\n"
-                "5) 每个要点展开论述，包含具体描述、原因背景、数据证据，而非一句话概括。\n"
-                "6) 最终报告必须比任何单轮检索输出都更长、更完整。\n"
-                "7) 结尾保留 \\boxed{一句话核心结论}。"
+                "4) 必须包含独立章节：`冲突与不确定 / Conflicts & Uncertainties`、"
+                "`时间线 / Timeline`、`已确认 vs 未确认`；禁止消抹多方冲突。\n"
+                "5) 明确区分：核心结论（含置信度）、关键数字（含来源）、来源分歧、不确定项、深度背景。\n"
+                "6) 每个要点展开论述，包含具体描述、原因背景、数据证据，而非一句话概括。\n"
+                "7) 最终报告必须比任何单轮检索输出都更长、更完整。\n"
+                "8) 结尾保留 \\boxed{一句话核心结论}。"
             )
         return (
             "你的上一版总结偏短，请在保持结构清晰的前提下补充关键信息：\n"
@@ -353,6 +523,98 @@ class AnswerGenerator:
             "2) 补齐必要的来源分歧与不确定项说明；\n"
             "3) 结尾保留 \\boxed{一句话核心结论}。"
         )
+
+    @staticmethod
+    def _is_usable_source_url(url: str) -> bool:
+        if not url.startswith(("http://", "https://")):
+            return False
+        host = url.split("//", 1)[1].split("/", 1)[0]
+        return "." in host
+
+    @classmethod
+    def _source_entries(cls, payload: Dict[str, Any]) -> List[Tuple[str, str]]:
+        """从搜索/抓取工具结果里取 (标题, URL)，失败结果不入列表。"""
+        entries: List[Tuple[str, str]] = []
+        organic = payload.get("organic")
+        if isinstance(organic, list):
+            for item in organic:
+                if isinstance(item, dict):
+                    entries.append(
+                        (str(item.get("title") or ""), str(item.get("link") or ""))
+                    )
+        if payload.get("success"):
+            url = payload.get("final_url") or payload.get("url")
+            if url:
+                entries.append((str(payload.get("title") or ""), str(url)))
+        return [
+            (title.strip(), url.strip())
+            for title, url in entries
+            if cls._is_usable_source_url(url.strip())
+        ]
+
+    def _collect_evidence_sources(
+        self, message_history: List[Dict[str, Any]]
+    ) -> List[Tuple[str, str]]:
+        """按抓取先后顺序汇总工具结果里的来源清单（URL 去重、限量）。"""
+        sources: List[Tuple[str, str]] = []
+        seen: set = set()
+        for message in message_history:
+            if message.get(INTERNAL_MESSAGE_TYPE_KEY) != TOOL_RESULT_MESSAGE_TYPE:
+                continue
+            for line in self._message_text_content(message).splitlines():
+                line = line.strip()
+                if not line.startswith("{"):
+                    continue
+                try:
+                    payload = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                for title, url in self._source_entries(payload):
+                    key = url.rstrip("/")
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    sources.append((title, url))
+                    if len(sources) >= DEGRADED_REPORT_MAX_SOURCES:
+                        return sources
+        return sources
+
+    def build_degraded_report(
+        self, message_history: List[Dict[str, Any]]
+    ) -> Optional[str]:
+        """总结不可用且无后续重试机会时，用已有产出确定性拼装降级报告。
+
+        主体取研究阶段最后一段足够长的助手正文，来源取工具结果里的真实链接；
+        两者都没有时返回 None，由上层显式判定失败。
+        """
+        draft = ""
+        for message in reversed(message_history):
+            if message.get("role") != "assistant":
+                continue
+            text = self._message_text_content(message).strip()
+            if len(text) >= DEGRADED_REPORT_MIN_DRAFT_CHARS:
+                draft = text
+                break
+        if not draft:
+            return None
+
+        lines = ["## 结论", "", DEGRADED_REPORT_NOTICE, ""]
+        if self.intermediate_boxed_answers:
+            lines.append(
+                f"- 研究阶段产出的结论：{self.intermediate_boxed_answers[-1].strip()}"
+            )
+            lines.append("")
+        lines.extend([draft, ""])
+        sources = self._collect_evidence_sources(message_history)
+        if sources:
+            lines.extend(["## 参考来源", ""])
+            for index, (title, url) in enumerate(sources, 1):
+                prefix = f"{title} — " if title else ""
+                lines.append(f"{index}. {prefix}{url}")
+            lines.append("")
+        return "\n".join(lines).strip() + "\n"
 
     async def generate_cross_verification_note(
         self,
@@ -438,6 +700,47 @@ class AnswerGenerator:
         )
         return message_history
 
+    async def generate_agreement_check(
+        self,
+        system_prompt: str,
+        message_history: List[Dict[str, Any]],
+        turn_count: int,
+        task_description: str,
+        high_conf_domains: List[str],
+    ) -> str:
+        """裁决已收集证据是否支持同一结论（无工具、不写回主历史）。
+
+        返回 "agree" / "conflict" / "unknown"（unknown = 调用失败或输出不可解析，
+        调用方按 fail-closed 处理：不允许提前结束研究）。
+        """
+        check_prompt = generate_agreement_check_prompt(
+            task_description=task_description,
+            high_conf_domains=high_conf_domains,
+        )
+        check_history = message_history.copy()
+        check_history.append({"role": "user", "content": check_prompt})
+
+        await self._emit_stage_heartbeat(
+            "校验",
+            turn=turn_count,
+            detail="证据一致性裁决中（无工具）",
+            agent_name="main",
+        )
+        (
+            check_text,
+            _,
+            _,
+            _,
+        ) = await self.handle_llm_call(
+            system_prompt=system_prompt,
+            message_history=check_history,
+            tool_definitions=[],
+            step_id=turn_count + 30,
+            purpose="Main Agent | Evidence Agreement",
+            agent_type="main",
+        )
+        return parse_agreement_verdict(check_text or "")
+
     async def handle_llm_call(
         self,
         system_prompt: str,
@@ -485,7 +788,9 @@ class AnswerGenerator:
                     system_prompt=system_prompt,
                     message_history=message_history,
                     tool_definitions=tool_definitions,
-                    keep_tool_result=self.cfg.agent.keep_tool_result,
+                    keep_tool_result=self._resolve_keep_tool_result_for_call(
+                        agent_type
+                    ),
                     step_id=step_id,
                     task_log=self.task_log,
                     agent_type=agent_type,
@@ -560,6 +865,8 @@ class AnswerGenerator:
 
         except asyncio.TimeoutError:
             elapsed_ms = int((time.perf_counter() - llm_call_start_time) * 1000)
+            self.task_log.run_metrics.timeout_count += 1
+            self.task_log.run_metrics.wall_timeout_count += 1
             self.task_log.record_stage_timing(
                 f"answer_generator.llm_call.{agent_type}",
                 elapsed_ms,
@@ -719,13 +1026,24 @@ class AnswerGenerator:
             usage_log, message_history, result_quality)
         """
         # Generate summary prompt
-        if self.verification_enabled:
+        if self.verification_enabled and not self.fold_verification_into_summary:
             message_history = await self.generate_cross_verification_note(
                 system_prompt=system_prompt,
                 message_history=message_history,
                 turn_count=turn_count,
                 task_description=task_description,
             )
+        elif self.verification_enabled and self.fold_verification_into_summary:
+            self.task_log.log_step(
+                "info",
+                "Main Agent | Final Answer",
+                "Skipping separate verification LLM pass (Round 8 deep oneshot; "
+                "constraints folded into summary prompt).",
+            )
+
+        # Round 8: drop omitted stubs before oneshot summary so we never
+        # re-summarize condensed placeholders.
+        message_history = self._strip_omitted_tool_stubs(message_history)
 
         summary_prompt = self._build_main_summary_prompt(task_description)
 
@@ -752,7 +1070,11 @@ class AnswerGenerator:
         }
         final_summary_agent_types = (
             ["verification", "final_summary"]
-            if self.verification_enabled and self.verification_use_high_model
+            if (
+                self.verification_enabled
+                and self.verification_use_high_model
+                and not self.fold_verification_into_summary
+            )
             else ["final_summary"]
         )
 
@@ -781,10 +1103,14 @@ class AnswerGenerator:
                 f"Main agent | Final Summary (attempt {retry_idx + 1}/{self.max_final_answer_retries})",
                 agent_type=current_agent_type,
             )
+            self.task_log.run_metrics.record_summary_pass()
 
             if final_answer_text:
                 payload = self.output_formatter.format_final_summary_payload(
-                    final_answer_text, self.llm_client
+                    final_answer_text,
+                    self.llm_client,
+                    detail_level=self.output_detail_level,
+                    validate_structure=True,  # Always validate structure (Phase 2)
                 )
                 final_summary = payload["summary"]
                 final_boxed_answer = payload["boxed_answer"]
@@ -1046,6 +1372,9 @@ class AnswerGenerator:
         | ON  (limit>0)      | No                | Generate answer → no fallback, fail summary |
         | ON  (limit>0)      | Yes               | SKIP generation → fail summary directly     |
 
+        无后续重试机会（``retry_with_summary=false``，或评测最后一轮）时，
+        总结不可用会改为交付降级报告，而不是让整任务失败。
+
         Args:
             system_prompt: System prompt for the LLM
             message_history: Conversation history
@@ -1119,33 +1448,59 @@ class AnswerGenerator:
                     "Main Agent | Final Answer (Final Retry)",
                     "This is the final retry. Using intermediate fallback if available.",
                 )
-            return (
-                final_summary,
-                final_boxed_answer,
-                None,
-                usage_log,
-                message_history,
-                result_quality,
+        else:
+            # CASE: Context management ON + normal completion (not reached max turns,
+            # not final retry). Don't use fallback - wrong guess would reduce accuracy.
+            final_answer_text, final_summary, final_boxed_answer = (
+                self.handle_context_management_no_fallback(
+                    final_answer_text,
+                    final_summary,
+                    final_boxed_answer,
+                    answer_available=bool(
+                        result_quality.get("answer_available", False)
+                    ),
+                )
             )
 
-        # CASE: Context management ON + normal completion (not reached max turns, not final retry)
-        # Don't use fallback - wrong guess would reduce accuracy
-        final_answer_text, final_summary, final_boxed_answer = (
-            self.handle_context_management_no_fallback(
-                final_answer_text,
-                final_summary,
-                final_boxed_answer,
-                answer_available=bool(result_quality.get("answer_available", False)),
-            )
-        )
+            if (
+                not result_quality.get("answer_available", False)
+                and self.retry_with_summary
+            ):
+                failure_experience_summary = await self.generate_failure_summary(
+                    system_prompt, message_history, tool_definitions, turn_count
+                )
 
-        if (
-            not result_quality.get("answer_available", False)
-            and self.retry_with_summary
-        ):
-            failure_experience_summary = await self.generate_failure_summary(
-                system_prompt, message_history, tool_definitions, turn_count
-            )
+        # 不会再有新的总结尝试（产品档 retry_with_summary=false，或评测最后一轮）时，
+        # 用研究阶段已有产出拼装降级报告，避免总结模型抖动导致整任务无结果。
+        answer_available = bool(result_quality.get("answer_available", False))
+        if not answer_available and (is_final_retry or not self.retry_with_summary):
+            degraded_report = self.build_degraded_report(message_history)
+            if degraded_report:
+                final_summary = degraded_report
+                if (
+                    final_boxed_answer == FORMAT_ERROR_MESSAGE
+                    and self.intermediate_boxed_answers
+                ):
+                    final_boxed_answer = self.intermediate_boxed_answers[-1]
+                issues = [
+                    issue
+                    for issue in result_quality.get("issues", [])
+                    if issue != "no_answer_available"
+                ]
+                if "degraded_report_fallback" not in issues:
+                    issues.append("degraded_report_fallback")
+                result_quality = {
+                    "format_valid": False,
+                    "fallback_used": True,
+                    "issues": issues,
+                    "answer_available": True,
+                }
+                self.task_log.log_step(
+                    "warning",
+                    "Main Agent | Final Answer (Degraded Report)",
+                    "Final summary unavailable; delivered an auto-assembled "
+                    f"degraded report ({len(final_summary)} chars).",
+                )
 
         return (
             final_summary,

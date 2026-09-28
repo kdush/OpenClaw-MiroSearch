@@ -3,7 +3,6 @@
 
 """KeyPool 单元测试：轮转、429 标记、冷却、全部耗尽场景。"""
 
-import os
 import time
 
 import pytest

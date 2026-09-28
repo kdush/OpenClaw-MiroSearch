@@ -32,6 +32,7 @@ class TaskPayload:
     search_result_num: int
     verification_min_search_rounds: int
     output_detail_level: str
+    research_intensity: str
     caller_id: str
     cache_key: str = ""
 
@@ -45,6 +46,7 @@ class TaskPayload:
             "search_result_num": self.search_result_num,
             "verification_min_search_rounds": self.verification_min_search_rounds,
             "output_detail_level": self.output_detail_level,
+            "research_intensity": self.research_intensity,
             "caller_id": self.caller_id,
             "cache_key": self.cache_key,
         }
@@ -60,6 +62,7 @@ class TaskPayload:
             search_result_num=data["search_result_num"],
             verification_min_search_rounds=data["verification_min_search_rounds"],
             output_detail_level=data["output_detail_level"],
+            research_intensity=data.get("research_intensity", "standard"),
             caller_id=data.get("caller_id", ""),
             cache_key=data.get("cache_key", ""),
         )

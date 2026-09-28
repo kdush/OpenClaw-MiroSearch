@@ -7,7 +7,7 @@ description: 使用本地或自托管的 SearXNG 实例执行简单网页检索�
 
 使用你的本地或自托管 SearXNG 实例执行简单搜索。
 
-这个仓库内分发的版本已按 `MiroThinker / OpenClaw-MiroSearch` 的默认部署做了适配：
+这个仓库内分发的版本已按 `MiroThinker / 谛听` 的默认部署做了适配：
 
 - 优先兼容仓库已有的 `SEARXNG_BASE_URL`
 - 默认指向本项目 Docker Compose 暴露的 `http://127.0.0.1:27080`
@@ -17,7 +17,7 @@ description: 使用本地或自托管的 SearXNG 实例执行简单网页检索�
 
 - 快速找网页、单事实查询、低成本优先
 - 需要直接拿 SearXNG JSON 结果做后续程序处理
-- 不需要 `openclaw-mirosearch` 那套多轮研究、核查和长报告能力
+- 不需要 `diting` 那套多轮研究、核查和长报告能力
 
 ## Commands
 

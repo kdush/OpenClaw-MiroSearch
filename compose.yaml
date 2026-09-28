@@ -7,7 +7,7 @@ services:
       dockerfile: apps/gradio-demo/Dockerfile
       # 使用宿主机网络拉 apt / pip 包，规避 docker0 桥接网无法访问外部仓库的环境
       network: host
-    image: openclaw-mirosearch:latest
+    image: diting:latest
     restart: unless-stopped
     # 如果容器无法访问外网，
     # 取消下行注释并注释掉 ports 段，改用 host 网络模式：
@@ -18,6 +18,7 @@ services:
       BACKEND_MODE: api
       HOST: 0.0.0.0
       PORT: 8080
+      DITING_STATIC_HOT: "0"
       API_BASE_URL: ${GRADIO_API_BASE_URL:-http://api:8090}
       SEARXNG_BASE_URL: ${SEARXNG_BASE_URL:-http://searxng:8080}
     ports:
@@ -38,7 +39,7 @@ services:
       dockerfile: apps/api-server/Dockerfile
       # 使用宿主机网络拉 apt / pip 包，规避 docker0 桥接网无法访问外部仓库的环境
       network: host
-    image: openclaw-mirosearch-api:latest
+    image: diting-api:latest
     restart: unless-stopped
     env_file:
       - ${COMPOSE_ENV_FILE:-.env.compose}
@@ -69,7 +70,7 @@ services:
       dockerfile: apps/api-server/Dockerfile
       # 使用宿主机网络拉 apt / pip 包，规避 docker0 桥接网无法访问外部仓库的环境
       network: host
-    image: openclaw-mirosearch-api:latest
+    image: diting-api:latest
     restart: unless-stopped
     env_file:
       - ${COMPOSE_ENV_FILE:-.env.compose}

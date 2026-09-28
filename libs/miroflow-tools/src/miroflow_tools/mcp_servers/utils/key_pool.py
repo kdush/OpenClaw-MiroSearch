@@ -90,18 +90,13 @@ class KeyPool:
         """所有 Key 是否均在冷却期内。"""
         now = time.monotonic()
         with self._lock:
-            return all(
-                self._cooldowns.get(k, 0) > now for k in self._keys
-            )
+            return all(self._cooldowns.get(k, 0) > now for k in self._keys)
 
     def min_cooldown_remaining(self) -> float:
         """所有 Key 中最短的剩余冷却秒数（已可用则返回 0）。"""
         now = time.monotonic()
         with self._lock:
-            remaining = [
-                max(0.0, self._cooldowns.get(k, 0) - now)
-                for k in self._keys
-            ]
+            remaining = [max(0.0, self._cooldowns.get(k, 0) - now) for k in self._keys]
         return min(remaining) if remaining else 0.0
 
     # ------------------------------------------------------------------

@@ -11,7 +11,8 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     UV_LINK_MODE=copy \
     UV_HTTP_TIMEOUT=300 \
-    UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+    UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
+    DITING_STATIC_HOT=0
 
 # 兼容 deb822（trixie 起 /etc/apt/sources.list.d/debian.sources）与老 sources.list 两种格式
 RUN if [ -n "${APT_MIRROR}" ]; then \

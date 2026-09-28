@@ -1,0 +1,183 @@
+/* Export bar */
+    /* ===== Export icon bar (result footer) ============================ */
+    #export-bar {
+        display: flex !important;
+        flex-direction: row !important;
+        align-items: center !important;
+        flex-wrap: wrap !important;
+        justify-content: flex-start !important;
+        gap: 8px !important;
+        margin-top: 14px !important;
+        padding: 0 !important;
+        border: none !important;
+        border-radius: 0 !important;
+        background: transparent !important;
+    }
+    #export-bar > * {
+        min-width: 0 !important;
+    }
+    #export-bar .block {
+        flex: 0 0 auto !important;
+    }
+    .export-icon-btn {
+        /* scale=0 pins Gradio's flex-basis to 0% — restore content sizing or
+           the label text overflows and overlaps the neighbouring buttons. */
+        flex: 0 0 auto !important;
+        display: inline-flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        gap: 6px !important;
+        height: 30px !important;
+        min-height: 30px !important;
+        padding: 0 12px !important;
+        border-radius: 8px !important;
+        font-size: 12.5px !important;
+        font-weight: 500 !important;
+        letter-spacing: 0.01em !important;
+        background: transparent !important;
+        border: 1px solid rgba(140, 170, 220, 0.18) !important;
+        color: var(--ink-soft) !important;
+        box-shadow: none !important;
+        transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease !important;
+    }
+    .export-icon-btn::before {
+        content: "" !important;
+        display: inline-block !important;
+        font-weight: 700 !important;
+        font-size: 11px !important;
+        line-height: 1 !important;
+        letter-spacing: 0.02em !important;
+    }
+    /* 每格式语义化徽标：Markdown 通用 M↓，PDF/Word 用格式缩写 */
+    .export-md-btn::before {
+        content: "M\2193" !important;
+        font-size: 12px !important;
+    }
+    .export-pdf-btn::before {
+        content: "PDF" !important;
+        font-size: 9px !important;
+        letter-spacing: 0.06em !important;
+    }
+    .export-docx-btn::before {
+        content: "W" !important;
+        font-size: 12px !important;
+    }
+    .export-icon-btn:hover {
+        color: #22d3ee !important;
+        border-color: rgba(34, 211, 238, 0.5) !important;
+        background: rgba(34, 211, 238, 0.06) !important;
+    }
+    /* 导出文件会自动下载（export_titles_script 监听该容器并点击生成的链接），
+       文件块本身只是触发载体，不再占据工具栏位置。 */
+    #export-file {
+        display: none !important;
+    }
+
+    #lang-toggle-btn {
+        height: 36px !important;
+        min-height: 36px !important;
+        font-size: 14px !important;
+        font-weight: 500 !important;
+        border-radius: 10px !important;
+    }
+
+    /* Corner icon close — full-width footer "关闭" was the wrong pattern */
+    #settings-close-btn,
+    #export-close-btn {
+        position: absolute !important;
+        top: 12px !important;
+        right: 12px !important;
+        z-index: 3 !important;
+        width: 36px !important;
+        min-width: 36px !important;
+        max-width: 36px !important;
+        height: 36px !important;
+        min-height: 36px !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        border-radius: 10px !important;
+        border: 1px solid rgba(34, 211, 238, 0.18) !important;
+        background: rgba(15, 23, 42, 0.85) !important;
+        color: #94a3b8 !important;
+        box-shadow: none !important;
+        font-size: 0 !important;
+        line-height: 0 !important;
+        overflow: hidden !important;
+        display: inline-flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+    }
+    #settings-close-btn:hover,
+    #export-close-btn:hover {
+        color: #22d3ee !important;
+        border-color: rgba(34, 211, 238, 0.45) !important;
+        background: rgba(34, 211, 238, 0.08) !important;
+    }
+    #settings-close-btn::before,
+    #export-close-btn::before {
+        content: "" !important;
+        display: block !important;
+        width: 18px !important;
+        height: 18px !important;
+        background-color: currentColor !important;
+        -webkit-mask-repeat: no-repeat !important;
+        mask-repeat: no-repeat !important;
+        -webkit-mask-position: center !important;
+        mask-position: center !important;
+        -webkit-mask-size: contain !important;
+        mask-size: contain !important;
+        -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M18 6 6 18'/%3E%3Cpath d='m6 6 12 12'/%3E%3C/svg%3E") !important;
+        mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M18 6 6 18'/%3E%3Cpath d='m6 6 12 12'/%3E%3C/svg%3E") !important;
+    }
+    #settings-close-btn *,
+    #export-close-btn * {
+        font-size: 0 !important;
+        opacity: 0 !important;
+        pointer-events: none !important;
+    }
+
+    /* Options helper text under each field (block-info is the TITLE).
+       0.72em of the 12px info font landed at 8.6px — off the readable scale,
+       so the helpers sit on the same 12px floor as the rest of the card. */
+    #settings-modal .md p{
+        color: #94a3b8 !important;
+        font-size: 12px !important;
+        line-height: 1.4 !important;
+        margin: 2px 0 6px !important;
+    }
+
+    /* Empty progress state */
+    #log-view.progress-empty,
+    #log-view:has(h3),
+    #output-section #log-view {
+        display: flex;
+        flex-direction: column;
+    }
+
+    #log-view h3 {
+        color: #e2e8f0 !important;
+        font-size: 1.15em !important;
+        border-bottom: none !important;
+        margin: 8px 0 8px !important;
+        padding-bottom: 0 !important;
+    }
+
+    #log-view p {
+        color: #94a3b8 !important;
+        font-size: 0.95em !important;
+        max-width: 36em;
+    }
+
+    .progress-empty-wrap {
+        min-height: 220px;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        justify-content: center;
+        padding: 12px 8px 24px;
+        background:
+            radial-gradient(1200px 240px at 10% 0%, rgba(56,189,248,0.06), transparent 60%),
+            var(--panel-bg-solid);
+        border-radius: 16px;
+    }
+

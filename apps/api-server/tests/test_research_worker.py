@@ -29,6 +29,7 @@ def mock_pipeline_runtime():
             MagicMock(),  # output_fmt
             [],  # tool_defs
             {},  # sub_tool_defs
+            {"research_intensity": "standard"},  # effective_config
         )
     )
     runtime.get_log_dir = MagicMock(return_value="logs")
@@ -47,6 +48,7 @@ async def test_run_research_job_success(mock_task_store, mock_pipeline_runtime):
         verification_min_search_rounds=3,
         output_detail_level="detailed",
         caller_id="caller-001",
+        research_intensity=None,
     )
 
     with (
@@ -387,6 +389,7 @@ async def test_run_research_job_cancelled(mock_task_store, mock_pipeline_runtime
         verification_min_search_rounds=3,
         output_detail_level="detailed",
         caller_id="caller-001",
+        research_intensity=None,
     )
 
     with (
@@ -423,6 +426,7 @@ async def test_run_research_job_failed(mock_task_store, mock_pipeline_runtime):
         verification_min_search_rounds=3,
         output_detail_level="detailed",
         caller_id="caller-001",
+        research_intensity=None,
     )
 
     with (
@@ -461,6 +465,7 @@ def _make_payload(task_id: str = "test-task-cancel") -> TaskPayload:
         verification_min_search_rounds=3,
         output_detail_level="detailed",
         caller_id="caller-x",
+        research_intensity=None,
     )
 
 

@@ -13,11 +13,9 @@
 所有测试标记为 integration，默认跳过（缺少环境变量时）。
 """
 
-import asyncio
 import os
 import sys
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -30,7 +28,7 @@ LIBS_ROOT = Path(__file__).resolve().parents[3] / "libs" / "miroflow-tools"
 if str(LIBS_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(LIBS_ROOT / "src"))
 
-from miroflow_tools.mcp_servers.utils.key_pool import KeyPool
+from miroflow_tools.mcp_servers.utils.key_pool import KeyPool  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -126,7 +124,9 @@ async def test_openrouter_real_chat():
     )
     response = await client.chat.completions.create(
         model="openai/gpt-4.1-nano",
-        messages=[{"role": "user", "content": "Say 'rotation test OK' in 5 words or less."}],
+        messages=[
+            {"role": "user", "content": "Say 'rotation test OK' in 5 words or less."}
+        ],
         max_tokens=20,
     )
     content = response.choices[0].message.content or ""

@@ -273,6 +273,7 @@ async def test_create_research_uses_one_effective_parameter_set(
                 "compact",
                 search_result_num=30,
                 verification_min_search_rounds=7,
+                research_intensity="standard",
             )
 
             mock_task_store.get_task.return_value = TaskMeta(
@@ -400,6 +401,7 @@ async def test_create_research_cache_hit(
             "detailed",
             search_result_num=20,
             verification_min_search_rounds=None,
+            research_intensity="standard",
         )
         cached_kwargs = mock_task_store.create_task.await_args.kwargs
         assert cached_kwargs["mode"] == "balanced"

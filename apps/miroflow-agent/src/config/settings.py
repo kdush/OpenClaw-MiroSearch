@@ -21,6 +21,18 @@ from omegaconf import DictConfig
 # Load environment variables from .env file
 load_dotenv()
 
+
+def _mcp_child_env(overrides: dict) -> dict:
+    """MCP stdio 子进程使用完整 env 覆盖，显式键优先，其余继承父进程。
+
+    子进程里读到的 SCRAPE_TIMEOUT_SECONDS / SEARXNG_PRECHECK_* 等调优变量若不在
+    这里继承，用户在 .env 中的设置会静默失效。
+    """
+    child_env = dict(os.environ)
+    child_env.update({k: v for k, v in overrides.items() if v is not None})
+    return child_env
+
+
 # API for Google Search
 SERPER_API_KEY = os.environ.get("SERPER_API_KEY", "")
 SERPER_BASE_URL = os.environ.get("SERPER_BASE_URL", "https://google.serper.dev")
@@ -107,12 +119,14 @@ def create_mcp_server_parameters(cfg: DictConfig, agent_cfg: DictConfig):
                         "-m",
                         "miroflow_tools.mcp_servers.searching_google_mcp_server",
                     ],
-                    env={
-                        "SERPER_API_KEY": SERPER_API_KEY,
-                        "SERPER_BASE_URL": SERPER_BASE_URL,
-                        "JINA_API_KEY": JINA_API_KEY,
-                        "JINA_BASE_URL": JINA_BASE_URL,
-                    },
+                    env=_mcp_child_env(
+                        {
+                            "SERPER_API_KEY": SERPER_API_KEY,
+                            "SERPER_BASE_URL": SERPER_BASE_URL,
+                            "JINA_API_KEY": JINA_API_KEY,
+                            "JINA_BASE_URL": JINA_BASE_URL,
+                        }
+                    ),
                 ),
             }
         )
@@ -130,12 +144,14 @@ def create_mcp_server_parameters(cfg: DictConfig, agent_cfg: DictConfig):
                         "-m",
                         "miroflow_tools.mcp_servers.searching_sogou_mcp_server",
                     ],
-                    env={
-                        "TENCENTCLOUD_SECRET_ID": TENCENTCLOUD_SECRET_ID,
-                        "TENCENTCLOUD_SECRET_KEY": TENCENTCLOUD_SECRET_KEY,
-                        "JINA_API_KEY": JINA_API_KEY,
-                        "JINA_BASE_URL": JINA_BASE_URL,
-                    },
+                    env=_mcp_child_env(
+                        {
+                            "TENCENTCLOUD_SECRET_ID": TENCENTCLOUD_SECRET_ID,
+                            "TENCENTCLOUD_SECRET_KEY": TENCENTCLOUD_SECRET_KEY,
+                            "JINA_API_KEY": JINA_API_KEY,
+                            "JINA_BASE_URL": JINA_BASE_URL,
+                        }
+                    ),
                 ),
             }
         )
@@ -147,7 +163,7 @@ def create_mcp_server_parameters(cfg: DictConfig, agent_cfg: DictConfig):
                 "params": StdioServerParameters(
                     command=sys.executable,
                     args=["-m", "miroflow_tools.mcp_servers.python_mcp_server"],
-                    env={"E2B_API_KEY": E2B_API_KEY},
+                    env=_mcp_child_env({"E2B_API_KEY": E2B_API_KEY}),
                 ),
             }
         )
@@ -159,10 +175,12 @@ def create_mcp_server_parameters(cfg: DictConfig, agent_cfg: DictConfig):
                 "params": StdioServerParameters(
                     command=sys.executable,
                     args=["-m", "miroflow_tools.mcp_servers.vision_mcp_server"],
-                    env={
-                        "OPENAI_API_KEY": OPENAI_API_KEY,
-                        "OPENAI_BASE_URL": OPENAI_BASE_URL,
-                    },
+                    env=_mcp_child_env(
+                        {
+                            "OPENAI_API_KEY": OPENAI_API_KEY,
+                            "OPENAI_BASE_URL": OPENAI_BASE_URL,
+                        }
+                    ),
                 ),
             }
         )
@@ -174,11 +192,13 @@ def create_mcp_server_parameters(cfg: DictConfig, agent_cfg: DictConfig):
                 "params": StdioServerParameters(
                     command=sys.executable,
                     args=["-m", "miroflow_tools.mcp_servers.vision_mcp_server_os"],
-                    env={
-                        "VISION_API_KEY": VISION_API_KEY,
-                        "VISION_BASE_URL": VISION_BASE_URL,
-                        "VISION_MODEL_NAME": VISION_MODEL_NAME,
-                    },
+                    env=_mcp_child_env(
+                        {
+                            "VISION_API_KEY": VISION_API_KEY,
+                            "VISION_BASE_URL": VISION_BASE_URL,
+                            "VISION_MODEL_NAME": VISION_MODEL_NAME,
+                        }
+                    ),
                 ),
             }
         )
@@ -193,10 +213,12 @@ def create_mcp_server_parameters(cfg: DictConfig, agent_cfg: DictConfig):
                 "params": StdioServerParameters(
                     command=sys.executable,
                     args=["-m", "miroflow_tools.mcp_servers.audio_mcp_server"],
-                    env={
-                        "OPENAI_API_KEY": OPENAI_API_KEY,
-                        "OPENAI_BASE_URL": OPENAI_BASE_URL,
-                    },
+                    env=_mcp_child_env(
+                        {
+                            "OPENAI_API_KEY": OPENAI_API_KEY,
+                            "OPENAI_BASE_URL": OPENAI_BASE_URL,
+                        }
+                    ),
                 ),
             }
         )
@@ -211,11 +233,13 @@ def create_mcp_server_parameters(cfg: DictConfig, agent_cfg: DictConfig):
                 "params": StdioServerParameters(
                     command=sys.executable,
                     args=["-m", "miroflow_tools.mcp_servers.audio_mcp_server_os"],
-                    env={
-                        "WHISPER_BASE_URL": WHISPER_BASE_URL,
-                        "WHISPER_API_KEY": WHISPER_API_KEY,
-                        "WHISPER_MODEL_NAME": WHISPER_MODEL_NAME,
-                    },
+                    env=_mcp_child_env(
+                        {
+                            "WHISPER_BASE_URL": WHISPER_BASE_URL,
+                            "WHISPER_API_KEY": WHISPER_API_KEY,
+                            "WHISPER_MODEL_NAME": WHISPER_MODEL_NAME,
+                        }
+                    ),
                 ),
             }
         )
@@ -233,10 +257,12 @@ def create_mcp_server_parameters(cfg: DictConfig, agent_cfg: DictConfig):
                         "-m",
                         "miroflow_tools.mcp_servers.reasoning_mcp_server",
                     ],
-                    env={
-                        "ANTHROPIC_API_KEY": ANTHROPIC_API_KEY,
-                        "ANTHROPIC_BASE_URL": ANTHROPIC_BASE_URL,
-                    },
+                    env=_mcp_child_env(
+                        {
+                            "ANTHROPIC_API_KEY": ANTHROPIC_API_KEY,
+                            "ANTHROPIC_BASE_URL": ANTHROPIC_BASE_URL,
+                        }
+                    ),
                 ),
             }
         )
@@ -254,11 +280,13 @@ def create_mcp_server_parameters(cfg: DictConfig, agent_cfg: DictConfig):
                         "-m",
                         "miroflow_tools.mcp_servers.reasoning_mcp_server_os",
                     ],
-                    env={
-                        "REASONING_API_KEY": REASONING_API_KEY,
-                        "REASONING_BASE_URL": REASONING_BASE_URL,
-                        "REASONING_MODEL_NAME": REASONING_MODEL_NAME,
-                    },
+                    env=_mcp_child_env(
+                        {
+                            "REASONING_API_KEY": REASONING_API_KEY,
+                            "REASONING_BASE_URL": REASONING_BASE_URL,
+                            "REASONING_MODEL_NAME": REASONING_MODEL_NAME,
+                        }
+                    ),
                 ),
             }
         )
@@ -295,9 +323,7 @@ def create_mcp_server_parameters(cfg: DictConfig, agent_cfg: DictConfig):
     ):
         # 每次创建参数时实时读取检索路由配置，支持按请求策略切换。
         dynamic_serper_api_key = os.environ.get("SERPER_API_KEY", SERPER_API_KEY)
-        dynamic_serper_base_url = os.environ.get(
-            "SERPER_BASE_URL", SERPER_BASE_URL
-        )
+        dynamic_serper_base_url = os.environ.get("SERPER_BASE_URL", SERPER_BASE_URL)
         dynamic_serpapi_api_key = os.environ.get("SERPAPI_API_KEY", SERPAPI_API_KEY)
         # 多 Key 轮转池：必须显式透传给 MCP 子进程（MCP 默认 env 仅含系统变量）。
         dynamic_serpapi_api_keys = os.environ.get("SERPAPI_API_KEYS", "")
@@ -305,9 +331,7 @@ def create_mcp_server_parameters(cfg: DictConfig, agent_cfg: DictConfig):
         dynamic_tavily_api_key = os.environ.get("TAVILY_API_KEY", TAVILY_API_KEY)
         dynamic_tavily_api_keys = os.environ.get("TAVILY_API_KEYS", "")
         dynamic_tavily_search_depth = os.environ.get("TAVILY_SEARCH_DEPTH", "basic")
-        dynamic_searxng_base_url = os.environ.get(
-            "SEARXNG_BASE_URL", SEARXNG_BASE_URL
-        )
+        dynamic_searxng_base_url = os.environ.get("SEARXNG_BASE_URL", SEARXNG_BASE_URL)
         dynamic_search_provider_order = os.environ.get(
             "SEARCH_PROVIDER_ORDER", "searxng,serpapi,serper,tavily"
         )
@@ -349,6 +373,16 @@ def create_mcp_server_parameters(cfg: DictConfig, agent_cfg: DictConfig):
             "SEARCH_CONFIDENCE_HIGH_CONF_DOMAINS",
             "reuters.com,apnews.com,bbc.com,aljazeera.com,state.gov,un.org,iaea.org,who.int",
         )
+        dynamic_search_provider_order_strict = os.environ.get(
+            "SEARCH_PROVIDER_ORDER_STRICT", "0"
+        )
+        dynamic_search_searxng_only_allow_downgrade = os.environ.get(
+            "SEARCH_SEARXNG_ONLY_ALLOW_DOWNGRADE", "0"
+        )
+        dynamic_search_searxng_only_downgrade_order = os.environ.get(
+            "SEARCH_SEARXNG_ONLY_DOWNGRADE_ORDER",
+            "serpapi,tavily,serper",
+        )
         dynamic_scrape_proxy_fake_ip_cidrs = os.environ.get(
             "SCRAPE_PROXY_FAKE_IP_CIDRS", ""
         )
@@ -361,34 +395,46 @@ def create_mcp_server_parameters(cfg: DictConfig, agent_cfg: DictConfig):
                         "-m",
                         "miroflow_tools.dev_mcp_servers.search_and_scrape_webpage",
                     ],
-                    env={
-                        "SERPER_API_KEY": dynamic_serper_api_key or "",
-                        "SERPER_API_KEYS": dynamic_serper_api_keys or "",
-                        "SERPER_BASE_URL": dynamic_serper_base_url or "",
-                        "SERPAPI_API_KEY": dynamic_serpapi_api_key or "",
-                        "SERPAPI_API_KEYS": dynamic_serpapi_api_keys or "",
-                        "TAVILY_API_KEY": dynamic_tavily_api_key or "",
-                        "TAVILY_API_KEYS": dynamic_tavily_api_keys or "",
-                        "TAVILY_SEARCH_DEPTH": dynamic_tavily_search_depth or "basic",
-                        "SEARXNG_BASE_URL": dynamic_searxng_base_url or "",
-                        "SEARCH_PROVIDER_ORDER": dynamic_search_provider_order,
-                        "SEARCH_PROVIDER_MODE": dynamic_search_provider_mode,
-                        "SEARCH_PROVIDER_TRUSTED_ORDER": dynamic_search_provider_trusted_order,
-                        "SEARCH_PROVIDER_PARALLEL_MAX_WAIT_MS": dynamic_search_provider_parallel_max_wait_ms,
-                        "SEARCH_PROVIDER_PARALLEL_MIN_SUCCESS": dynamic_search_provider_parallel_min_success,
-                        "SEARCH_PROVIDER_FALLBACK_MAX_STEPS": dynamic_search_provider_fallback_max_steps,
-                        "SEARCH_RESULT_NUM": dynamic_search_result_num,
-                        "SEARCH_CONFIDENCE_ENABLED": dynamic_search_confidence_enabled,
-                        "SEARCH_CONFIDENCE_SCORE_THRESHOLD": dynamic_search_confidence_score_threshold,
-                        "SEARCH_CONFIDENCE_MIN_RESULTS": dynamic_search_confidence_min_results,
-                        "SEARCH_CONFIDENCE_MIN_UNIQUE_DOMAINS": dynamic_search_confidence_min_unique_domains,
-                        "SEARCH_CONFIDENCE_MIN_PROVIDER_COVERAGE": dynamic_search_confidence_min_provider_coverage,
-                        "SEARCH_CONFIDENCE_MIN_HIGH_CONF_HITS": dynamic_search_confidence_min_high_conf_hits,
-                        "SEARCH_CONFIDENCE_HIGH_CONF_DOMAINS": dynamic_search_confidence_high_conf_domains,
-                        "SCRAPE_PROXY_FAKE_IP_CIDRS": dynamic_scrape_proxy_fake_ip_cidrs,
-                        "TENCENTCLOUD_SECRET_ID": TENCENTCLOUD_SECRET_ID,
-                        "TENCENTCLOUD_SECRET_KEY": TENCENTCLOUD_SECRET_KEY,
-                    },
+                    env=_mcp_child_env(
+                        {
+                            "SERPER_API_KEY": dynamic_serper_api_key or "",
+                            "SERPER_API_KEYS": dynamic_serper_api_keys or "",
+                            "SERPER_BASE_URL": dynamic_serper_base_url or "",
+                            "SERPAPI_API_KEY": dynamic_serpapi_api_key or "",
+                            "SERPAPI_API_KEYS": dynamic_serpapi_api_keys or "",
+                            "TAVILY_API_KEY": dynamic_tavily_api_key or "",
+                            "TAVILY_API_KEYS": dynamic_tavily_api_keys or "",
+                            "TAVILY_SEARCH_DEPTH": dynamic_tavily_search_depth
+                            or "basic",
+                            "SEARXNG_BASE_URL": dynamic_searxng_base_url or "",
+                            "SEARCH_PROVIDER_ORDER": dynamic_search_provider_order,
+                            "SEARCH_PROVIDER_MODE": dynamic_search_provider_mode,
+                            "SEARCH_PROVIDER_ORDER_STRICT": (
+                                dynamic_search_provider_order_strict
+                            ),
+                            "SEARCH_SEARXNG_ONLY_ALLOW_DOWNGRADE": (
+                                dynamic_search_searxng_only_allow_downgrade
+                            ),
+                            "SEARCH_SEARXNG_ONLY_DOWNGRADE_ORDER": (
+                                dynamic_search_searxng_only_downgrade_order
+                            ),
+                            "SEARCH_PROVIDER_TRUSTED_ORDER": dynamic_search_provider_trusted_order,
+                            "SEARCH_PROVIDER_PARALLEL_MAX_WAIT_MS": dynamic_search_provider_parallel_max_wait_ms,
+                            "SEARCH_PROVIDER_PARALLEL_MIN_SUCCESS": dynamic_search_provider_parallel_min_success,
+                            "SEARCH_PROVIDER_FALLBACK_MAX_STEPS": dynamic_search_provider_fallback_max_steps,
+                            "SEARCH_RESULT_NUM": dynamic_search_result_num,
+                            "SEARCH_CONFIDENCE_ENABLED": dynamic_search_confidence_enabled,
+                            "SEARCH_CONFIDENCE_SCORE_THRESHOLD": dynamic_search_confidence_score_threshold,
+                            "SEARCH_CONFIDENCE_MIN_RESULTS": dynamic_search_confidence_min_results,
+                            "SEARCH_CONFIDENCE_MIN_UNIQUE_DOMAINS": dynamic_search_confidence_min_unique_domains,
+                            "SEARCH_CONFIDENCE_MIN_PROVIDER_COVERAGE": dynamic_search_confidence_min_provider_coverage,
+                            "SEARCH_CONFIDENCE_MIN_HIGH_CONF_HITS": dynamic_search_confidence_min_high_conf_hits,
+                            "SEARCH_CONFIDENCE_HIGH_CONF_DOMAINS": dynamic_search_confidence_high_conf_domains,
+                            "SCRAPE_PROXY_FAKE_IP_CIDRS": dynamic_scrape_proxy_fake_ip_cidrs,
+                            "TENCENTCLOUD_SECRET_ID": TENCENTCLOUD_SECRET_ID,
+                            "TENCENTCLOUD_SECRET_KEY": TENCENTCLOUD_SECRET_KEY,
+                        }
+                    ),
                 ),
             }
         )
@@ -406,13 +452,15 @@ def create_mcp_server_parameters(cfg: DictConfig, agent_cfg: DictConfig):
                         "-m",
                         "miroflow_tools.dev_mcp_servers.jina_scrape_llm_summary",
                     ],
-                    env={
-                        "JINA_API_KEY": JINA_API_KEY,
-                        "JINA_BASE_URL": JINA_BASE_URL,
-                        "SUMMARY_LLM_BASE_URL": SUMMARY_LLM_BASE_URL,
-                        "SUMMARY_LLM_MODEL_NAME": SUMMARY_LLM_MODEL_NAME,
-                        "SUMMARY_LLM_API_KEY": SUMMARY_LLM_API_KEY,
-                    },
+                    env=_mcp_child_env(
+                        {
+                            "JINA_API_KEY": JINA_API_KEY,
+                            "JINA_BASE_URL": JINA_BASE_URL,
+                            "SUMMARY_LLM_BASE_URL": SUMMARY_LLM_BASE_URL,
+                            "SUMMARY_LLM_MODEL_NAME": SUMMARY_LLM_MODEL_NAME,
+                            "SUMMARY_LLM_API_KEY": SUMMARY_LLM_API_KEY,
+                        }
+                    ),
                 ),
             }
         )
@@ -430,7 +478,7 @@ def create_mcp_server_parameters(cfg: DictConfig, agent_cfg: DictConfig):
                         "-m",
                         "miroflow_tools.dev_mcp_servers.stateless_python_server",
                     ],
-                    env={"E2B_API_KEY": E2B_API_KEY},
+                    env=_mcp_child_env({"E2B_API_KEY": E2B_API_KEY}),
                 ),
             }
         )
@@ -454,7 +502,7 @@ def create_mcp_server_parameters(cfg: DictConfig, agent_cfg: DictConfig):
                         "-m",
                         "miroflow_tools.dev_mcp_servers.task_planner",
                     ],
-                    env={"TASK_ID": todo_task_id},
+                    env=_mcp_child_env({"TASK_ID": todo_task_id}),
                 ),
             }
         )

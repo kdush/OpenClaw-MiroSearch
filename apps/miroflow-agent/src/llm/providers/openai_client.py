@@ -53,6 +53,20 @@ DEFAULT_OPENAI_RETRY_WAIT_SECONDS = 6.0
 DEFAULT_OPENAI_HTTP_TIMEOUT_SECONDS = 90.0
 DEFAULT_OPENAI_SDK_MAX_RETRIES = 0
 DEFAULT_TOOL_RESULT_MAX_CHARS = 4000
+# Round 7: on timeout, one degrade retry then fail-fast (no identical retries)
+DEFAULT_TIMEOUT_FAIL_FAST = True
+DEFAULT_TIMEOUT_DEGRADE_KEEP_TOOL_RESULTS = 2
+TIMEOUT_ERROR_TYPE_NAMES = frozenset(
+    {
+        "APITimeoutError",
+        "TimeoutException",
+        "ReadTimeout",
+        "ConnectTimeout",
+        "WriteTimeout",
+        "PoolTimeout",
+        "TimeoutError",
+    }
+)
 
 
 @dataclasses.dataclass
@@ -85,6 +99,29 @@ class OpenAIClient(BaseClient):
             if cfg_tool_result_max_chars is not None
             else self._read_env_int(
                 "LLM_TOOL_RESULT_MAX_CHARS", DEFAULT_TOOL_RESULT_MAX_CHARS
+            )
+        )
+        cfg_timeout_fail_fast = self.cfg.llm.get("timeout_fail_fast")
+        if cfg_timeout_fail_fast is None:
+            env_ff = os.getenv("LLM_TIMEOUT_FAIL_FAST")
+            if env_ff is None:
+                self.timeout_fail_fast = DEFAULT_TIMEOUT_FAIL_FAST
+            else:
+                self.timeout_fail_fast = env_ff.strip().lower() in {
+                    "1",
+                    "true",
+                    "yes",
+                    "on",
+                }
+        else:
+            self.timeout_fail_fast = bool(cfg_timeout_fail_fast)
+        cfg_degrade_keep = self.cfg.llm.get("timeout_degrade_keep_tool_results")
+        self.timeout_degrade_keep_tool_results = (
+            int(cfg_degrade_keep)
+            if cfg_degrade_keep is not None
+            else self._read_env_int(
+                "LLM_TIMEOUT_DEGRADE_KEEP_TOOL_RESULTS",
+                DEFAULT_TIMEOUT_DEGRADE_KEEP_TOOL_RESULTS,
             )
         )
         # Key 池轮转：优先从 OPENAI_API_KEYS 读取多 Key，回退到单 Key
@@ -148,6 +185,51 @@ class OpenAIClient(BaseClient):
         if len(normalized_text) <= self.tool_result_max_chars:
             return normalized_text
         return normalized_text[: self.tool_result_max_chars] + "...(truncated)"
+
+    @staticmethod
+    def _is_timeout_error(exc: BaseException) -> bool:
+        """Detect asyncio / OpenAI / httpx timeout errors (Round 7 metrics + fail-fast)."""
+        if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
+            return True
+        if type(exc).__name__ in TIMEOUT_ERROR_TYPE_NAMES:
+            return True
+        # Some SDKs wrap timeouts under APIConnectionError / RequestException
+        message = str(exc).lower()
+        return "timeout" in message or "timed out" in message
+
+    def _record_timeout_metric(self, *, http: bool = True) -> None:
+        try:
+            self.task_log.run_metrics.timeout_count += 1
+            if http:
+                self.task_log.run_metrics.http_timeout_count += 1
+        except Exception:
+            pass
+
+    def _record_llm_retry(self) -> None:
+        try:
+            self.task_log.run_metrics.record_llm_retry()
+        except Exception:
+            pass
+
+    def _degrade_messages_for_timeout_retry(
+        self, messages: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Shorter context after timeout: keep fewer tool results, truncate bodies."""
+        keep = max(1, int(self.timeout_degrade_keep_tool_results))
+        degraded = self._remove_tool_result_from_messages(messages, keep)
+        max_chars = max(800, int(self.tool_result_max_chars // 2))
+        for message in degraded:
+            if not isinstance(message, dict):
+                continue
+            role = message.get("role")
+            content = message.get("content")
+            if (
+                role in {"tool", "user"}
+                and isinstance(content, str)
+                and len(content) > max_chars
+            ):
+                message["content"] = content[:max_chars] + "...(timeout-degrade)"
+        return degraded
 
     @staticmethod
     def _stringify_message_field(value: Any) -> str:
@@ -329,6 +411,7 @@ class OpenAIClient(BaseClient):
 
         attempt = 0
         _429_streak = 0  # 连续 429 计数，达到 pool.size 时视为一轮完整失败
+        timeout_degrade_used = False
         while attempt < max_retries:
             params = {
                 "model": request_model_name,
@@ -486,24 +569,6 @@ class OpenAIClient(BaseClient):
                 # This ensures that the complete conversation history is preserved in logs
                 return response, messages_history
 
-            except asyncio.TimeoutError as e:
-                self.task_log.run_metrics.timeout_count += 1
-                if attempt < max_retries - 1:
-                    self.task_log.log_step(
-                        "warning",
-                        "LLM | Timeout Error",
-                        f"Timeout error (attempt {attempt + 1}/{max_retries}): {str(e)}, retrying...",
-                    )
-                    await asyncio.sleep(base_wait_time)
-                    attempt += 1
-                    continue
-                else:
-                    self.task_log.log_step(
-                        "error",
-                        "LLM | Timeout Error",
-                        f"Timeout error after {max_retries} attempts: {str(e)}",
-                    )
-                    raise e
             except asyncio.CancelledError as e:
                 self.task_log.log_step(
                     "error",
@@ -537,20 +602,8 @@ class OpenAIClient(BaseClient):
                 # 一轮完整遍历后所有 Key 均 429，视为一次失败
                 _429_streak = 0
                 attempt += 1
+                self._record_llm_retry()
                 wait_time = self._key_pool.min_cooldown_remaining()
-                if wait_time > 0 and attempt < max_retries:
-                    capped_wait = min(wait_time, 120.0)
-                    self.task_log.log_step(
-                        "warning",
-                        "LLM | All Keys Rate Limited",
-                        f"All {self._key_pool.size} keys rate-limited (attempt {attempt}/{max_retries}), "
-                        f"waiting {capped_wait:.1f}s for cooldown",
-                    )
-                    await asyncio.sleep(capped_wait)
-                    recovered_key = self._key_pool.next_available_key()
-                    if recovered_key:
-                        await self._rotate_client()
-                    continue
                 if attempt >= max_retries:
                     self.task_log.log_step(
                         "error",
@@ -558,7 +611,75 @@ class OpenAIClient(BaseClient):
                         f"All keys exhausted after {max_retries} attempts: {str(e)}",
                     )
                     raise e
+                capped_wait = min(max(wait_time, 0.0), 120.0)
+                if capped_wait > 0:
+                    self.task_log.log_step(
+                        "warning",
+                        "LLM | All Keys Rate Limited",
+                        f"All {self._key_pool.size} keys rate-limited (attempt {attempt}/{max_retries}), "
+                        f"waiting {capped_wait:.1f}s for cooldown",
+                    )
+                    await asyncio.sleep(capped_wait)
+                recovered_key = self._key_pool.next_available_key()
+                if recovered_key:
+                    await self._rotate_client()
+                continue
             except Exception as e:
+                if self._is_timeout_error(e):
+                    self._record_timeout_metric(http=True)
+                    # Round 7 fail-fast: one shorter-context degrade, then stop
+                    # identical timeout retries that burned ~385s on H3 Round 6.
+                    if self.timeout_fail_fast:
+                        if (
+                            not timeout_degrade_used
+                            and agent_type not in SUMMARY_AGENT_TYPES
+                            and agent_type not in VERIFICATION_AGENT_TYPES
+                        ):
+                            timeout_degrade_used = True
+                            self._record_llm_retry()
+                            messages_for_llm = self._degrade_messages_for_timeout_retry(
+                                messages_for_llm
+                            )
+                            self.task_log.log_step(
+                                "warning",
+                                "LLM | Timeout Degrade Retry",
+                                (
+                                    f"Timeout ({type(e).__name__}: {e}); "
+                                    "retrying once with shorter tool context "
+                                    f"(keep≤{self.timeout_degrade_keep_tool_results}), "
+                                    "then fail-fast."
+                                ),
+                            )
+                            await asyncio.sleep(min(base_wait_time, 2.0))
+                            attempt += 1
+                            continue
+                        self.task_log.log_step(
+                            "error",
+                            "LLM | Timeout Error",
+                            (
+                                f"Timeout after fail-fast path "
+                                f"(attempt {attempt + 1}/{max_retries}, "
+                                f"degrade_used={timeout_degrade_used}): {e}"
+                            ),
+                        )
+                        raise e
+                    if attempt < max_retries - 1:
+                        self._record_llm_retry()
+                        self.task_log.log_step(
+                            "warning",
+                            "LLM | Timeout Error",
+                            f"Timeout error (attempt {attempt + 1}/{max_retries}): {e}, retrying...",
+                        )
+                        await asyncio.sleep(base_wait_time)
+                        attempt += 1
+                        continue
+                    self.task_log.log_step(
+                        "error",
+                        "LLM | Timeout Error",
+                        f"Timeout error after {max_retries} attempts: {e}",
+                    )
+                    raise e
+
                 if "Error code: 400" in str(e) and "longer than the model" in str(e):
                     self.task_log.log_step(
                         "error",
@@ -568,6 +689,7 @@ class OpenAIClient(BaseClient):
                     raise e
                 else:
                     if attempt < max_retries - 1:
+                        self._record_llm_retry()
                         self.task_log.log_step(
                             "warning",
                             "LLM | API Error",

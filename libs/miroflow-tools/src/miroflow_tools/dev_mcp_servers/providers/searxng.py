@@ -6,7 +6,7 @@ import asyncio
 import logging
 import os
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 import httpx
 from tenacity import (
@@ -214,9 +214,7 @@ class SearXNGProvider:
                             "SearXNG JSON 响应结构异常，缺少 results 字段。"
                         )
 
-                precheck_ms = int(
-                    (time.perf_counter() - precheck_start) * 1000
-                )
+                precheck_ms = int((time.perf_counter() - precheck_start) * 1000)
                 self._precheck_state.update(
                     {
                         "checked_at": time.monotonic(),
@@ -231,9 +229,7 @@ class SearXNGProvider:
                     precheck_ms,
                 )
             except Exception as exc:
-                precheck_ms = int(
-                    (time.perf_counter() - precheck_start) * 1000
-                )
+                precheck_ms = int((time.perf_counter() - precheck_start) * 1000)
                 self._precheck_state.update(
                     {
                         "checked_at": time.monotonic(),
@@ -248,9 +244,7 @@ class SearXNGProvider:
                 )
                 if isinstance(exc, SearxngPrecheckError):
                     raise
-                raise SearxngPrecheckError(
-                    f"SearXNG 预检失败：{str(exc)}"
-                ) from exc
+                raise SearxngPrecheckError(f"SearXNG 预检失败：{str(exc)}") from exc
 
     # ------------------------------------------------------------------
     # HTTP 请求

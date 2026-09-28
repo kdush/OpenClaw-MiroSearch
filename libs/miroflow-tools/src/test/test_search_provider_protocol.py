@@ -1,7 +1,5 @@
 """SearchProvider 协议接口、数据结构和 Registry 测试。"""
 
-import pytest
-
 from miroflow_tools.dev_mcp_servers.providers.base import (
     SearchParams,
     SearchProvider,
@@ -121,9 +119,7 @@ class _FakeProvider:
 
     async def search(self, params):
         return [
-            SearchResult(
-                position=1, title="fake", link="https://fake.com", snippet=""
-            )
+            SearchResult(position=1, title="fake", link="https://fake.com", snippet="")
         ], {"provider": self._name}
 
 
@@ -180,6 +176,22 @@ class TestProviderRegistry:
         # 只配置 serper，serpapi 应被追加
         resolved = reg.resolve_order("serper")
         assert resolved == ["serper", "serpapi"]
+
+    def test_resolve_order_strict_does_not_append(self):
+        reg = ProviderRegistry()
+        reg.register(_FakeProvider("serper", available=True))
+        reg.register(_FakeProvider("serpapi", available=True))
+        reg.register(_FakeProvider("searxng", available=True))
+        # searxng-only: 严禁把 serper/serpapi 追加进来
+        resolved = reg.resolve_order("searxng", strict=True)
+        assert resolved == ["searxng"]
+
+    def test_resolve_order_strict_filters_unavailable(self):
+        reg = ProviderRegistry()
+        reg.register(_FakeProvider("serper", available=True))
+        reg.register(_FakeProvider("searxng", available=False))
+        resolved = reg.resolve_order("searxng", strict=True)
+        assert resolved == []
 
     def test_duplicate_register_overwrites(self):
         reg = ProviderRegistry()

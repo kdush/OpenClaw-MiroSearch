@@ -29,6 +29,9 @@ MIN_VERIFICATION_SEARCH_ROUNDS = 1
 MAX_VERIFICATION_SEARCH_ROUNDS = 8
 
 
+VALID_RESEARCH_INTENSITIES = ("light", "standard", "deep")
+
+
 class ResearchRequest(BaseModel):
     """POST /v1/research 请求体。
 
@@ -54,6 +57,10 @@ class ResearchRequest(BaseModel):
     output_detail_level: Optional[str] = Field(
         default=None,
         description="输出篇幅档位",
+    )
+    research_intensity: Optional[str] = Field(
+        default=None,
+        description="研究强度：light / standard / deep（可选，默认 standard）",
     )
     caller_id: Optional[str] = Field(
         default=None, description="调用方 ID，用于定向取消"
@@ -114,6 +121,18 @@ class ResearchRequest(BaseModel):
             )
         return normalized
 
+    @field_validator("research_intensity")
+    @classmethod
+    def validate_research_intensity(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        normalized = v.strip().lower()
+        if normalized not in VALID_RESEARCH_INTENSITIES:
+            raise ValueError(
+                f"research_intensity must be one of {VALID_RESEARCH_INTENSITIES}, got '{v}'"
+            )
+        return normalized
+
     @field_validator("caller_id")
     @classmethod
     def validate_caller_id(cls, v: Optional[str]) -> Optional[str]:
@@ -163,6 +182,17 @@ class ErrorResponse(BaseModel):
 # ---- 新增任务状态模型 ----
 
 
+class EffectiveConfig(BaseModel):
+    """实际生效的配置（记录任务真正使用的参数）。"""
+
+    mode: str
+    search_profile: str
+    search_result_num: int
+    verification_min_search_rounds: int
+    output_detail_level: str
+    research_intensity: Optional[str] = None
+
+
 class ResearchTaskMeta(BaseModel):
     """任务元数据。"""
 
@@ -175,6 +205,8 @@ class ResearchTaskMeta(BaseModel):
     search_result_num: int = 20
     verification_min_search_rounds: int = 3
     output_detail_level: str = "detailed"
+    research_intensity: Optional[str] = None
+    effective_config: Optional[EffectiveConfig] = None
     created_at: float = 0.0
     started_at: Optional[float] = None
     finished_at: Optional[float] = None

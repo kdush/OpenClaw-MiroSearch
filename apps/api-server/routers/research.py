@@ -77,7 +77,17 @@ async def create_research(
         search_result_num=req.search_result_num,
         verification_min_search_rounds=req.verification_min_search_rounds,
         output_detail_level=req.output_detail_level,
+        research_intensity=req.research_intensity,
     )
+
+    effective_config_dict = {
+        "mode": effective.mode,
+        "search_profile": effective.search_profile,
+        "search_result_num": effective.search_result_num,
+        "verification_min_search_rounds": effective.verification_min_search_rounds,
+        "output_detail_level": effective.output_detail_level,
+        "research_intensity": effective.research_intensity,
+    }
 
     # 结果缓存检查：纳入会改变检索深度（从而改变结论）的参数，避免误命中
     cache_key = ResultCache.make_key(
@@ -91,6 +101,7 @@ async def create_research(
             if effective.mode == "verified"
             else None
         ),
+        research_intensity=effective.research_intensity,
     )
     cached = None
     cached_quality = None
@@ -114,6 +125,7 @@ async def create_research(
             status=TaskStatus.CACHED,
             caller_id=req.caller_id or "",
             query=req.query,
+            effective_config=effective_config_dict,
             **effective.as_dict(),
         )
         await task_store.append_event(task_id, "final_output", {"markdown": cached})
@@ -132,6 +144,7 @@ async def create_research(
         status=TaskStatus.QUEUED,
         caller_id=req.caller_id or "",
         query=req.query,
+        effective_config=effective_config_dict,
         **effective.as_dict(),
     )
 

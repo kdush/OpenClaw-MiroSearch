@@ -1,0 +1,131 @@
+/* Search & scrape cards */
+    /* ===== Search Results Card ===== */
+    .search-card {
+        background: rgba(6, 10, 20, 0.62);
+        border: 1px solid rgba(140, 170, 220, 0.14);
+        border-radius: 12px;
+        margin: 16px 0;
+        overflow: hidden;
+        backdrop-filter: blur(14px) saturate(1.05);
+        -webkit-backdrop-filter: blur(14px) saturate(1.05);
+        box-shadow: 0 10px 36px rgba(0, 0, 0, 0.4);
+    }
+    
+    .search-header {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 14px 18px;
+        background: rgba(4, 8, 16, 0.55);
+        border-bottom: 1px solid rgba(140, 170, 220, 0.1);
+    }
+    
+    .search-icon {
+        font-size: 1em;
+        color: #7dd3fc;
+    }
+    
+    .search-query {
+        font-size: 0.9em;
+        color: #e8eef8;
+        font-weight: 500;
+    }
+    
+    .search-count {
+        padding: 10px 18px;
+        font-size: 0.8em;
+        color: #9eb0cc;
+        background: rgba(4, 8, 16, 0.45);
+        border-bottom: 1px solid rgba(140, 170, 220, 0.08);
+    }
+    
+    .search-results {
+        padding: 8px 0;
+    }
+    
+    .search-result-item {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 12px 18px;
+        text-decoration: none;
+        color: #3f3f46;
+        font-size: 0.9em;
+        transition: background 0.15s;
+        border-left: 3px solid transparent;
+    }
+    
+    .search-result-item:hover {
+        background: #f9fafb;
+        border-left-color: #10b981;
+    }
+    
+    .result-icon {
+        font-size: 1em;
+        flex-shrink: 0;
+        opacity: 0.6;
+    }
+    
+    .result-title {
+        flex: 1;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    
+    /* ===== Scrape Card ===== */
+    .scrape-card {
+        background: var(--panel-bg-solid);
+        border: 1px solid var(--glass-border);
+        border-radius: 10px;
+        margin: 12px 0;
+        padding: 12px 16px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+    }
+    
+    .scrape-card.scrape-error {
+        border-color: #fecaca;
+        background: #fef2f2;
+    }
+    
+    .scrape-header {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex: 1;
+        min-width: 0;
+    }
+    
+    .scrape-icon {
+        font-size: 1em;
+        opacity: 0.6;
+    }
+    
+    .scrape-url {
+        font-size: 0.85em;
+        color: #52525b;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    
+    .scrape-status {
+        font-size: 0.8em;
+        padding: 4px 10px;
+        border-radius: 6px;
+        flex-shrink: 0;
+    }
+    
+    .scrape-status.success {
+        background: #ecfdf5;
+        color: #059669;
+    }
+    
+    .scrape-status.error {
+        background: #fef2f2;
+        color: #dc2626;
+    }
+    

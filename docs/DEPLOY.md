@@ -83,6 +83,10 @@ For networks with reliable access to multiple configured providers, use
 docker compose --env-file .env.compose up -d --build
 ```
 
+Compose project name stays `openclaw-mirosearch` (`name:` in `compose.yaml` / `compose.host-network.yaml`). Image tags may be `diting:latest`, but **do not** rename the Compose project to `diting`: that creates a second stack and a new `diting_valkey-data` volume, fights the old stack for ports, and loses prior task/cache data.
+
+If a `diting` stack was started by mistake: `docker compose -p diting down` (delete volumes only when unused), then start again with the default project name. Valkey data is not migrated automatically.
+
 The default published addresses are:
 
 | Service | Address |
@@ -96,7 +100,6 @@ values can be changed through `APP_PORT`, `API_PORT`, and
 `SEARXNG_HOST_PORT`.
 
 ## Verify the deployment
-
 ```bash
 docker compose ps
 docker compose logs --tail=100 api worker

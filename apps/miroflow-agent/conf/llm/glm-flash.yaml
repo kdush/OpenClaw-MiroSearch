@@ -1,0 +1,19 @@
+# conf/llm/glm-flash.yaml - Zhipu GLM flash via OpenAI-compatible API
+defaults:
+  - default
+  - _self_
+
+provider: "openai"
+model_name: "glm-5.3-flash"
+async_client: true
+temperature: 0.3
+top_p: 1.0
+max_tokens: 8192
+max_context_length: 128000
+base_url: "https://open.bigmodel.cn/api/coding/paas/v4"
+api_key: ""
+# Round 7: tighter LLM path (wall-clock) — fail-fast timeout + fewer identical retries
+max_retries: 2
+retry_wait_seconds: 2.0
+timeout_fail_fast: true
+timeout_degrade_keep_tool_results: 2

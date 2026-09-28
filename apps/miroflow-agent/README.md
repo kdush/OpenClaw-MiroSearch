@@ -1,4 +1,4 @@
-# OpenClaw-MiroSearch Agent Core
+# Diting Agent Core
 
 本目录是核心 Agent 运行层。
 

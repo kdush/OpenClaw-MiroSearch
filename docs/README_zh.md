@@ -34,7 +34,7 @@
 
 ## 集成包
 
-- [OpenClaw-MiroSearch Skill](../skills/openclaw-mirosearch/SKILL.md)
+- [Diting Skill](../skills/diting/SKILL.md)
 - [SearXNG Skill](../skills/searxng/SKILL.md)
 
 ## 历史设计记录

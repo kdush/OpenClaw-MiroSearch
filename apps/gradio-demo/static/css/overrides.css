@@ -1,0 +1,145 @@
+/* Theme polish & Soft overrides */
+    /* ===== Aesthetic polish: document + compact emphasis ===== */
+    #layout-shell {
+        gap: 4px !important;
+    }
+    .report-glance-body p,
+    .report-glance-body {
+        color: #e2e8f0 !important;
+    }
+    #log-view hr,
+    #log-view .prose hr {
+        border: none !important;
+        border-top: 1px solid rgba(148, 163, 184, 0.12) !important;
+        margin: 1.25em 0 !important;
+    }
+    #top-utility-bar {
+        padding: 10px 16px 0 !important;
+    }
+    .skills-top-link {
+        color: #7dd3fc !important;
+        font-weight: 500 !important;
+    }
+    .skills-top-link:hover {
+        color: #bae6fd !important;
+    }
+    #output-section {
+        max-width: 680px !important;
+        margin: 28px auto 0 !important;
+    }
+    /* Kill leftover hard boxes on progress empty state */
+    .progress-empty-wrap {
+        background: transparent !important;
+        min-height: 100px !important;
+        padding: 8px 0 16px !important;
+    }
+
+
+    /* ===== Soft leftovers: pin dark — do not fight Soft light rules ===== */
+    :root, .dark, .gradio-container, .gradio-container.dark {
+        --checkbox-label-background-fill: rgba(15, 23, 42, 0.88) !important;
+        --checkbox-label-background-fill-hover: rgba(30, 41, 59, 0.95) !important;
+        --checkbox-label-background-fill-selected: rgba(14, 165, 233, 0.78) !important;
+        --checkbox-label-text-color: #cbd5e1 !important;
+        --checkbox-label-text-color-selected: #f8fafc !important;
+        --checkbox-label-border-color: rgba(148, 163, 184, 0.22) !important;
+        --checkbox-label-border-color-hover: rgba(148, 163, 184, 0.35) !important;
+        --checkbox-label-border-color-selected: rgba(56, 189, 248, 0.55) !important;
+        --block-info-text-color: #e2e8f0 !important;
+        --block-label-text-color: #e2e8f0 !important;
+    }
+
+    #settings-modal [data-testid="block-info"]{
+        background: transparent !important;
+        color: #e2e8f0 !important;
+        font-weight: 650 !important;
+        font-size: 0.92em !important;
+        letter-spacing: 0.01em !important;
+        padding: 0 0 4px !important;
+        margin: 0 !important;
+        border: none !important;
+        border-radius: 0 !important;
+        box-shadow: none !important;
+        display: block !important;
+        -webkit-line-clamp: unset !important;
+        overflow: visible !important;
+    }
+
+    /* Radios: unselected chips must stay visible on the dark card; the
+       gradient pill alone communicates selection, so the native radio dot
+       is visually hidden but kept focusable for keyboard users. */
+    #output-detail-level-selector label {
+        background: rgba(51, 65, 85, 0.55) !important;
+        color: #cbd5e1 !important;
+        border: 1px solid rgba(148, 163, 184, 0.3) !important;
+        border-radius: 10px !important;
+        box-shadow: none !important;
+        transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease !important;
+    }
+    #output-detail-level-selector label:hover {
+        background: rgba(65, 82, 110, 0.65) !important;
+        border-color: rgba(56, 189, 248, 0.5) !important;
+        color: #e2e8f0 !important;
+    }
+    #output-detail-level-selector label.selected {
+        background: linear-gradient(135deg, rgba(14, 165, 233, 0.9), rgba(34, 211, 238, 0.8)) !important;
+        color: #06222c !important;
+        border-color: transparent !important;
+        font-weight: 600 !important;
+    }
+    #output-detail-level-selector .wrap {
+        background: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
+        display: flex !important;
+        flex-wrap: wrap !important;
+        gap: 8px !important;
+    }
+    #output-detail-level-selector input[type="radio"] {
+        position: absolute !important;
+        width: 1px !important;
+        height: 1px !important;
+        padding: 0 !important;
+        margin: 0 !important;
+        opacity: 0 !important;
+        pointer-events: none !important;
+    }
+    #output-detail-level-selector label:has(input[type="radio"]:focus-visible) {
+        outline: 2px solid rgba(34, 211, 238, 0.6) !important;
+        outline-offset: 2px !important;
+    }
+
+    /* Document-style process fold / log-view: never light Gradio leftover wash */
+    #log-view,
+    #log-view .block,
+    #log-view .solid,
+    #log-view .prose,
+    #log-view .md,
+    #log-view .process-details,
+    #log-view .thought-card,
+    #log-view .tool-card,
+    #log-view .search-step-board {
+        background: transparent !important;
+        background-color: transparent !important;
+        box-shadow: none !important;
+    }
+    #log-view .process-details {
+        border: 1px solid rgba(148, 163, 184, 0.16) !important;
+        border-radius: 10px !important;
+        padding: 0 !important;
+    }
+    #log-view .process-details > summary,
+    #log-view .thought-card > summary,
+    #log-view .tool-header {
+        color: #94a3b8 !important;
+        background: transparent !important;
+    }
+    #log-view .report-glance-body,
+    #log-view .report-glance-body p {
+        color: #e2e8f0 !important;
+        font-weight: 650 !important;
+    }
+
+    #gr-task-id-bridge { position: absolute !important; left: -9999px !important; top: -9999px !important; width: 1px !important; height: 1px !important; opacity: 0 !important; pointer-events: none !important; }
+
+    /* 宽屏：报告区放宽到 960，让表格/图表有横向空间；正文段落另设 42em 上限保住阅读行宽 */

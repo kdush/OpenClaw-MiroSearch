@@ -1,0 +1,309 @@
+    /* ========== MiroThinker - Deep Space / Cosmic Dark ========== */
+    
+    /* Base tokens — also on :root so html/body wash can resolve vars */
+    :root, .gradio-container {
+        --app-bg: #000208;
+        --app-bg-elevated: #060a14;
+        --panel-bg: rgba(6, 10, 20, 0.72);
+        --panel-bg-solid: rgba(6, 10, 20, 0.78);
+        --panel-border: rgba(140, 170, 220, 0.14);
+        --panel-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+        --glass-bg: rgba(6, 10, 20, 0.55);
+        --glass-border: rgba(140, 170, 220, 0.16);
+        --ink-strong: #e8eef8;
+        --ink-body: #c5d0e2;
+        --ink-soft: #8b9bb8;
+        --accent: #7dd3fc;
+        --accent-strong: #38bdf8;
+        --accent-soft: rgba(56, 189, 248, 0.14);
+        --accent-emerald: #34d399;
+        --btn-gray: rgba(6, 10, 20, 0.72);
+        --btn-gray-hover: rgba(12, 18, 36, 0.85);
+        --icon-muted: #9eb0cc;
+        --icon-accent: #7dd3fc;
+        --focus-ring: 0 0 0 2px rgba(125, 211, 252, 0.35);
+        --search-pill-bg: rgba(8, 12, 24, 0.72);
+        --search-pill-border: rgba(140, 170, 220, 0.22);
+        --search-pill-glow: 0 0 0 1px rgba(56, 189, 248, 0.06), 0 10px 36px rgba(0, 0, 0, 0.45);
+        /* Soft theme still ships light checkbox-label fills — pin dark tokens */
+        --checkbox-label-background-fill: rgba(8, 14, 32, 0.92);
+        --checkbox-label-background-fill-hover: rgba(14, 22, 44, 0.95);
+        --checkbox-label-background-fill-selected: rgba(14, 165, 233, 0.78);
+        --checkbox-label-text-color: #cbd5e1;
+        --checkbox-label-text-color-selected: #f8fafc;
+        --checkbox-label-border-color: rgba(148, 163, 184, 0.22);
+        --checkbox-label-border-color-hover: rgba(148, 163, 184, 0.35);
+        --checkbox-label-border-color-selected: rgba(56, 189, 248, 0.55);
+        --block-info-text-color: #e2e8f0;
+        --block-label-text-color: #e2e8f0;
+        max-width: 100% !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        font-family: __LOCAL_FONT_FAMILY_STACK__ !important;
+        background: transparent !important;
+        color: var(--ink-body);
+        min-height: 100vh;
+        position: relative;
+        z-index: 1;
+    }
+
+    .gradio-container::before {
+        display: none;
+    }
+
+    /* Deep void base — near-black; nebulae stay local so most of the canvas is empty space */
+    html, body {
+        background: #000208 !important;
+        color: #c5d0e2 !important;
+    }
+    body {
+        background:
+            radial-gradient(800px 440px at 12% 8%, rgba(56, 20, 110, 0.18), transparent 62%),
+            radial-gradient(920px 500px at 88% 4%, rgba(10, 50, 110, 0.15), transparent 60%),
+            radial-gradient(720px 400px at 48% 96%, rgba(18, 36, 90, 0.13), transparent 64%),
+            radial-gradient(540px 300px at 40% 36%, rgba(40, 120, 200, 0.05), transparent 55%),
+            #000208 !important;
+        background-attachment: fixed !important;
+    }
+    .gradio-container, .main, .wrap, .app,
+    #layout-shell, .hero-section-parent, .hero-wrap,
+    #main-content-column, #top-utility-bar {
+        background: transparent !important;
+        color: var(--ink-body, #c5d0e2) !important;
+    }
+    .gradio-container {
+        position: relative !important;
+        z-index: 1 !important;
+    }
+    #bg-particles {
+        z-index: 0 !important;
+    }
+
+    /* Thin dark scrollbar — default OS bar breaks the void look */
+    * {
+        scrollbar-width: thin;
+        scrollbar-color: rgba(120, 150, 190, 0.32) transparent;
+    }
+    *::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
+    }
+    *::-webkit-scrollbar-track {
+        background: transparent;
+    }
+    *::-webkit-scrollbar-thumb {
+        background: rgba(120, 150, 190, 0.28);
+        border-radius: 999px;
+    }
+    *::-webkit-scrollbar-thumb:hover {
+        background: rgba(140, 170, 220, 0.42);
+    }
+
+    /* 强力清除 Gradio 默认包装盒的丑陋背景与边框 */
+    .gradio-container .form,
+    .gradio-container fieldset,
+    #main-content-column .form,
+    #settings-modal .form,
+    #input-section .block,
+    #input-section .solid,
+    #settings-modal .block,
+    #settings-modal .solid {
+        background: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
+    }
+
+    /* ===== Search home (void glass capsule) ===== */
+    /* 搜索行：右侧操作图标叠在输入框内（绝对定位），行内只剩输入框占满整行，
+       窄屏不再出现「按钮换行」。半透明玻璃胶囊 + 悬停抬升。 */
+    #input-section {
+        position: relative !important;
+        background: transparent !important;
+        border: none !important;
+        border-radius: 0 !important;
+        box-shadow: none !important;
+        padding: 0 !important;
+        margin: 0 auto 12px !important;
+        width: 100% !important;
+        max-width: 584px !important;
+    }
+
+    #input-section #question-input {
+        flex: 1 1 auto !important;
+        min-width: 0 !important;
+    }
+
+    #input-section #question-input,
+    #input-section #question-input .block,
+    #input-section #question-input .solid {
+        background: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
+    }
+
+    /* 深空玻璃胶囊：半透明蓝黑底 + 细星光边，贴合宇宙背景 */
+    #input-section #question-input textarea,
+    #input-section textarea {
+        background: var(--search-pill-bg) !important;
+        border: 1px solid var(--search-pill-border) !important;
+        border-radius: 28px !important;
+        min-height: 52px !important;
+        max-height: 140px !important;
+        /* 右侧留出两个 36px 图标位，文字不会钻到图标下面 */
+        padding: 14px 96px 14px 24px !important;
+        font-size: 16px !important;
+        line-height: 1.5 !important;
+        color: #e8eef8 !important;
+        box-shadow: var(--search-pill-glow) !important;
+        backdrop-filter: blur(14px) saturate(1.15);
+        -webkit-backdrop-filter: blur(14px) saturate(1.15);
+        resize: none !important;
+        text-align: left !important;
+        transition: box-shadow 0.18s ease, border-color 0.18s ease, background 0.18s ease !important;
+    }
+
+    #input-section #question-input textarea::placeholder,
+    #input-section textarea::placeholder {
+        color: #8b9bb8 !important;
+        opacity: 1 !important;
+    }
+
+    #input-section #question-input textarea:hover,
+    #input-section textarea:hover {
+        border-color: rgba(140, 170, 220, 0.34) !important;
+        background: rgba(10, 14, 28, 0.82) !important;
+        box-shadow:
+            0 0 0 1px rgba(56, 189, 248, 0.08),
+            0 12px 40px rgba(0, 0, 0, 0.5) !important;
+    }
+
+    #input-section #question-input textarea:focus,
+    #input-section textarea:focus {
+        border-color: rgba(125, 211, 252, 0.4) !important;
+        box-shadow:
+            0 0 0 1px rgba(56, 189, 248, 0.12),
+            0 0 24px rgba(56, 189, 248, 0.1),
+            0 12px 40px rgba(0, 0, 0, 0.55) !important;
+        background: rgba(10, 14, 28, 0.88) !important;
+        outline: none !important;
+    }
+
+    /* 图标按钮组：贴输入框内部右端，相对输入框几何中心水平/垂直居中。
+       Gradio 给每个 block 子项压了 min-width: min(160px, 100%)，不放开的话行宽
+       至少 160px，按钮会从行左端排布、离右端差出一大截。 */
+    #btn-row {
+        position: absolute !important;
+        right: 10px !important;
+        top: 0 !important;
+        bottom: 0 !important;
+        transform: none !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        gap: 2px !important;
+        width: auto !important;
+        min-width: 0 !important;
+        max-width: none !important;
+        height: auto !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        z-index: 3 !important;
+        border: none !important;
+        background: transparent !important;
+    }
+
+    #btn-row > * {
+        flex: 0 0 auto !important;
+        min-width: 0 !important;
+    }
+
+    /* 图标化：36×36 圆形幽灵按钮。文字用 font-size:0 收起，
+       文案仍留在 DOM 里——无障碍名与悬停提示都取自它，不新增文案 key。
+       ::before 绝对居中，避免 Gradio 文本节点把图标挤偏。 */
+    #btn-row button {
+        position: relative !important;
+        display: inline-flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        width: 36px !important;
+        min-width: 36px !important;
+        max-width: 36px !important;
+        height: 36px !important;
+        min-height: 36px !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        font-size: 0 !important;
+        line-height: 0 !important;
+        letter-spacing: 0 !important;
+        border-radius: 50% !important;
+        border: none !important;
+        box-shadow: none !important;
+        transform: none !important;
+        background: transparent !important;
+        background-image: none !important;
+        color: #9eb0cc !important;
+        transition: background 0.15s ease, color 0.15s ease !important;
+    }
+
+    #btn-row button::before {
+        position: absolute !important;
+        left: 50% !important;
+        top: 50% !important;
+        transform: translate(-50%, -50%) !important;
+        margin: 0 !important;
+        flex: none !important;
+    }
+
+    /* 放大镜视觉重心偏左上：多挪一点做光学居中 */
+    #btn-row #run-btn::before {
+        transform: translate(calc(-50% + 1.5px), calc(-50% + 1.5px)) !important;
+    }
+    #btn-row #settings-open-btn::before {
+        transform: translate(-50%, calc(-50% + 0.5px)) !important;
+    }
+
+    #btn-row button:hover {
+        background: rgba(148, 180, 230, 0.12) !important;
+        color: #e8eef8 !important;
+    }
+
+    #btn-row button:focus-visible {
+        outline: 2px solid rgba(125, 211, 252, 0.7) !important;
+        outline-offset: 1px !important;
+    }
+
+    /* ID 选择器压过 Gradio primary/secondary 默认底色；悬停再各自强调 */
+    #run-btn,
+    #stop-btn,
+    #settings-open-btn {
+        background: transparent !important;
+        background-image: none !important;
+        border: none !important;
+        box-shadow: none !important;
+        color: #9eb0cc !important;
+    }
+
+    #run-btn:hover {
+        color: #7dd3fc !important;
+        background: rgba(125, 211, 252, 0.14) !important;
+        background-image: none !important;
+    }
+
+    #stop-btn:hover {
+        background: rgba(248, 113, 113, 0.14) !important;
+        background-image: none !important;
+        color: #f28b82 !important;
+    }
+
+    #settings-open-btn:hover {
+        color: #e8eef8 !important;
+        background: rgba(148, 180, 230, 0.12) !important;
+        background-image: none !important;
+    }
+
+    /* 开始/停止互斥显示：状态机已用 interactive 精确表达互斥，这里把不可用的那个收起 */
+    #run-btn[disabled],
+    #stop-btn[disabled] {
+        display: none !important;
+    }
+

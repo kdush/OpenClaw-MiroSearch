@@ -50,6 +50,7 @@ class TestResolveEffectiveResearchParams:
             "search_result_num": 30,
             "verification_min_search_rounds": 7,
             "output_detail_level": "compact",
+            "research_intensity": "standard",
         }
 
     def test_non_verified_mode_uses_effective_default_rounds(self, monkeypatch):
@@ -221,6 +222,12 @@ class TestBuildSearchEnv:
         assert env["SEARCH_PROVIDER_MODE"] == "parallel_conf_fallback"
         assert "SEARCH_CONFIDENCE_ENABLED" in env
         assert env["SEARCH_RESULT_NUM"] == "20"
+
+    def test_searxng_only_is_strict(self):
+        env = pr.build_search_env("searxng-only", 15)
+        assert env["SEARCH_PROVIDER_ORDER"] == "searxng"
+        assert env["SEARCH_PROVIDER_MODE"] == "fallback"
+        assert env["SEARCH_PROVIDER_ORDER_STRICT"] == "1"
 
     def test_unknown_profile_falls_back_to_searxng_first(self):
         # build_search_env 不做 normalize，但参数缺失会兜底（用于内部调用）

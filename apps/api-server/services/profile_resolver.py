@@ -24,8 +24,13 @@ from models import (
     MIN_VERIFICATION_SEARCH_ROUNDS,
     VALID_MODES,
     VALID_OUTPUT_DETAIL_LEVELS,
+    VALID_RESEARCH_INTENSITIES,
     VALID_SEARCH_PROFILES,
     VALID_SEARCH_RESULT_NUMS,
+)
+from src.config.search_policy import (
+    apply_explicit_budget_overrides,
+    apply_user_search_env_precedence,
 )
 
 logger = logging.getLogger("api-server.profile_resolver")
@@ -35,6 +40,7 @@ SAFE_DEFAULT_SEARCH_PROFILE = "searxng-first"
 SAFE_DEFAULT_SEARCH_RESULT_NUM = 20
 SAFE_DEFAULT_VERIFICATION_MIN_SEARCH_ROUNDS = 3
 SAFE_DEFAULT_OUTPUT_DETAIL_LEVEL = "detailed"
+SAFE_DEFAULT_RESEARCH_INTENSITY = "standard"
 
 
 # ---- 基础工具 ----------------------------------------------------------
@@ -181,6 +187,14 @@ def _default_output_detail_level() -> str:
     )
 
 
+def _default_research_intensity() -> str:
+    return _env_choice(
+        "DEFAULT_RESEARCH_INTENSITY",
+        SAFE_DEFAULT_RESEARCH_INTENSITY,
+        VALID_RESEARCH_INTENSITIES,
+    )
+
+
 # ---- 模型名读取（与 demo 完全一致） --------------------------------------
 def _default_model_name() -> str:
     return _env_non_empty("DEFAULT_MODEL_NAME", "gpt-4o-mini")
@@ -243,6 +257,8 @@ SEARCH_PROFILE_ENV_MAP: Dict[str, Dict[str, str]] = {
     "searxng-only": {
         "SEARCH_PROVIDER_ORDER": "searxng",
         "SEARCH_PROVIDER_MODE": "fallback",
+        # 禁止 resolve_order 把 serper 等其它可用源追加进来，否则「only」失效
+        "SEARCH_PROVIDER_ORDER_STRICT": "1",
     },
 }
 
@@ -259,6 +275,7 @@ class EffectiveResearchParams:
     search_result_num: int
     verification_min_search_rounds: int
     output_detail_level: str
+    research_intensity: str
 
     def as_dict(self) -> Dict[str, object]:
         """返回适合构造 TaskPayload / RequestLike 的参数字典。"""
@@ -268,6 +285,7 @@ class EffectiveResearchParams:
             "search_result_num": self.search_result_num,
             "verification_min_search_rounds": (self.verification_min_search_rounds),
             "output_detail_level": self.output_detail_level,
+            "research_intensity": self.research_intensity,
         }
 
 
@@ -336,12 +354,24 @@ def normalize_output_detail_level(level: Optional[str]) -> str:
     return resolved_default
 
 
+def normalize_research_intensity(intensity: Optional[str]) -> str:
+    resolved_default = _default_research_intensity()
+    if intensity is None:
+        return resolved_default
+    normalized = str(intensity).strip().lower()
+    if normalized in VALID_RESEARCH_INTENSITIES:
+        return normalized
+    logger.warning("未知研究强度 %s，回退到 %s", intensity, resolved_default)
+    return resolved_default
+
+
 def resolve_effective_research_params(
     mode: Optional[str] = None,
     search_profile: Optional[str] = None,
     search_result_num: Optional[int] = None,
     verification_min_search_rounds: Optional[int] = None,
     output_detail_level: Optional[str] = None,
+    research_intensity: Optional[str] = None,
 ) -> EffectiveResearchParams:
     """将请求值与部署默认值合并为唯一一套有效参数。
 
@@ -358,6 +388,7 @@ def resolve_effective_research_params(
             verification_min_search_rounds,
         ),
         output_detail_level=normalize_output_detail_level(output_detail_level),
+        research_intensity=normalize_research_intensity(research_intensity),
     )
 
 
@@ -598,11 +629,97 @@ def combine_detail_and_mode_overrides(
 
 # ---- 顶层聚合 ----------------------------------------------------------
 def build_search_env(profile: str, result_num: int) -> Dict[str, str]:
-    base = dict(
+    base = apply_user_search_env_precedence(
         SEARCH_PROFILE_ENV_MAP.get(profile, SEARCH_PROFILE_ENV_MAP["searxng-first"])
     )
     base["SEARCH_RESULT_NUM"] = str(result_num)
     return base
+
+
+def _scale_int_override(
+    override: str, factor: float, low: Optional[int], high: Optional[int]
+) -> str:
+    """缩放 ``key=N`` 形式的整型 override，并按上下界裁剪；无法解析则原样返回。"""
+    name, _, raw = override.partition("=")
+    try:
+        scaled = int(int(raw) * factor)
+    except ValueError:
+        return override
+    if low is not None:
+        scaled = max(low, scaled)
+    if high is not None:
+        scaled = min(high, scaled)
+    return f"{name}={scaled}"
+
+
+def apply_intensity_adjustments(
+    overrides: List[str], intensity: str, mode: str
+) -> List[str]:
+    """根据研究强度调整预算参数。
+
+    light: 减少搜索轮次、降低max_turns，倾向快速简洁结果
+    standard: 默认设置，不调整
+    deep: 增加搜索轮次、提高max_turns，鼓励深度追踪
+    """
+    if intensity == "standard":
+        return overrides
+
+    # (override 关键字, 需要的 mode, 缩放系数, 下界, 上界)
+    if intensity == "light":
+        scales = (
+            ("main_agent.max_turns", None, 0.7, 5, None),
+            (
+                "verification.min_search_rounds",
+                "verified",
+                0.75,
+                MIN_VERIFICATION_SEARCH_ROUNDS,
+                None,
+            ),
+        )
+    elif intensity == "deep":
+        scales = (
+            ("main_agent.max_turns", None, 1.5, None, 30),
+            (
+                "verification.min_search_rounds",
+                "verified",
+                1.3,
+                None,
+                MAX_VERIFICATION_SEARCH_ROUNDS,
+            ),
+        )
+    else:
+        scales = ()
+
+    adjusted = []
+    for override in overrides:
+        key = _hydra_override_key(override)
+        for needle, required_mode, factor, low, high in scales:
+            if needle in key and (required_mode is None or mode == required_mode):
+                override = _scale_int_override(override, factor, low, high)
+                break
+        adjusted.append(override)
+
+    if intensity == "deep":
+        adjusted.append("++agent.enable_lead_tracking=true")
+        # Round 6 deep efficiency: clue Top-K=2, scrape budget, early-stop
+        adjusted.append("++agent.max_lead_follow_ups=2")
+        adjusted.append("++agent.max_scrape_per_task=8")
+        adjusted.append("++agent.deep_early_stop_on_agreement=true")
+        adjusted.append("++agent.parallel_tool_calls=true")
+        # Round 7: LLM-path wall-clock — exit after early-stop + single summary
+        adjusted.append("++agent.deep_exit_on_early_stop=true")
+        adjusted.append("++agent.deep_post_early_stop_turns=1")
+        adjusted.append("++agent.max_final_answer_retries=1")
+        # Round 8: oneshot skeleton final report + capped summary context
+        adjusted.append("++agent.oneshot_final_report=true")
+        adjusted.append("++agent.summary_keep_tool_result=2")
+        adjusted.append("++agent.summary_max_tokens_cap=4096")
+        adjusted.append("++llm.summary_max_tokens=4096")
+    elif intensity == "light":
+        adjusted.append("++agent.enable_lead_tracking=false")
+        adjusted.append("++agent.max_scrape_per_task=4")
+
+    return adjusted
 
 
 def build_full_overrides(
@@ -611,6 +728,7 @@ def build_full_overrides(
     search_result_num: Optional[int],
     verification_min_search_rounds: Optional[int],
     output_detail_level: Optional[str],
+    research_intensity: Optional[str] = None,
 ) -> Tuple[Dict[str, str], List[str]]:
     """根据请求参数构建 (search_env_dict, hydra_overrides_list)。
 
@@ -622,6 +740,7 @@ def build_full_overrides(
         search_result_num=search_result_num,
         verification_min_search_rounds=verification_min_search_rounds,
         output_detail_level=output_detail_level,
+        research_intensity=research_intensity,
     )
 
     search_env = build_search_env(
@@ -639,4 +758,12 @@ def build_full_overrides(
             "agent.verification.min_search_rounds="
             f"{effective.verification_min_search_rounds}"
         )
+
+    overrides = apply_intensity_adjustments(
+        overrides, effective.research_intensity, effective.mode
+    )
+    overrides = apply_explicit_budget_overrides(overrides)
+
+    overrides.append(f"++agent.research_intensity={effective.research_intensity}")
+
     return search_env, overrides

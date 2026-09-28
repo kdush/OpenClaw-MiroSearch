@@ -1,0 +1,165 @@
+/* Summary & code blocks */
+    /* ===== Final Summary Section ===== */
+    .final-summary-divider {
+        height: 1px;
+        background: linear-gradient(to right, transparent, #e5e5e5, transparent);
+        margin: 32px 0;
+    }
+    
+    .final-summary-section {
+        background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
+        border: 1px solid #e2e8f0;
+        border-radius: 16px;
+        padding: 24px;
+        margin-top: 16px;
+    }
+    
+    .final-summary-header {
+        font-size: 1.1em;
+        font-weight: 600;
+        color: #1e293b;
+        margin-bottom: 16px;
+        padding-bottom: 12px;
+        border-bottom: 2px solid #3b82f6;
+        display: inline-block;
+    }
+    
+    .final-summary-content {
+        color: #334155;
+        line-height: 1.8;
+    }
+    
+    .final-summary-content h1,
+    .final-summary-content h2,
+    .final-summary-content h3 {
+        color: #1e293b;
+        margin-top: 1.5em;
+        margin-bottom: 0.5em;
+    }
+    
+    .final-summary-content h1 { font-size: 1.4em; }
+    .final-summary-content h2 { font-size: 1.2em; }
+    .final-summary-content h3 { font-size: 1.1em; }
+    
+    .final-summary-content p {
+        margin: 0.8em 0;
+    }
+    
+    .final-summary-content ul,
+    .final-summary-content ol {
+        margin: 0.8em 0;
+        padding-left: 1.5em;
+    }
+    
+    .final-summary-content li {
+        margin: 0.4em 0;
+    }
+    
+    .final-summary-content a {
+        color: #3b82f6;
+        text-decoration: none;
+    }
+    
+    .final-summary-content a:hover {
+        text-decoration: underline;
+    }
+    
+    .final-summary-content code {
+        background: #e2e8f0;
+        padding: 2px 6px;
+        border-radius: 4px;
+        font-family: 'SF Mono', 'Fira Code', monospace;
+        font-size: 0.9em;
+    }
+    
+    .final-summary-content pre {
+        background: #1e293b;
+        color: #e2e8f0;
+        padding: 16px;
+        border-radius: 8px;
+        overflow-x: auto;
+    }
+    
+    .final-summary-content pre code {
+        background: transparent;
+        padding: 0;
+        color: inherit;
+    }
+    
+    .final-summary-content table {
+        width: 100%;
+        border-collapse: collapse;
+        margin: 1em 0;
+    }
+    
+    .final-summary-content th,
+    .final-summary-content td {
+        padding: 10px 12px;
+        border: 1px solid #e2e8f0;
+        text-align: left;
+    }
+    
+    .final-summary-content th {
+        background: #f1f5f9;
+        font-weight: 600;
+    }
+    
+    .final-summary-content blockquote {
+        border-left: 4px solid #3b82f6;
+        margin: 1em 0;
+        padding: 0.5em 1em;
+        background: #f8fafc;
+        color: #475569;
+    }
+    
+    /* ===== Code Execution Card ===== */
+    .code-card {
+        background: #1e1e2e;
+        border: 1px solid #313244;
+        border-radius: 12px;
+        margin: 12px 0;
+        padding: 16px;
+        overflow: hidden;
+    }
+    
+    .code-header {
+        font-size: 0.9em;
+        font-weight: 600;
+        color: #cdd6f4;
+        margin-bottom: 12px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+    
+    .code-card pre {
+        background: #11111b !important;
+        border-radius: 8px;
+        padding: 12px 16px;
+        margin: 8px 0;
+        overflow-x: auto;
+        font-family: 'SF Mono', 'Fira Code', 'JetBrains Mono', Consolas, monospace !important;
+        font-size: 0.85em;
+        line-height: 1.5;
+    }
+    
+    .code-card code {
+        background: transparent !important;
+        color: #cdd6f4 !important;
+        font-family: 'SF Mono', 'Fira Code', 'JetBrains Mono', Consolas, monospace !important;
+    }
+    
+    .code-output-label {
+        font-size: 0.8em;
+        color: #a6adc8;
+        margin-top: 12px;
+        margin-bottom: 4px;
+    }
+    
+    .code-status {
+        font-size: 0.8em;
+        color: #a6e3a1;
+        margin-top: 8px;
+        text-align: right;
+    }
+    

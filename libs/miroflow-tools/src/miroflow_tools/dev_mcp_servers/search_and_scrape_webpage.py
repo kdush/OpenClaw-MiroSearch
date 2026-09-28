@@ -206,6 +206,11 @@ SEARCH_SEARXNG_ONLY_DOWNGRADE_ORDER = os.getenv(
     "SEARCH_SEARXNG_ONLY_DOWNGRADE_ORDER",
     DEFAULT_SEARCH_SEARXNG_ONLY_DOWNGRADE_ORDER,
 ).strip()
+# searxng-only 等硬约束路由：禁止把未配置的可用 provider 追加进顺序表
+SEARCH_PROVIDER_ORDER_STRICT = _read_env_bool(
+    "SEARCH_PROVIDER_ORDER_STRICT",
+    False,
+)
 
 
 def _build_searxng_only_downgrade_providers(
@@ -291,6 +296,8 @@ def _merge_provider_results(
 def _evaluate_confidence(
     organic_results: list[dict],
     providers_with_results: set[str],
+    *,
+    allowed_providers: Optional[list[str] | set[str]] = None,
 ) -> dict[str, Any]:
     unique_domains = {
         _normalize_domain(str(item.get("link", "")).strip())
@@ -308,6 +315,23 @@ def _evaluate_confidence(
         )
     }
 
+    # Cap coverage by providers allowed on *this route*, not every credential
+    # present in the environment (searxng-only must not require serper/serpapi).
+    if allowed_providers is not None:
+        route_pool = {
+            str(name).strip() for name in allowed_providers if str(name).strip()
+        }
+        coverage_ceiling = len(route_pool) if route_pool else 1
+    else:
+        coverage_ceiling = len(_registry.available_names()) or 1
+    min_provider_coverage = max(
+        1,
+        min(
+            SEARCH_CONFIDENCE_MIN_PROVIDER_COVERAGE,
+            coverage_ceiling,
+        ),
+    )
+
     result_ratio = min(
         len(organic_results) / max(1, SEARCH_CONFIDENCE_MIN_RESULTS),
         1.0,
@@ -317,7 +341,7 @@ def _evaluate_confidence(
         1.0,
     )
     provider_ratio = min(
-        len(providers_with_results) / max(1, SEARCH_CONFIDENCE_MIN_PROVIDER_COVERAGE),
+        len(providers_with_results) / max(1, min_provider_coverage),
         1.0,
     )
     high_conf_ratio = min(
@@ -335,7 +359,7 @@ def _evaluate_confidence(
     hard_constraints_passed = (
         len(organic_results) >= SEARCH_CONFIDENCE_MIN_RESULTS
         and len(unique_domains) >= SEARCH_CONFIDENCE_MIN_UNIQUE_DOMAINS
-        and len(providers_with_results) >= SEARCH_CONFIDENCE_MIN_PROVIDER_COVERAGE
+        and len(providers_with_results) >= min_provider_coverage
         and len(high_conf_domains_hit) >= SEARCH_CONFIDENCE_MIN_HIGH_CONF_HITS
     )
     passed = hard_constraints_passed and score >= SEARCH_CONFIDENCE_SCORE_THRESHOLD
@@ -354,11 +378,49 @@ def _evaluate_confidence(
         "constraints": {
             "min_results": SEARCH_CONFIDENCE_MIN_RESULTS,
             "min_unique_domains": SEARCH_CONFIDENCE_MIN_UNIQUE_DOMAINS,
-            "min_provider_coverage": SEARCH_CONFIDENCE_MIN_PROVIDER_COVERAGE,
+            "min_provider_coverage": min_provider_coverage,
             "min_high_conf_hits": SEARCH_CONFIDENCE_MIN_HIGH_CONF_HITS,
         },
         "high_conf_domains_hit": sorted(high_conf_domains_hit),
     }
+
+
+def _ensure_confidence_evaluated(
+    organic_results: list[dict],
+    search_params: dict[str, Any],
+    providers_with_results: Optional[set[str]] = None,
+) -> None:
+    """串行回退/合并模式同样产出置信度，否则该门控只在并发路由下生效。"""
+    if search_params.get("confidence") is not None:
+        return
+    covered = providers_with_results or {str(search_params.get("provider", "")).strip()}
+    allowed = search_params.get("provider_order")
+    if not isinstance(allowed, list):
+        allowed = None
+    search_params["confidence"] = _evaluate_confidence(
+        organic_results,
+        {name for name in covered if name},
+        allowed_providers=allowed,
+    )
+
+
+def _confidence_verdict_line(search_params: dict[str, Any]) -> str:
+    """一行质量结论。工具结果按字符数截断，JSON 尾部的 confidence 模型看不到，故前置。"""
+    confidence = search_params.get("confidence")
+    if not isinstance(confidence, dict):
+        return ""
+    metrics = confidence.get("metrics", {})
+    constraints = confidence.get("constraints", {})
+    return (
+        f"confidence={confidence.get('score')} "
+        f"passed={'yes' if confidence.get('passed') else 'no'} "
+        f"results={metrics.get('results')}/{constraints.get('min_results')} "
+        f"domains={metrics.get('unique_domains')}/{constraints.get('min_unique_domains')} "
+        f"providers={metrics.get('provider_coverage')}/"
+        f"{constraints.get('min_provider_coverage')} "
+        f"high_conf={metrics.get('high_conf_domain_hits')}/"
+        f"{constraints.get('min_high_conf_hits')}"
+    )
 
 
 @mcp.tool()
@@ -440,7 +502,10 @@ async def google_search(
             if configured_mode not in VALID_SEARCH_PROVIDER_MODES:
                 configured_mode = DEFAULT_SEARCH_PROVIDER_MODE
 
-            providers = _registry.resolve_order(SEARCH_PROVIDER_ORDER)
+            providers = _registry.resolve_order(
+                SEARCH_PROVIDER_ORDER,
+                strict=SEARCH_PROVIDER_ORDER_STRICT,
+            )
             (
                 providers,
                 searxng_only_downgraded,
@@ -544,7 +609,9 @@ async def google_search(
                     providers, provider_results_map, result_num
                 )
                 confidence = _evaluate_confidence(
-                    merged_results, providers_with_results
+                    merged_results,
+                    providers_with_results,
+                    allowed_providers=providers,
                 )
                 parallel_min_success_passed = (
                     len(providers_with_results) >= SEARCH_PROVIDER_PARALLEL_MIN_SUCCESS
@@ -626,11 +693,25 @@ async def google_search(
                             str(exc),
                         )
 
+                    # 补检源可能不在 SEARCH_PROVIDER_ORDER 里，合并时按结果实际来源补齐，
+                    # 否则刚取回的结果会因为不在 order 列表而被丢掉。
+                    merge_order = [
+                        *providers,
+                        *[
+                            name
+                            for name in provider_results_map
+                            if name not in providers
+                        ],
+                    ]
                     merged_results = _merge_provider_results(
-                        providers, provider_results_map, result_num
+                        merge_order,
+                        provider_results_map,
+                        result_num,
                     )
                     confidence = _evaluate_confidence(
-                        merged_results, providers_with_results
+                        merged_results,
+                        providers_with_results,
+                        allowed_providers=merge_order,
                     )
                     confidence_passed = (
                         not SEARCH_CONFIDENCE_ENABLED
@@ -764,6 +845,8 @@ async def google_search(
 
         # Build comprehensive response
         response_provider = search_params.get("provider", search_provider)
+        _ensure_confidence_evaluated(organic_results, search_params)
+        retrieval_quality = _confidence_verdict_line(search_params)
         if not organic_results:
             error_message = (
                 "; ".join(provider_errors)
@@ -773,6 +856,7 @@ async def google_search(
             response_data = {
                 "success": False,
                 "error": error_message,
+                "retrieval_quality": retrieval_quality,
                 "organic": [],
                 "results": [],
                 "searchParameters": search_params,
@@ -790,6 +874,7 @@ async def google_search(
             return json.dumps(response_data, ensure_ascii=False)
 
         response_data = {
+            "retrieval_quality": retrieval_quality,
             "organic": organic_results,
             "searchParameters": search_params,
             "provider": response_provider,

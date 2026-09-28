@@ -3,11 +3,11 @@ import sys
 from pathlib import Path
 
 
-SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "call_openclaw_mirosearch.py"
+SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "call_diting.py"
 
 
 def _load_script_module():
-    module_name = "call_openclaw_mirosearch_tests"
+    module_name = "call_diting_tests"
     spec = importlib.util.spec_from_file_location(module_name, SCRIPT_PATH)
     module = importlib.util.module_from_spec(spec)
     assert spec and spec.loader

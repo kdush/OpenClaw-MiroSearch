@@ -60,7 +60,12 @@ async def test_handle_llm_call_returns_failure_on_wall_timeout(monkeypatch):
     gen = _make_answer_generator()
     original_history = [{"role": "user", "content": "hello"}]
 
-    response_text, should_break, tool_calls, returned_history = await gen.handle_llm_call(
+    (
+        response_text,
+        should_break,
+        tool_calls,
+        returned_history,
+    ) = await gen.handle_llm_call(
         system_prompt="sys",
         message_history=original_history,
         tool_definitions=[],

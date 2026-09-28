@@ -221,6 +221,7 @@ data/
 .idea/
 .windsurf/
 .claude/
+.workbuddy-ai/
 CLAUDE.md
 
 .DS_Store

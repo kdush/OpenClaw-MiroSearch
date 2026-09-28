@@ -1,0 +1,588 @@
+    /* ===== Modals: settings + export ======================================
+       Single source of truth for both overlays. Gradio's Column already
+       renders display:flex and hides itself with display:none for
+       visible=False, so never override `display` on the overlay itself. */
+    #settings-modal{
+        position: fixed !important;
+        inset: 0 !important;
+        z-index: 1000 !important;
+        flex-direction: column !important;
+        align-items: flex-start !important;
+        justify-content: flex-start !important;
+        gap: 0 !important;
+        padding: 24px !important;
+        box-sizing: border-box !important;
+        overflow: auto !important;
+        cursor: pointer !important;
+        background: rgba(2, 6, 23, 0.66) !important;
+        backdrop-filter: blur(6px) !important;
+        -webkit-backdrop-filter: blur(6px) !important;
+    }
+
+    /* Set by the dialog script while a modal is mounted. */
+    html.miro-modal-open,
+    html.miro-modal-open body {
+        overflow: hidden !important;
+    }
+    /* The card is the dialog's focus target; it has no visible edge to ring. */
+    #settings-modal .modal-card:focus{
+        outline: none !important;
+    }
+
+    #settings-modal .modal-card{
+        /* Gradio gives every Column flex:1 1 auto. In a full-viewport overlay
+           that stretched the card to its max-height and left a blank bottom. */
+        flex: 0 0 auto !important;
+        display: flex !important;
+        flex-direction: column !important;
+        gap: 8px !important;
+        /* Auto margins centre the card, yet collapse to 0 when the card is
+           taller than the overlay — so the top stays reachable while scrolling. */
+        margin: auto !important;
+        width: min(460px, 100%) !important;
+        max-width: 460px !important;
+        min-width: 0 !important;
+        padding: 20px 24px 18px !important;
+        box-sizing: border-box !important;
+        position: relative !important;
+        z-index: 1 !important;
+        cursor: default !important;
+        color: var(--ink-strong) !important;
+        background: linear-gradient(180deg, rgba(8, 12, 24, 0.96), rgba(3, 5, 12, 0.98)) !important;
+        border: 1px solid rgba(140, 170, 220, 0.14) !important;
+        border-radius: 16px !important;
+        box-shadow: 0 24px 64px rgba(0, 0, 0, 0.65), 0 0 0 1px rgba(140, 170, 220, 0.08) !important;
+        backdrop-filter: blur(18px) saturate(1.1) !important;
+        -webkit-backdrop-filter: blur(18px) saturate(1.1) !important;
+        animation: miro-modal-pop 0.16s ease-out !important;
+        /* Option lists are absolutely positioned inside their own block, so no
+           ancestor may clip. The overlay scrolls instead of the card. */
+        overflow: visible !important;
+    }
+    @keyframes miro-modal-pop {
+        from { opacity: 0; transform: translateY(10px) scale(0.985); }
+        to { opacity: 1; transform: none; }
+    }
+    /* Accent bar along the top edge of the card. */
+    #settings-modal .modal-card::before {
+        content: "" !important;
+        position: absolute !important;
+        top: 0 !important;
+        left: 24px !important;
+        right: 24px !important;
+        height: 3px !important;
+        border-radius: 0 0 4px 4px !important;
+        background: linear-gradient(90deg, #22d3ee, #818cf8) !important;
+    }
+    @media (prefers-reduced-motion: reduce) {
+        #settings-modal .modal-card {
+            animation: none !important;
+        }
+    }
+    @media (max-width: 480px) {
+        #settings-modal {
+            padding: 12px !important;
+        }
+        #settings-modal .modal-card {
+            padding: 18px 16px 16px !important;
+        }
+    }
+
+    /* Keep fields in one column and never wider than the card. */
+    #settings-modal .modal-card > *,
+    #settings-modal .modal-card .form,
+    #settings-modal .modal-card .block,
+    #settings-modal .modal-card .wrap,
+    #settings-modal .modal-card .container,
+    #settings-modal .modal-card label{
+        min-width: 0 !important;
+        max-width: 100% !important;
+        box-sizing: border-box !important;
+    }
+    #settings-modal .modal-card .form{
+        display: flex !important;
+        flex-direction: column !important;
+        flex-wrap: nowrap !important;
+        align-items: stretch !important;
+        gap: 10px !important;
+        width: 100% !important;
+        overflow: visible !important;
+    }
+    #settings-modal .modal-card .form > *{
+        flex: 0 0 auto !important;
+        width: 100% !important;
+    }
+    #settings-modal .modal-card .svelte-select,
+    #settings-modal .modal-card [data-testid="dropdown"]{
+        width: 100% !important;
+        max-width: 100% !important;
+    }
+    /* Gradio stacks a 14px block margin plus 10px of padding inside every HTML
+       block; together they added ~150px of blank to the card. The 12px side
+       padding also indented hint text past every field label, so it goes too:
+       text starts flush with the fields and spacing comes from the top margin. */
+    #settings-modal .modal-card .block{
+        margin-bottom: 0 !important;
+    }
+    #settings-modal .modal-card .html-container{
+        padding: 0 !important;
+        margin-top: 8px !important;
+    }
+    #settings-modal .modal-card .prose{
+        margin: 0 !important;
+    }
+    /* Gradio pads the dropdown's inner wrap by 12px top/bottom, which made each
+       field ~24px taller than it looks. Keep padding symmetric + flex-center the
+       chevron so the arrow sits on the text midline. Outer .wrap already owns the
+       visible border/fill — wrap-inner must stay transparent or it reads as a
+       nested second border. */
+    #settings-modal .modal-card .wrap-inner{
+        display: flex !important;
+        align-items: center !important;
+        padding-top: 8px !important;
+        padding-bottom: 8px !important;
+        min-height: 40px !important;
+        box-sizing: border-box !important;
+        background: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
+        border-radius: 10px !important;
+    }
+    #settings-modal .modal-card .wrap-inner .secondary-wrap,
+    #settings-modal .modal-card .wrap-inner .icon-wrap,
+    #settings-modal .modal-card .wrap-inner > .icon,
+    #settings-modal .modal-card .wrap-inner svg {
+        display: inline-flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        align-self: center !important;
+        margin-top: 0 !important;
+        margin-bottom: 0 !important;
+    }
+    #settings-modal .modal-card .wrap-inner input,
+    #settings-modal .modal-card .wrap-inner .single-select {
+        display: flex !important;
+        align-items: center !important;
+        line-height: 1.35 !important;
+        padding-top: 0 !important;
+        padding-bottom: 0 !important;
+    }
+
+    /* Gradio writes overflow:hidden inline on blocks; the option list must
+       be able to escape the trigger it is anchored to. */
+    #mode-selector,
+    #search-profile-selector,
+    #search-result-num-selector,
+    #verification-rounds-selector,
+    #output-detail-level-selector {
+        overflow: visible !important;
+        position: relative !important;
+    }
+
+    /* Open dropdown must stack above later fields (输出篇幅 etc.), otherwise
+       list items look "misaligned" with underlying labels bleeding through.
+       Gradio's block-info spans use position:relative + z-index:layer-4, which
+       creates sibling stacking contexts that paint over an earlier dropdown. */
+    #settings-modal [data-testid="block-info"],
+    #settings-modal span.has-info,
+    #settings-modal span[class*="svelte-"][data-testid="block-info"],
+    #settings-modal .block > span {
+        z-index: 0 !important;
+    }
+    #mode-selector:has(.wrap-inner.show_options),
+    #search-profile-selector:has(.wrap-inner.show_options),
+    #search-result-num-selector:has(.wrap-inner.show_options),
+    #mode-selector:has(ul.options),
+    #search-profile-selector:has(ul.options),
+    #search-result-num-selector:has(ul.options) {
+        z-index: 50 !important;
+    }
+    #settings-modal .wrap:has(.wrap-inner.show_options),
+    #settings-modal .wrap:has(ul.options) {
+        z-index: 30 !important;
+    }
+
+    /* Modal card uses backdrop-filter, which makes position:fixed descendants
+       resolve against the card — Gradio's viewport top/left then drift. Anchor
+       the menu to the trigger instead. Near the bottom Gradio sets inline
+       `bottom`, which together with our `top` collapses the list to ~0 height —
+       clear bottom/height so 检索源策略 / 单轮检索条数 options stay visible. */
+    #settings-modal ul.options,
+    #settings-modal ul[role="listbox"]{
+        position: absolute !important;
+        top: calc(100% + 4px) !important;
+        bottom: auto !important;
+        left: 0 !important;
+        right: 0 !important;
+        width: 100% !important;
+        height: auto !important;
+        max-height: min(240px, 42vh) !important;
+        z-index: 5000 !important;
+        overflow-x: hidden !important;
+        overflow-y: auto !important;
+        background: #060a14 !important;
+        border: 1px solid rgba(140, 170, 220, 0.22) !important;
+        border-radius: 10px !important;
+        box-shadow: 0 12px 32px rgba(0, 0, 0, 0.65) !important;
+        color: #e8eef8 !important;
+        opacity: 1 !important;
+        visibility: visible !important;
+        display: block !important;
+    }
+    #settings-modal ul.options li,
+    #settings-modal ul[role="listbox"] li{
+        color: #e8eef8 !important;
+        background: #060a14 !important;
+        padding: 8px 12px !important;
+        white-space: normal !important;
+    }
+    #settings-modal ul.options li:hover,
+    #settings-modal ul[role="listbox"] li:hover,
+    #settings-modal ul.options li[aria-selected="true"],
+    #settings-modal ul[role="listbox"] li[aria-selected="true"]{
+        background: rgba(56, 189, 248, 0.14) !important;
+        color: #a5f3fc !important;
+    }
+
+    /* Dark form controls inside modals */
+    #settings-modal label,
+    #settings-modal .wrap{
+        color: var(--ink-strong) !important;
+    }
+    #settings-modal input,
+    #settings-modal select,
+    #settings-modal textarea{
+        background: rgba(4, 8, 16, 0.82) !important;
+        border-color: rgba(140, 170, 220, 0.18) !important;
+        color: var(--ink-strong) !important;
+    }
+    /* Dropdown trigger input must not paint its own box inside .wrap */
+    #settings-modal .wrap-inner input,
+    #settings-modal .wrap-inner .single-select,
+    #settings-modal .wrap-inner input.border-none {
+        background: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
+        outline: none !important;
+    }
+
+    /* Footer: status line + restore/apply actions */
+    #settings-modal .modal-footer{
+        display: flex !important;
+        flex-direction: row !important;
+        flex-wrap: wrap !important;
+        align-items: center !important;
+        justify-content: flex-end !important;
+        gap: 8px !important;
+        width: 100% !important;
+        margin-top:22px !important;
+    }
+    /* Status sits on its own full-width row above the action buttons. The
+       direct flex child is Gradio's block wrapper (#settings-status), not
+       the inner .modal-status div. */
+    #settings-modal .modal-footer > #settings-status{
+        flex: 1 1 100% !important;
+        min-width: 0 !important;
+    }
+    /* Before the first Apply/Reset the status block is an empty prose box;
+       it still reserved a row above the buttons. */
+    #settings-modal .modal-footer > #settings-status:not(:has(.modal-status)){
+        display: none !important;
+    }
+    /* 应用/恢复/预设的确认信息：原来只是一行 11px 浅蓝小字，几乎看不出
+       点击有反应，改为带边框的提示条。 */
+    #settings-modal .modal-footer .modal-status{
+        display: block !important;
+        margin: 0 !important;
+        padding: 7px 10px !important;
+        border-radius: 8px !important;
+        border: 1px solid rgba(34, 211, 238, 0.35) !important;
+        background: rgba(34, 211, 238, 0.10) !important;
+        color: #a5f3fc !important;
+        font-size: 12.5px !important;
+        line-height: 1.5 !important;
+        text-align: left !important;
+        animation: miro-status-in 0.18s ease-out !important;
+    }
+    #settings-modal .modal-footer .modal-status::before {
+        content: "✓ " !important;
+        font-weight: 700 !important;
+    }
+    @keyframes miro-status-in {
+        from { opacity: 0; transform: translateY(3px); }
+        to { opacity: 1; transform: none; }
+    }
+    /* 选择器要与上面的提示条完全一致，否则同权重的 prefers-reduced-motion 规则
+       会因书写顺序在前而被覆盖。 */
+    @media (prefers-reduced-motion: reduce) {
+        #settings-modal .modal-footer .modal-status {
+            animation: none !important;
+        }
+    }
+    .modal-status:empty {
+        display: none;
+    }
+    #settings-reset-btn,
+    #settings-apply-btn {
+        flex: 0 0 auto !important;
+        width: auto !important;
+        height: 34px !important;
+        min-height: 34px !important;
+        padding: 0 12px !important;
+        border-radius: 10px !important;
+        font-size: 13px !important;
+        font-weight: 600 !important;
+    }
+    #settings-reset-btn {
+        background: rgba(4, 8, 16, 0.78) !important;
+        border: 1px solid rgba(140, 170, 220, 0.2) !important;
+        color: #c5d0e2 !important;
+    }
+    #settings-reset-btn:hover {
+        border-color: rgba(34, 211, 238, 0.45) !important;
+        color: #22d3ee !important;
+    }
+
+    .modal-title {
+        font-size: 20px;
+        font-weight: 700;
+        color: var(--ink-strong);
+        margin: 0 44px 2px 0;
+        letter-spacing: 0.02em;
+        line-height: 36px;
+        min-height: 36px;
+    }
+
+    /* ===== Settings modal polish ======================================
+       Typography, colour and the divider rhythm only — geometry lives in the
+       "Modals: settings" block above. */
+    #settings-modal .modal-title::after {
+        content: "" !important;
+        display: block !important;
+        width: 30px !important;
+        height: 3px !important;
+        margin-top: 6px !important;
+        border-radius: 2px !important;
+        background: linear-gradient(90deg, #22d3ee, #818cf8) !important;
+    }
+    #settings-close-btn {
+        top: 16px !important;
+        right: 16px !important;
+        width: 32px !important;
+        min-width: 32px !important;
+        max-width: 32px !important;
+        height: 32px !important;
+        min-height: 32px !important;
+        border-radius: 50% !important;
+        transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease !important;
+    }
+    /* Divider rhythm: one faint line above each field group. The option hints
+       are card children, not form children, so they hug the field above. */
+    #settings-modal .modal-card > .form {
+        border-top: 1px solid rgba(148, 163, 184, 0.10) !important;
+        padding-top: 10px !important;
+    }
+    #mode-option-hint,
+    #search-profile-option-hint {
+        margin-top: -6px !important;
+    }
+    /* Gradio 默认给每个表单块较大内边距，与分隔线叠加后会显得松散 */
+    #settings-modal .modal-card .form > .block.padded {
+        padding: 0 !important;
+    }
+    #settings-modal input[type="range"],
+    #settings-modal input[type="radio"] {
+        accent-color: #22d3ee !important;
+    }
+    /* Gradio 用 --neutral-200 画滑块的未填充轨道（浅色主题的近白色 #e2e8f0），
+       在深色卡片上会变成一根刺眼的白条；只在弹窗范围内把它压深，已填充段用主题青蓝。 */
+    #settings-modal input[type="range"] {
+        --neutral-200: rgba(148, 163, 184, 0.28);
+        --slider-color: #0ea5e9;
+    }
+    #settings-apply-btn {
+        background: linear-gradient(135deg, #0ea5e9, #22d3ee) !important;
+        border: none !important;
+        color: #06222c !important;
+        box-shadow: 0 4px 14px rgba(34, 211, 238, 0.28) !important;
+        transition: filter 0.15s ease, box-shadow 0.15s ease !important;
+    }
+    #settings-apply-btn:hover {
+        filter: brightness(1.08) !important;
+        box-shadow: 0 6px 18px rgba(34, 211, 238, 0.38) !important;
+    }
+    #settings-modal button:focus-visible,
+    #settings-modal [role="listbox"]:focus-visible {
+        outline: 2px solid rgba(34, 211, 238, 0.6) !important;
+        outline-offset: 2px !important;
+    }
+    #settings-modal .settings-hint {
+        margin: -4px 0 0 !important;
+        font-size: 12px !important;
+        line-height: 1.55 !important;
+        color: #94a3b8 !important;
+    }
+    #settings-modal .option-hint {
+        margin: 0 !important;
+        padding: 6px 10px !important;
+        border-left: 2px solid rgba(125, 211, 252, 0.4) !important;
+        border-radius: 0 6px 6px 0 !important;
+        background: rgba(8, 14, 28, 0.72) !important;
+        font-size: 12px !important;
+        line-height: 1.55 !important;
+        color: #9eb0cc !important;
+    }
+    #settings-modal .preset-row {
+        display: flex !important;
+        gap: 8px !important;
+        width: 100% !important;
+    }
+    #settings-modal .preset-row > * {
+        flex: 1 1 0 !important;
+        min-width: 0 !important;
+    }
+    #settings-modal .preset-btn {
+        height: 32px !important;
+        min-height: 32px !important;
+        padding: 0 6px !important;
+        font-size: 12.5px !important;
+        font-weight: 500 !important;
+        border-radius: 999px !important;
+        background: rgba(4, 8, 16, 0.7) !important;
+        border: 1px solid rgba(140, 170, 220, 0.2) !important;
+        color: var(--ink-body) !important;
+        box-shadow: none !important;
+        transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease !important;
+    }
+    #settings-modal .preset-btn:hover {
+        border-color: rgba(34, 211, 238, 0.5) !important;
+        color: #22d3ee !important;
+        background: rgba(34, 211, 238, 0.08) !important;
+    }
+    #settings-modal .preset-btn-primary {
+        border-color: rgba(34, 211, 238, 0.4) !important;
+        color: #22d3ee !important;
+        background: rgba(34, 211, 238, 0.1) !important;
+    }
+
+    /* ===== Settings field controls (live inside #settings-modal) ===== */
+    #mode-selector,
+    #search-profile-selector,
+    #search-result-num-selector,
+    #verification-rounds-selector,
+    #output-detail-level-selector {
+        border: 0 !important;
+        background: transparent !important;
+        padding: 0 !important;
+        margin-bottom: 14px !important;
+        box-shadow: none !important;
+    }
+
+    #mode-selector .container,
+    #search-profile-selector .container,
+    #search-result-num-selector .container,
+    #verification-rounds-selector .container,
+    #output-detail-level-selector .container {
+        background: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
+        padding: 0 !important;
+    }
+
+    #mode-selector label,
+    #search-profile-selector label,
+    #search-result-num-selector label,
+    #verification-rounds-selector label,
+    #output-detail-level-selector label {
+        color: var(--ink-strong) !important;
+        font-weight: 600 !important;
+    }
+
+    #mode-selector [data-testid="block-info"],
+    #search-profile-selector [data-testid="block-info"],
+    #search-result-num-selector [data-testid="block-info"],
+    #verification-rounds-selector [data-testid="block-info"],
+    #output-detail-level-selector [data-testid="block-info"] {
+        color: var(--ink-strong) !important;
+        font-weight: 700 !important;
+        font-size: 0.9em !important;
+        letter-spacing: 0.01em;
+    }
+
+    #mode-selector .md p,
+    #search-profile-selector .md p,
+    #search-result-num-selector .md p,
+    #verification-rounds-selector .md p,
+    #output-detail-level-selector .md p {
+        color: #94a3b8 !important;
+        font-size: 12px !important;
+        line-height: 1.45 !important;
+        margin: 4px 0 8px !important;
+    }
+
+    /* Gradio 在每个 block 里额外放了一层纯背景层（.wrap.default.full，与控件同级），
+       它盖住整块（含标题与说明），并不是输入框；整块底色交给弹窗卡片，这层须透明。
+       （radio 块的这一层已由下方 #output-detail-level-selector .wrap 一并置透明） */
+    #mode-selector > .wrap.default.full,
+    #search-profile-selector > .wrap.default.full,
+    #search-result-num-selector > .wrap.default.full,
+    #verification-rounds-selector > .wrap.default.full {
+        background: transparent !important;
+        border-color: transparent !important;
+        box-shadow: none !important;
+    }
+
+    /* 只有真正能点的输入面才铺「浅底 + 浅描边」：弹窗卡片是深色渐变，输入框若与卡片
+       同色就会糊成一片认不出来。浅底与同卡片里的单选项 chip 用同一套语言。
+       .tab-like-container 是滑块里的数字框（Gradio 默认给它 4px 圆角窄边框，这里
+       按同组控件对齐到 10px）；#output-detail-level-selector 的 .wrap 是 chip 组而
+       非输入框，样式见下方 radio 块。 */
+    #mode-selector .wrap:not(.default),
+    #search-profile-selector .wrap:not(.default),
+    #search-result-num-selector .wrap:not(.default),
+    #verification-rounds-selector .tab-like-container {
+        background: rgba(51, 65, 85, 0.6) !important;
+        border: 1px solid rgba(148, 163, 184, 0.3) !important;
+        border-radius: 10px !important;
+        box-shadow: none !important;
+        transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease !important;
+    }
+
+    #mode-selector .wrap:not(.default):hover,
+    #search-profile-selector .wrap:not(.default):hover,
+    #search-result-num-selector .wrap:not(.default):hover,
+    #verification-rounds-selector .tab-like-container:hover {
+        background: rgba(65, 82, 110, 0.65) !important;
+        border-color: rgba(148, 163, 184, 0.5) !important;
+    }
+
+    #mode-selector .wrap:not(.default):focus-within,
+    #search-profile-selector .wrap:not(.default):focus-within,
+    #search-result-num-selector .wrap:not(.default):focus-within,
+    #verification-rounds-selector .tab-like-container:focus-within {
+        background: rgba(65, 82, 110, 0.75) !important;
+        border-color: rgba(56, 189, 248, 0.65) !important;
+        /* border alone — extra focus-ring box-shadow read as a double border */
+        box-shadow: none !important;
+        outline: none !important;
+    }
+
+    /* 输入区一律透明：控件底色只由 .wrap 决定，避免出现「浅色外框 + 深色内芯」双层盒子 */
+    #mode-selector input,
+    #search-profile-selector input,
+    #search-result-num-selector input,
+    #verification-rounds-selector input,
+    #output-detail-level-selector input {
+        background: transparent !important;
+        color: var(--ink-strong) !important;
+        font-weight: 600 !important;
+    }
+
+    #mode-selector svg,
+    #search-profile-selector svg,
+    #search-result-num-selector svg,
+    #verification-rounds-selector svg,
+    #output-detail-level-selector svg {
+        fill: #94a3b8 !important;
+    }
+    

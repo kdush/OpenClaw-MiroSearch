@@ -35,6 +35,7 @@ class ResultCache:
         *,
         search_result_num: Optional[int] = None,
         verification_min_search_rounds: Optional[int] = None,
+        research_intensity: Optional[str] = None,
     ) -> str:
         """根据查询参数生成缓存 key。
 
@@ -43,9 +44,9 @@ class ResultCache:
         - query 只去除首尾空白，不改变大小写；代码标识符、基因符号和缩写等
           查询可能依赖大小写语义，不能复用另一问题的完整研究结论。
         - mode/profile/detail 属于策略枚举，统一 strip().lower() 归一化。
-        - 纳入 search_result_num / verification_min_search_rounds：这两个参数
-          会改变检索深度，从而改变最终结论，必须参与 key，否则仅条数不同的请求
-          会误命中彼此的缓存。None 表示该参数不影响（保持向后兼容的旧 key）。
+        - 纳入 search_result_num / verification_min_search_rounds / research_intensity：
+          这些参数会改变检索深度，从而改变最终结论，必须参与 key，否则仅参数不同的
+          请求会误命中彼此的缓存。None 表示该参数不影响（保持向后兼容的旧 key）。
         """
         parts = [
             query.strip(),
@@ -57,6 +58,8 @@ class ResultCache:
             parts.append(f"srn={search_result_num}")
         if verification_min_search_rounds is not None:
             parts.append(f"vmsr={verification_min_search_rounds}")
+        if research_intensity is not None:
+            parts.append(f"ri={research_intensity.strip().lower()}")
         raw = "|".join(parts)
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 

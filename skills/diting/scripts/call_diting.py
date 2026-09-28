@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""调用 OpenClaw-MiroSearch 统一脚本，支持 FastAPI（推荐）和 Gradio 两种 API 模式。"""
+"""调用谛听统一脚本，支持 FastAPI（推荐）和 Gradio 两种 API 模式。"""
+
 import argparse
 import json
 import os
@@ -51,14 +52,14 @@ _DEGRADE_STEPS = [
 ]
 
 
-def _next_degrade_step(current_mode: str, current_profile: str) -> tuple[str, str] | None:
+def _next_degrade_step(
+    current_mode: str, current_profile: str
+) -> tuple[str, str] | None:
     for index, (mode, profile) in enumerate(_DEGRADE_STEPS):
         if current_mode == mode and current_profile == profile:
             next_index = index + 1
             return (
-                _DEGRADE_STEPS[next_index]
-                if next_index < len(_DEGRADE_STEPS)
-                else None
+                _DEGRADE_STEPS[next_index] if next_index < len(_DEGRADE_STEPS) else None
             )
 
     for mode, profile in _DEGRADE_STEPS:
@@ -189,11 +190,19 @@ def run_research_fastapi(
         raise TimeoutError(f"等待结果超时（{timeout}s），task_id={task_id}")
 
     if _is_incomplete_result(result):
-        print(f"  检测到未完全收敛的结果，尝试降级重试...", file=sys.stderr)
+        print("  检测到未完全收敛的结果，尝试降级重试...", file=sys.stderr)
         return _retry_with_degrade(
-            base_url, query, mode, search_profile, search_result_num,
-            verification_min_search_rounds, output_detail_level, timeout,
-            caller_id, bearer_token, first_result=result,
+            base_url,
+            query,
+            mode,
+            search_profile,
+            search_result_num,
+            verification_min_search_rounds,
+            output_detail_level,
+            timeout,
+            caller_id,
+            bearer_token,
+            first_result=result,
         )
 
     return result
@@ -239,7 +248,10 @@ def _wait_task_fastapi(
                         hb = json.loads(payload) if payload else {}
                         key = f"{hb.get('phase','?')}/{hb.get('turn',0)}+{hb.get('detail','')}"
                         if key != last_heartbeat:
-                            print(f"  → {hb.get('phase','')}: {hb.get('detail','')}", file=sys.stderr)
+                            print(
+                                f"  → {hb.get('phase','')}: {hb.get('detail','')}",
+                                file=sys.stderr,
+                            )
                             last_heartbeat = key
                 time.sleep(0.5)
     except Exception as exc:
@@ -280,7 +292,10 @@ def _poll_task_result(
         stage = meta.get("current_stage", "")
         event_count = poll_resp.get("event_count", 0)
         if stage != last_stage:
-            print(f"  状态: {current_status}, 阶段: {stage}, 事件: {event_count}", file=sys.stderr)
+            print(
+                f"  状态: {current_status}, 阶段: {stage}, 事件: {event_count}",
+                file=sys.stderr,
+            )
             last_stage = stage
 
         time.sleep(3)
@@ -303,7 +318,9 @@ def _fetch_poll_result(poll_url: str, auth_headers: dict) -> str | None:
 
 def _is_incomplete_result(result: str) -> bool:
     """判断结果是否标记为未完全收敛。"""
-    return bool(result) and (_INCOMPLETE_MARKER in result or _FORMAT_ERROR_MARKER in result)
+    return bool(result) and (
+        _INCOMPLETE_MARKER in result or _FORMAT_ERROR_MARKER in result
+    )
 
 
 def _retry_with_degrade(
@@ -408,7 +425,7 @@ def run_research_gradio(
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="调用 OpenClaw-MiroSearch API 并输出最终 Markdown（支持 FastAPI 和 Gradio 两种模式）"
+        description="调用谛听 API 并输出最终 Markdown（支持 FastAPI 和 Gradio 两种模式）"
     )
     parser.add_argument(
         "--api-mode",
@@ -422,7 +439,9 @@ def main() -> int:
         help="服务基础地址（留空则根据 api-mode 自动选择默认值）",
     )
     parser.add_argument("--query", required=True, help="研究问题")
-    parser.add_argument("--mode", default="balanced", choices=VALID_MODES, help="检索模式")
+    parser.add_argument(
+        "--mode", default="balanced", choices=VALID_MODES, help="检索模式"
+    )
     parser.add_argument(
         "--search-profile",
         default=DEFAULT_SEARCH_PROFILE,
@@ -464,7 +483,11 @@ def main() -> int:
     # 自动推导 base_url
     base_url = args.base_url
     if not base_url:
-        base_url = DEFAULT_BASE_URL_FASTAPI if args.api_mode == "fastapi" else DEFAULT_BASE_URL_GRADIO
+        base_url = (
+            DEFAULT_BASE_URL_FASTAPI
+            if args.api_mode == "fastapi"
+            else DEFAULT_BASE_URL_GRADIO
+        )
 
     try:
         if args.api_mode == "fastapi":

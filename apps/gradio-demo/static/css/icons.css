@@ -1,0 +1,91 @@
+/* Icon system & controls */
+    /* ===== Unified icon system (outline, 20px in 36px hit target) ===== */
+    .ui-icon-btn,
+    .skills-icon-btn {
+        display: inline-flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        width: 36px !important;
+        height: 36px !important;
+        min-width: 36px !important;
+        padding: 0 !important;
+        border-radius: 10px !important;
+        border: 1px solid var(--glass-border) !important;
+        background: var(--glass-bg) !important;
+        color: var(--icon-muted) !important;
+        text-decoration: none !important;
+        box-sizing: border-box !important;
+        transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease !important;
+        backdrop-filter: blur(10px);
+        cursor: pointer;
+    }
+
+    .ui-icon-btn svg,
+    .skills-icon-btn svg {
+        width: 20px !important;
+        height: 20px !important;
+        stroke-width: 1.75 !important;
+        display: block !important;
+    }
+
+    .ui-icon-btn:hover,
+    .skills-icon-btn:hover {
+        color: var(--icon-accent) !important;
+        border-color: rgba(34, 211, 238, 0.4) !important;
+        background: rgba(34, 211, 238, 0.08) !important;
+        box-shadow: 0 0 0 1px rgba(34, 211, 238, 0.12) !important;
+    }
+
+    .skills-icon-btn.is-copied {
+        color: var(--accent-emerald) !important;
+        border-color: rgba(52, 211, 153, 0.45) !important;
+    }
+
+    .skills-icon-btn-disabled {
+        opacity: 0.45 !important;
+        cursor: not-allowed !important;
+        pointer-events: none !important;
+    }
+
+
+    /* hide-gradio-textbox-label
+       NOTE: In Gradio 5 the <label> wraps the textarea — never display:none the label itself. */
+    #question-input span[data-testid="block-info"],
+    #question-input .sr-only,
+    #gr-task-id-bridge span[data-testid="block-info"],
+    #gr-task-id-bridge .sr-only,
+    #gr-task-id-bridge .label-wrap {
+        position: absolute !important;
+        width: 1px !important;
+        height: 1px !important;
+        padding: 0 !important;
+        margin: -1px !important;
+        overflow: hidden !important;
+        clip: rect(0, 0, 0, 0) !important;
+        white-space: nowrap !important;
+        border: 0 !important;
+    }
+    #question-input label,
+    #question-input .input-container,
+    #question-input textarea {
+        display: block !important;
+        visibility: visible !important;
+        opacity: 1 !important;
+        width: 100% !important;
+        max-width: 100% !important;
+    }
+    #question-input textarea {
+        height: auto !important;
+    }
+
+    /* idle-output-collapse */
+    #output-section.hidden,
+    #output-section[style*="display: none"],
+    #output-section:not([style*="display: block"]):not([style*="display:flex"]) {
+        min-height: 0 !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        border: none !important;
+    }
+
+

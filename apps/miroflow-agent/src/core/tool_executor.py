@@ -126,7 +126,9 @@ class ToolExecutor:
         if not normalized_query:
             return arguments
 
-        if self._contains_any_keyword(normalized_query, self.search_historical_keywords):
+        if self._contains_any_keyword(
+            normalized_query, self.search_historical_keywords
+        ):
             return arguments
 
         if not self._contains_any_keyword(

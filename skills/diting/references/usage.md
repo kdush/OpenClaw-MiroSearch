@@ -8,7 +8,7 @@
 - 简单搜索（快速找网页、单事实查询、成本优先）：
   - 推荐 `searxng` skill：`https://clawhub.ai/abk234/searxng`
 - 深度检索或高质量检索（多来源交叉验证、核查、研究报告）：
-  - 使用 `openclaw-mirosearch`（本 skill）
+  - 使用 `diting`（本 skill）
 
 ## 2. 调用闭环
 
@@ -80,7 +80,7 @@ OpenClaw 集成默认优先使用这一套接口；只有在必须复用 Demo We
 ### FastAPI（推荐）
 
 ```bash
-python3 scripts/call_openclaw_mirosearch.py \
+python3 scripts/call_diting.py \
   --api-mode fastapi \
   --base-url "http://127.0.0.1:8090" \
   --query "中国大陆有哪些厂商推出了 OpenClaw 变体？" \
@@ -95,7 +95,7 @@ python3 scripts/call_openclaw_mirosearch.py \
 ### Gradio（兼容）
 
 ```bash
-python3 scripts/call_openclaw_mirosearch.py \
+python3 scripts/call_diting.py \
   --api-mode gradio \
   --base-url "http://127.0.0.1:8080" \
   --query "中国大陆有哪些厂商推出了 OpenClaw 变体？" \

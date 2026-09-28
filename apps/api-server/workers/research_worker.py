@@ -57,6 +57,9 @@ def _validated_cache_quality(quality: object) -> Optional[Dict[str, Any]]:
     normalized = _validated_result_quality(quality)
     if normalized is None or not normalized["answer_available"]:
         return None
+    # 降级报告来自总结失败的兜底，重跑一次通常能拿到完整总结，不能固化进共享缓存。
+    if "degraded_report_fallback" in normalized["issues"]:
+        return None
     return normalized
 
 
@@ -161,6 +164,7 @@ async def run_research_job(
             search_result_num=payload.search_result_num,
             verification_min_search_rounds=payload.verification_min_search_rounds,
             output_detail_level=payload.output_detail_level,
+            research_intensity=getattr(payload, "research_intensity", "standard"),
         )
 
         # 获取运行时
@@ -174,12 +178,14 @@ async def run_research_job(
             output_fmt,
             tool_defs,
             sub_tool_defs,
+            effective_config,
         ) = await runtime.create_runtime_components(req)
         logger.info(
-            "Task %s runtime config: llm.provider=%s llm.async_client=%s",
+            "Task %s runtime config: llm.provider=%s llm.async_client=%s research_intensity=%s",
             task_id,
             getattr(cfg.llm, "provider", "unknown"),
             getattr(cfg.llm, "async_client", "unknown"),
+            effective_config.get("research_intensity", "standard"),
         )
 
         # 取消轮询任务
@@ -243,6 +249,7 @@ async def run_research_job(
                 tool_defs=tool_defs,
                 sub_tool_defs=sub_tool_defs,
                 log_dir=runtime.get_log_dir(),
+                effective_config=effective_config,
             )
         )
 
@@ -523,6 +530,7 @@ async def _execute_pipeline(
     tool_defs,
     sub_tool_defs,
     log_dir: str,
+    effective_config: Optional[Dict[str, Any]] = None,
 ) -> dict:
     """执行 pipeline 并返回结构化结果 dict。
 
@@ -542,6 +550,7 @@ async def _execute_pipeline(
         log_dir=log_dir,
         tool_definitions=tool_defs,
         sub_agent_tool_definitions=sub_tool_defs,
+        effective_config=effective_config,
     )
 
     if isinstance(result, dict):
