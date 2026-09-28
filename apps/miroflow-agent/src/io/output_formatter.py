@@ -4,7 +4,7 @@
 """Output formatting utilities for agent responses."""
 
 import re
-from typing import Tuple
+from typing import Optional, Tuple
 
 from ..utils.prompt_utils import FORMAT_ERROR_MESSAGE
 from .report_structure import ReportStructureValidator
@@ -230,6 +230,7 @@ class OutputFormatter:
         client=None,
         detail_level: str = "balanced",
         validate_structure: bool = True,
+        source_registry: Optional[dict] = None,
     ) -> dict:
         """格式化最终摘要并返回结构化质量信息。
 
@@ -284,6 +285,22 @@ class OutputFormatter:
 
         if not quality["format_valid"] and not quality["fallback_used"]:
             quality["issues"].append("no_answer_available")
+
+        registry = source_registry if source_registry is not None else {"entries": []}
+        display_text, citation_issues = ReportStructureValidator.enforce_citations(
+            display_text, registry
+        )
+        quality["issues"].extend(citation_issues)
+        if boxed_result != FORMAT_ERROR_MESSAGE:
+            boxed_result = (
+                self._extract_boxed_content(display_text)
+                if quality["format_valid"]
+                else self._clean_fallback_text(display_text)
+            )
+            boxed_result, _ = ReportStructureValidator.enforce_citations(
+                boxed_result, registry, include_references=False
+            )
+            summary_lines[3] = boxed_result
 
         # Structure validation (Phase 2)
         quality["structure_valid"] = False

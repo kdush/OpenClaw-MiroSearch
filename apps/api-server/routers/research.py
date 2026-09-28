@@ -8,17 +8,13 @@
 - POST /v1/research/cancel: 按 caller 批量设置取消标记
 """
 
+import json as _json
 import logging
 import time
 import uuid
 from typing import Optional
 
-import json as _json
-
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import ValidationError
-from sse_starlette.sse import EventSourceResponse
-
 from middleware.auth import verify_bearer_token
 from models import (
     CancelResponse,
@@ -29,10 +25,12 @@ from models import (
     ResearchTaskStatusResponse,
     ResultQuality,
 )
+from pydantic import ValidationError
+from services.profile_resolver import resolve_effective_research_params
 from services.task_queue import TaskPayload, get_task_queue
 from services.task_store import TaskStatus, get_task_store
-from services.profile_resolver import resolve_effective_research_params
 from src.cache.result_cache import ResultCache
+from sse_starlette.sse import EventSourceResponse
 
 logger = logging.getLogger("api-server")
 
@@ -105,12 +103,18 @@ async def create_research(
     )
     cached = None
     cached_quality = None
+    cached_source_registry = None
     shared_cache_entry = await task_store.get_cached_result(cache_key)
     if isinstance(shared_cache_entry, dict):
         shared_result = shared_cache_entry.get("result")
         if isinstance(shared_result, str) and shared_result.strip():
             cached_quality = _validate_cached_quality(shared_cache_entry.get("quality"))
-            if cached_quality is None:
+            cached_source_registry = shared_cache_entry.get("source_registry")
+            if (
+                cached_quality is None
+                or not isinstance(cached_source_registry, dict)
+                or not isinstance(cached_source_registry.get("entries"), list)
+            ):
                 await task_store.delete_cached_result(cache_key)
             else:
                 cached = shared_result
@@ -127,6 +131,10 @@ async def create_research(
             query=req.query,
             effective_config=effective_config_dict,
             **effective.as_dict(),
+        )
+        await task_store.store_source_registry(task_id, cached_source_registry)
+        await task_store.append_event(
+            task_id, "source_registry", cached_source_registry
         )
         await task_store.append_event(task_id, "final_output", {"markdown": cached})
         await task_store.store_result(task_id, cached)
@@ -213,6 +221,7 @@ async def get_task_status(
     result = await task_store.get_result(task_id)
     event_count = await task_store.get_event_stream_length(task_id)
     quality = await task_store.get_result_quality(task_id)
+    source_registry = await task_store.get_source_registry(task_id)
     result_available = bool(str(result or "").strip())
     if quality is None:
         normalized_quality = ResultQuality(answer_available=result_available)
@@ -245,6 +254,7 @@ async def get_task_status(
         result=result,
         event_count=event_count,
         result_quality=normalized_quality,
+        source_registry=source_registry or {"entries": []},
     )
 
 

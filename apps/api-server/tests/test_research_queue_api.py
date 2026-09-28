@@ -4,8 +4,7 @@ import uuid
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from httpx import AsyncClient, ASGITransport
-
+from httpx import ASGITransport, AsyncClient
 from main import app
 from services.task_store import TaskMeta, TaskStatus, TaskStore
 
@@ -14,6 +13,7 @@ from services.task_store import TaskMeta, TaskStatus, TaskStore
 def mock_task_store():
     """Mock TaskStore。"""
     store = AsyncMock(spec=TaskStore)
+    store.get_source_registry.return_value = None
     return store
 
 
@@ -366,6 +366,7 @@ async def test_create_research_cache_hit(
                     "issues": [],
                     "answer_available": True,
                 },
+                "source_registry": {"entries": []},
             }
         )
         mock_task_store.create_task = AsyncMock()
@@ -428,6 +429,7 @@ async def test_create_research_reads_worker_shared_cache_before_request_queue_lo
         return_value={
             "result": "# Worker 缓存结果",
             "quality": quality,
+            "source_registry": {"entries": []},
         }
     )
     mock_task_store.create_task = AsyncMock()
@@ -498,6 +500,7 @@ async def test_create_research_rejects_inconsistent_shared_cache_quality(
         return_value={
             "result": "# 不可信缓存结果",
             "quality": quality,
+            "source_registry": {"entries": []},
         }
     )
     mock_task_store.delete_cached_result = AsyncMock()

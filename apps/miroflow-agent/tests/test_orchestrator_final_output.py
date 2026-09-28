@@ -1,9 +1,8 @@
-from pathlib import Path
 import sys
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -24,11 +23,14 @@ async def test_emit_final_output_sends_markdown_event():
 
     orchestrator = Orchestrator.__new__(Orchestrator)
     orchestrator.stream = FakeStream()
+    orchestrator.task_log = MagicMock()
+    orchestrator.task_log.source_registry.to_dict.return_value = {"entries": []}
 
     await orchestrator._emit_final_output("# Final result")
 
     assert orchestrator.stream.events == [
-        {"event": "final_output", "data": {"markdown": "# Final result"}}
+        {"event": "source_registry", "data": {"entries": []}},
+        {"event": "final_output", "data": {"markdown": "# Final result"}},
     ]
 
 

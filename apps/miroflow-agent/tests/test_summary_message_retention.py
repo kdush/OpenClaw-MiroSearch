@@ -289,6 +289,7 @@ async def test_final_summary_keeps_last_user_tool_result() -> None:
     generator.verification_use_high_model = False
     generator.max_final_answer_retries = 1
     generator.task_log = MagicMock()
+    generator.task_log.source_registry.to_dict.return_value = {"entries": []}
     generator.output_formatter = MagicMock()
     generator._build_main_summary_prompt = MagicMock(return_value="最终总结指令")
     generator._emit_stage_heartbeat = AsyncMock()
@@ -324,7 +325,9 @@ async def test_final_summary_keeps_last_user_tool_result() -> None:
 
     assert captured_history[-2]["content"] == "最后一条工具结果"
     assert captured_history[-2][INTERNAL_MESSAGE_TYPE_KEY] == TOOL_RESULT_MESSAGE_TYPE
-    assert captured_history[-1] == {"role": "user", "content": "最终总结指令"}
+    assert captured_history[-1]["role"] == "user"
+    assert captured_history[-1]["content"].startswith("最终总结指令")
+    assert "source_id" in captured_history[-1]["content"]
 
 
 @pytest.mark.asyncio

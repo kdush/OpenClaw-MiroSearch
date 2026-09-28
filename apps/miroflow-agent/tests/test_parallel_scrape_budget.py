@@ -74,7 +74,7 @@ async def test_parallel_scrapes_cannot_exceed_budget():
     assert orch._scrape_slots_reserved == 1  # held until metric commit
 
     for r in results:
-        orch._record_scrape_metric(tool_name, r, 1)
+        orch._record_scrape_metric(tool_name, r, 1, {})
 
     assert orch.task_log.run_metrics.scrape_count == 8
     assert orch._scrape_slots_reserved == 0

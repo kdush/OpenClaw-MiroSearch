@@ -21,7 +21,6 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 
 import redis.asyncio as redis
-
 from settings import settings
 
 logger = logging.getLogger("api-server.task_store")
@@ -355,18 +354,53 @@ class TaskStore:
         data = await self._redis.get(key)
         return json.loads(data) if data else None
 
+    async def store_source_registry(
+        self, task_id: str, source_registry: Dict[str, Any]
+    ) -> bool:
+        if not isinstance(source_registry, dict) or not isinstance(
+            source_registry.get("entries"), list
+        ):
+            return False
+        key = f"{self.KEY_TASK}:{task_id}:source_registry"
+        await self._redis.set(
+            key, json.dumps(source_registry, ensure_ascii=False), ex=self._result_ttl
+        )
+        return True
+
+    async def get_source_registry(self, task_id: str) -> Optional[Dict[str, Any]]:
+        key = f"{self.KEY_TASK}:{task_id}:source_registry"
+        data = await self._redis.get(key)
+        if not data:
+            return None
+        try:
+            source_registry = json.loads(data)
+        except (TypeError, json.JSONDecodeError):
+            return None
+        if not isinstance(source_registry, dict) or not isinstance(
+            source_registry.get("entries"), list
+        ):
+            return None
+        return source_registry
+
     async def store_cached_result(
         self,
         cache_key: str,
         result_markdown: str,
         quality: Optional[Dict[str, Any]] = None,
+        *,
+        source_registry: Dict[str, Any],
     ) -> bool:
         """写入 API 与 Worker 进程共享的研究结果缓存。"""
+        if not isinstance(source_registry, dict) or not isinstance(
+            source_registry.get("entries"), list
+        ):
+            return False
         key = f"{self.KEY_RESULT_CACHE}:{cache_key}"
         payload = json.dumps(
             {
                 "result": result_markdown,
                 "quality": quality,
+                "source_registry": source_registry,
             },
             ensure_ascii=False,
         )
@@ -407,9 +441,16 @@ class TaskStore:
         if quality is not None and not isinstance(quality, dict):
             await self.delete_cached_result(cache_key)
             return None
+        source_registry = payload.get("source_registry")
+        if not isinstance(source_registry, dict) or not isinstance(
+            source_registry.get("entries"), list
+        ):
+            await self.delete_cached_result(cache_key)
+            return None
         return {
             "result": result,
             "quality": quality,
+            "source_registry": source_registry,
         }
 
     async def delete_cached_result(self, cache_key: str) -> bool:
@@ -476,6 +517,7 @@ class TaskStore:
             f"{self.KEY_TASK}:{task_id}:events",
             f"{self.KEY_TASK}:{task_id}:result",
             f"{self.KEY_TASK}:{task_id}:quality",
+            f"{self.KEY_TASK}:{task_id}:source_registry",
         ]
         await self._redis.delete(*keys)
         return True

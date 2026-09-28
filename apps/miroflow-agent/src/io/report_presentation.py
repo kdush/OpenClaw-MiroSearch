@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import List
+from typing import Any, List, Optional
 
 # Final Answer header only — keep the body text that follows.
 _FINAL_ANSWER_HEADER_RE = re.compile(r"(?m)^\s*={5,}\s*Final Answer\s*={5,}\s*\n?")
@@ -25,10 +25,6 @@ _BARE_INCOMPLETE_REF_LINE_RE = re.compile(r"(?m)^(?:\d+\.\s*)?(?:https?://(?:www
 _PREPARED_CONCLUSION_RE = re.compile(r"(?m)^##\s*结论\s*$")
 _PREPARED_CONFIDENCE_RE = re.compile(
     r"(?m)^<!--\s*confidence:(?:high|mid|low)\s*-->\s*$"
-)
-# 参考文献章节标题（正文引用号是否可压缩取决于该章节的条目写法）
-_REFERENCES_HEADING_ANY_RE = re.compile(
-    r"(?im)^#{1,6}\s*(?:参考文献|参考资料|参考来源|引用|references?|sources?)\s*$"
 )
 
 
@@ -165,8 +161,68 @@ def _extract_conflict_bullets(text: str, limit: int = 4) -> List[str]:
     return bullets
 
 
+def _claim_topology_lines(claim_map: Any, source_registry: Optional[dict]) -> List[str]:
+    """Q4: draw only relations the registry can back.
+
+    Solid edges are registry-backed support, thick edges are refutation, dashed
+    edges are unknown/unverified. Edges describe source-to-claim relations only
+    and never assert that a claim has been fact-checked.
+    """
+    from ..core.claim_verification import independent_support
+
+    def lab(value: Any) -> str:
+        text = re.sub(r'["\[\]]', "", str(value))
+        text = text.replace("\n", " ")
+        return (text[:32] + "…") if len(text) > 32 else text
+
+    entries = {
+        entry.get("source_id"): entry
+        for entry in (source_registry or {}).get("entries", [])
+        if isinstance(entry, dict)
+    }
+
+    def sid(source_id: int) -> str:
+        return f"S{source_id}"
+
+    used: List[int] = []
+    for verdict in claim_map.claims:
+        for source_id in [*verdict.support, *verdict.refute, *verdict.unknown]:
+            if source_id in entries and source_id not in used:
+                used.append(source_id)
+
+    lines = ["flowchart TB", '  Q["议题 / Question"]']
+    for source_id in used:
+        domain = entries[source_id].get("domain") or ""
+        lines.append(f'  {sid(source_id)}["[{source_id}] {lab(domain)}"]')
+
+    needs_gap = False
+    for index, verdict in enumerate(claim_map.claims, 1):
+        cid = f"C{index}"
+        lines.append(f'  {cid}["{lab(verdict.claim)}"]')
+        lines.append(f"  Q --> {cid}")
+        for source_id in verdict.support:
+            if source_id in entries:
+                lines.append(f"  {cid} -->|支持| {sid(source_id)}")
+        for source_id in verdict.refute:
+            if source_id in entries:
+                lines.append(f"  {cid} ==>|反驳| {sid(source_id)}")
+        for source_id in verdict.unknown:
+            if source_id in entries:
+                lines.append(f"  {cid} -.->|未知| {sid(source_id)}")
+        if not independent_support(verdict, source_registry).certain:
+            lines.append(f"  {cid} -.-> G")
+            needs_gap = True
+    if needs_gap:
+        lines.append('  G["证据缺口 / 待核实"]')
+    return lines
+
+
 def ensure_content_analysis_and_topology(
-    text: str, *, detail_level: str = "detailed"
+    text: str,
+    *,
+    detail_level: str = "detailed",
+    claim_map: Optional[Any] = None,
+    source_registry: Optional[dict] = None,
 ) -> str:
     """Append Content Analysis + Mermaid topology when conflicts exist and sections missing."""
     if not text or detail_level == "compact":
@@ -181,37 +237,62 @@ def ensure_content_analysis_and_topology(
     bullets = _extract_conflict_bullets(text)
     extras: List[str] = []
 
-    if not has_analysis and bullets:
+    claims = list(getattr(claim_map, "claims", []) or []) if claim_map else []
+
+    if not has_analysis and (claims or bullets):
         extras.append("## 内容分析 / Content Analysis\n")
-        extras.append(
-            "围绕争议点拆解：各方主张、可核对证据、仍不确定处。"
-            "下表为冲突要点摘要（由结构后处理生成，需结合正文证据阅读）。\n"
-        )
-        for i, b in enumerate(bullets, 1):
-            extras.append(f"{i}. {b}")
+        if claims:
+            from ..core.claim_verification import (
+                independent_support,
+                render_independent_support,
+            )
+
+            extras.append(
+                "围绕各条结论拆解：支持来源、反驳来源与仍不确定处。"
+                "下表为结构后处理生成的支持度摘要，须结合正文证据阅读。\n"
+            )
+            for i, verdict in enumerate(claims, 1):
+                rendered = render_independent_support(
+                    independent_support(verdict, source_registry)
+                )
+                extras.append(f"{i}. **{verdict.claim}** — {rendered}")
+        else:
+            extras.append(
+                "围绕争议点拆解：各方主张、可核对证据、仍不确定处。"
+                "下表为冲突要点摘要（由结构后处理生成，需结合正文证据阅读）。\n"
+            )
+            for i, b in enumerate(bullets, 1):
+                extras.append(f"{i}. {b}")
         extras.append("")
 
-    if not has_topo and bullets:
-        # Build a small mermaid graph; sanitize node labels
-        def nid(i: int) -> str:
-            return f"C{i}"
-
-        def lab(s: str) -> str:
-            s = re.sub(r"[\"\[\]]", "", s)
-            s = s.replace("\n", " ")
-            return (s[:36] + "…") if len(s) > 36 else s
-
+    if not has_topo and (claims or bullets):
         extras.append("## 关系拓扑 / Relationship Map\n")
         extras.append("```mermaid")
-        extras.append("flowchart TB")
-        extras.append('  Q["议题争议"]')
-        for i, b in enumerate(bullets, 1):
-            extras.append(f'  {nid(i)}["{lab(b)}"]')
-            extras.append(f"  Q --> {nid(i)}")
-        extras.append('  G["证据缺口 / 待核实"]')
-        if bullets:
+        if claims:
+            extras.extend(_claim_topology_lines(claim_map, source_registry))
+        else:
+            # Build a small mermaid graph; sanitize node labels
+            def nid(i: int) -> str:
+                return f"C{i}"
+
+            def lab(s: str) -> str:
+                s = re.sub(r"[\"\[\]]", "", s)
+                s = s.replace("\n", " ")
+                return (s[:36] + "…") if len(s) > 36 else s
+
+            extras.append("flowchart TB")
+            extras.append('  Q["议题争议"]')
+            for i, b in enumerate(bullets, 1):
+                extras.append(f'  {nid(i)}["{lab(b)}"]')
+                extras.append(f"  Q --> {nid(i)}")
+            extras.append('  G["证据缺口 / 待核实"]')
             extras.append(f"  {nid(1)} -.-> G")
         extras.append("```")
+        extras.append("")
+        extras.append(
+            "实线=注册表内有依据的支持关系，粗线=反驳，虚线=未知或未核实；"
+            "连线只表示来源与主张的关系，不代表事实已核实。\n"
+        )
         extras.append("")
 
     if not extras:
@@ -255,38 +336,6 @@ def strip_duplicate_trailing_conclusion(text: str) -> str:
     # Keep References section up to (not including) the duplicate conclusion
     kept = text[: ref_m.end() + dup.start()].rstrip() + "\n"
     return kept
-
-
-def renumber_citations(text: str) -> str:
-    """Compact citation numbers to 1..N by first-appearance order.
-
-    Keeps links usable when the model skips ids (e.g. missing [4]/[8]).
-    Rewrites both body markers like [3] and matching References list markers.
-    """
-    if not text:
-        return text
-    # References 为有序列表（``1. 标题``）时条目编号即正文引用号：压缩正文编号会
-    # 让正文与条目错位（正文 [2] 指向第 3 条），此时保持模型原编号。
-    ref_m = _REFERENCES_HEADING_ANY_RE.search(text)
-    if ref_m and re.search(r"(?m)^\s*\d{1,4}[.)]\s+\S", text[ref_m.end() :]):
-        return text
-    # Collect ids in order of first appearance (body + refs)
-    found: list[int] = []
-    seen: set[int] = set()
-    for m in re.finditer(r"\[(\d+)\]", text):
-        n = int(m.group(1))
-        if n not in seen:
-            seen.add(n)
-            found.append(n)
-    if not found or found == list(range(1, len(found) + 1)):
-        return text
-    mapping = {old: i for i, old in enumerate(found, 1)}
-
-    def _sub(m: re.Match[str]) -> str:
-        old = int(m.group(1))
-        return f"[{mapping.get(old, old)}]"
-
-    return re.sub(r"\[(\d+)\]", _sub, text)
 
 
 def _split_markdown_sections(text: str) -> List[tuple[str, str]]:
@@ -741,8 +790,7 @@ def is_prepared_report(text: str) -> bool:
     """True when ``text`` already came out of :func:`prepare_user_facing_report`.
 
     Callers may run on orchestrator output that was already presented
-    (Gradio re-render, exports); re-running the pipeline would renumber
-    citations again and nest the reshaped headings.
+    (Gradio re-render, exports); re-running would nest the reshaped headings.
     """
     return bool(
         text
@@ -751,7 +799,13 @@ def is_prepared_report(text: str) -> bool:
     )
 
 
-def prepare_user_facing_report(text: str, *, detail_level: str = "detailed") -> str:
+def prepare_user_facing_report(
+    text: str,
+    *,
+    detail_level: str = "detailed",
+    claim_map: Optional[Any] = None,
+    source_registry: Optional[dict] = None,
+) -> str:
     """Pipeline for Gradio/export/acceptance human-readable final report."""
     if not text:
         return text
@@ -760,9 +814,13 @@ def prepare_user_facing_report(text: str, *, detail_level: str = "detailed") -> 
     out = strip_diagnostic_noise(text)
     out = drop_incomplete_reference_lines(out)
     out = compact_pending_lead_trail(out)
-    out = ensure_content_analysis_and_topology(out, detail_level=detail_level)
+    out = ensure_content_analysis_and_topology(
+        out,
+        detail_level=detail_level,
+        claim_map=claim_map,
+        source_registry=source_registry,
+    )
     out = strip_duplicate_trailing_conclusion(out)
-    out = renumber_citations(out)
     out = reshape_report_for_consumer(out, detail_level=detail_level)
     # collapse excessive blank lines
     out = re.sub(r"\n{3,}", "\n\n", out).strip() + "\n"

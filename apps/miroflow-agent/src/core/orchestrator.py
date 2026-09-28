@@ -18,7 +18,6 @@ import uuid
 from collections import defaultdict
 from datetime import date
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlparse
 
 from miroflow_tools.manager import ToolManager
 from omegaconf import DictConfig
@@ -27,6 +26,7 @@ from ..config.settings import expose_sub_agents_as_tools
 from ..io.input_handler import process_input
 from ..io.output_formatter import OutputFormatter
 from ..io.report_presentation import prepare_user_facing_report
+from ..io.report_structure import ReportStructureValidator
 from ..llm.base_client import BaseClient
 from ..logging.task_logger import TaskLog, get_utc_plus_8_time
 from ..utils.parsing_utils import extract_llm_response_text
@@ -38,7 +38,9 @@ from ..utils.prompt_utils import (
     refusal_keywords,
 )
 from .answer_generator import AnswerGenerator
+from .claim_verification import extract_claims_from_report
 from .deep_efficiency import (
+    resolve_claim_verification_config,
     resolve_early_stop_config,
     resolve_exit_on_early_stop,
     resolve_max_scrape_per_task,
@@ -46,6 +48,7 @@ from .deep_efficiency import (
     scrape_skip_message,
 )
 from .lead_tracker import LeadTrackingManager, resolve_lead_tracking_config
+from .source_registry import normalize_domain, normalize_source_url
 from .stream_handler import StreamHandler
 from .tool_executor import ToolExecutor
 
@@ -390,6 +393,9 @@ class Orchestrator:
         )
         if not answer_available or not str(markdown or "").strip():
             return False
+        await self.stream.update(
+            "source_registry", self.task_log.source_registry.to_dict()
+        )
         await self.stream.update("final_output", {"markdown": markdown})
         return True
 
@@ -417,17 +423,7 @@ class Orchestrator:
             ),
         )
 
-    @staticmethod
-    def _normalize_domain(url: str) -> str:
-        if not url:
-            return ""
-        try:
-            netloc = urlparse(url).netloc.lower().strip()
-        except Exception:
-            return ""
-        if netloc.startswith("www."):
-            netloc = netloc[4:]
-        return netloc
+    _normalize_domain = staticmethod(normalize_domain)
 
     def _is_high_conf_domain(self, domain: str) -> bool:
         if not domain:
@@ -569,13 +565,17 @@ class Orchestrator:
                 if name:
                     metrics.record_search_provider_hit(str(name))
 
-    def _record_search_evidence(self, tool_name: str, tool_result: dict):
+    def _record_search_evidence(
+        self, tool_name: str, tool_result: dict, turn_count: int
+    ):
         # Always count the tool invocation for route comparison (Case D).
         self.task_log.run_metrics.record_search_attempt()
         parsed = self._parse_search_tool_payload(tool_result)
         if parsed:
             self._record_search_provider_metrics(parsed)
             self._record_retrieval_confidence(parsed)
+            if tool_name in SEARCH_TOOL_NAMES and "error" not in tool_result:
+                self._register_search_sources(parsed, turn_count)
 
         links = self._extract_search_links(tool_name, tool_result)
         if not links:
@@ -596,6 +596,12 @@ class Orchestrator:
             return
 
         self.verification_search_rounds += 1
+
+    def _register_search_sources(self, parsed: dict, turn: int) -> None:
+        try:
+            self.task_log.source_registry.register_search_hits(parsed, turn)
+        except Exception:
+            logger.warning("Source registration skipped", exc_info=True)
 
     def _record_retrieval_confidence(self, parsed: dict) -> None:
         """记录工具侧 confidence 门控结果（通过了就不再凑高置信来源）。"""
@@ -658,7 +664,11 @@ class Orchestrator:
             self.task_log.run_metrics.record_scrape(count=1)
 
     def _record_scrape_metric(
-        self, tool_name: str, tool_result: dict, turn_count: int
+        self,
+        tool_name: str,
+        tool_result: dict,
+        turn_count: int,
+        arguments: Optional[dict] = None,
     ) -> None:
         """Count successful scrapes; bump evidence only when body is non-empty.
 
@@ -668,6 +678,9 @@ class Orchestrator:
         not new evidence. Only success + non-empty body/extracted text bumps
         the evidence revision.
         """
+        if arguments is None:
+            arguments = {}
+        self._record_scrape_source_state(tool_name, tool_result, turn_count, arguments)
         reserved = False
         if isinstance(tool_result, dict):
             reserved = bool(tool_result.pop("_scrape_slot_reserved", False))
@@ -694,6 +707,52 @@ class Orchestrator:
             f"Main Agent | Turn: {turn_count} | Metrics",
             f"Recorded scrape for tool: {tool_name} ({kind})",
         )
+
+    def _record_scrape_source_state(
+        self,
+        tool_name: str,
+        tool_result: dict,
+        turn_count: int,
+        arguments: Optional[dict] = None,
+    ) -> None:
+        if tool_name not in SCRAPE_TOOL_NAMES:
+            return
+        if arguments is None:
+            arguments = {}
+        try:
+            kind = self._classify_scrape_result(tool_result)
+            if kind == "budget_skip":
+                return
+            registry = self.task_log.source_registry
+            parsed = self._parse_tool_result_payload(tool_result) or {}
+            url = arguments.get("url") or parsed.get("url")
+            if not normalize_source_url(url):
+                return
+            if kind == "failure":
+                registry.mark_fetch_failed(url, turn=turn_count)
+                return
+            # evidence / empty_success: fetch reached the page; store payload ref
+            step_index = len(self.task_log.step_logs)
+            self.task_log.log_step(
+                "debug",
+                "Source Registry | Scrape Content",
+                f"Stored scrape content from {tool_name} at turn {turn_count}",
+                metadata={
+                    "tool_name": tool_name,
+                    "turn": turn_count,
+                    "result": parsed,
+                },
+            )
+            registry.mark_fetched(
+                url,
+                final_url=parsed.get("final_url"),
+                content_ref=f"/step_logs/{step_index}/metadata/result",
+                turn=turn_count,
+                redirect_chain=parsed.get("redirect_chain"),
+                title=parsed.get("title", ""),
+            )
+        except Exception:
+            logger.warning("Source scrape state update skipped", exc_info=True)
 
     async def _execute_regular_tool_call(
         self,
@@ -726,9 +785,12 @@ class Orchestrator:
                 tool_name=tool_name,
                 arguments=arguments,
             )
-        except Exception:
+        except Exception as exc:
             if reserved:
                 self._release_scrape_slot()
+            self._record_scrape_source_state(
+                tool_name, {"error": str(exc)}, turn_count, arguments
+            )
             raise
         if reserved and isinstance(tool_result, dict):
             tool_result = dict(tool_result)
@@ -1101,14 +1163,22 @@ class Orchestrator:
             f"若同一观点已有≥2个独立来源支撑且冲突点已可成文，可停止追线索并开始写报告。"
         )
         message_history.append({"role": "user", "content": lead_followup_prompt})
+        follow_up_reason = reason or "priority"
         self.lead_tracker.trail.mark_followed_up(
-            lead, turn=turn_count, findings="正在追踪中..."
+            lead,
+            turn=turn_count,
+            findings="正在追踪中...",
+            reason=follow_up_reason,
         )
         self.task_log.run_metrics.record_follow_up_search()
         self.task_log.log_step(
             "info",
             f"Main Agent | Turn: {turn_count} | Lead Follow-up",
-            f"追踪线索（{reason}）：{lead.question[:100]}",
+            f"追踪线索（{follow_up_reason}）：{lead.question[:100]}",
+            metadata={
+                "lead_trace": lead.to_dict(),
+                "follow_up_reason": follow_up_reason,
+            },
         )
         await self._emit_stage_heartbeat(
             "线索追踪",
@@ -1619,6 +1689,17 @@ class Orchestrator:
                     tool_result = await self.sub_agent_tool_managers[
                         sub_agent_name
                     ].execute_tool_call(server_name, tool_name, arguments)
+                    if tool_name in SEARCH_TOOL_NAMES and "error" not in tool_result:
+                        self._register_search_sources(
+                            self._parse_search_tool_payload(tool_result), turn_count
+                        )
+                    self._record_scrape_source_state(
+                        tool_name, tool_result, turn_count, arguments
+                    )
+                    if tool_name in SEARCH_TOOL_NAMES | SCRAPE_TOOL_NAMES:
+                        await self.stream.update(
+                            "source_registry", self.task_log.source_registry.to_dict()
+                        )
 
                     # Update query count if successful
                     if "error" not in tool_result:
@@ -1692,6 +1773,13 @@ class Orchestrator:
                         "server_name": server_name,
                         "tool_name": tool_name,
                     }
+                    self._record_scrape_source_state(
+                        tool_name, tool_result, turn_count, arguments
+                    )
+                    if tool_name in SEARCH_TOOL_NAMES | SCRAPE_TOOL_NAMES:
+                        await self.stream.update(
+                            "source_registry", self.task_log.source_registry.to_dict()
+                        )
                     self.task_log.log_step(
                         "error",
                         f"{sub_agent_name} | Turn: {turn_count} | Tool Call",
@@ -1819,6 +1907,49 @@ class Orchestrator:
         await self.stream.end_agent(display_name, sub_agent_id)
 
         return final_answer_text
+
+    async def _adjudicate_report_claims(
+        self,
+        final_summary: str,
+        *,
+        system_prompt: str,
+        message_history: List[Dict[str, Any]],
+        turn_count: int,
+        registry: Dict[str, Any],
+    ) -> Optional[Any]:
+        """M3：裁决「结论主张 → 来源 → 支持/反驳/未知」，供 Q4 拓扑使用。
+
+        fail-closed：未开启、抽不到主张、调用失败都返回 ``None``，绝不阻断出稿。
+        M3 成本是一次无工具 LLM 调用，故由 ``resolve_claim_verification_config``
+        控制开关（deep 档默认开，其余档显式 opt-in）。
+        """
+        try:
+            enabled, max_claims = resolve_claim_verification_config(self.cfg)
+            if not enabled:
+                return None
+            claims = extract_claims_from_report(final_summary, limit=max_claims)
+            if not claims:
+                return None
+            claim_map = await self.answer_generator.generate_claim_support_map(
+                system_prompt=system_prompt,
+                message_history=message_history,
+                turn_count=turn_count,
+                claims=claims,
+            )
+            self.task_log.log_step(
+                "info",
+                "Main Agent | Claim Verification",
+                f"Adjudicated {len(claim_map.claims)}/{len(claims)} claims "
+                f"against {len(registry.get('entries', []))} registered sources",
+            )
+            return claim_map
+        except Exception as exc:  # never block final emit on claim verification
+            self.task_log.log_step(
+                "warning",
+                "Main Agent | Claim Verification",
+                f"claim verification skipped: {exc}",
+            )
+            return None
 
     async def run_main_agent(
         self,
@@ -2157,8 +2288,14 @@ class Orchestrator:
                     tool_result = self.tool_executor.post_process_tool_call_result(
                         tool_name, tool_result
                     )
-                    self._record_search_evidence(tool_name, tool_result)
-                    self._record_scrape_metric(tool_name, tool_result, turn_count)
+                    self._record_search_evidence(tool_name, tool_result, turn_count)
+                    self._record_scrape_metric(
+                        tool_name, tool_result, turn_count, arguments
+                    )
+                    if tool_name in SEARCH_TOOL_NAMES | SCRAPE_TOOL_NAMES:
+                        await self.stream.update(
+                            "source_registry", self.task_log.source_registry.to_dict()
+                        )
 
                     result = (
                         tool_result.get("result")
@@ -2311,10 +2448,17 @@ class Orchestrator:
                                     tool_name, tool_result
                                 )
                             )
-                            self._record_search_evidence(tool_name, tool_result)
-                            self._record_scrape_metric(
+                            self._record_search_evidence(
                                 tool_name, tool_result, turn_count
                             )
+                            self._record_scrape_metric(
+                                tool_name, tool_result, turn_count, arguments
+                            )
+                            if tool_name in SEARCH_TOOL_NAMES | SCRAPE_TOOL_NAMES:
+                                await self.stream.update(
+                                    "source_registry",
+                                    self.task_log.source_registry.to_dict(),
+                                )
 
                             result = (
                                 tool_result.get("result")
@@ -2383,6 +2527,11 @@ class Orchestrator:
                             "tool_name": tool_name,
                             "error": str(e),
                         }
+                        if tool_name in SEARCH_TOOL_NAMES | SCRAPE_TOOL_NAMES:
+                            await self.stream.update(
+                                "source_registry",
+                                self.task_log.source_registry.to_dict(),
+                            )
                         self.task_log.log_step(
                             "error",
                             f"Main Agent | Turn: {turn_count} | Tool Call",
@@ -2558,9 +2707,25 @@ class Orchestrator:
         # User-facing cleanup: strip diagnostics, fix truncated refs, compact
         # pending leads, and add analysis/topology when useful.
         detail = getattr(self.answer_generator, "output_detail_level", "detailed")
+        registry = self.task_log.source_registry.to_dict()
+
+        # M3: adjudicate claim -> source support before presentation, so the
+        # topology (Q4) can annotate which conclusions the registry actually
+        # backs.
+        claim_map = await self._adjudicate_report_claims(
+            final_summary,
+            system_prompt=system_prompt,
+            message_history=message_history,
+            turn_count=turn_count,
+            registry=registry,
+        )
+
         try:
             final_summary = prepare_user_facing_report(
-                final_summary, detail_level=str(detail)
+                final_summary,
+                detail_level=str(detail),
+                claim_map=claim_map,
+                source_registry=registry,
             )
         except Exception as exc:  # never block final emit on presentation
             self.task_log.log_step(
@@ -2568,6 +2733,20 @@ class Orchestrator:
                 "Main Agent | Report Presentation",
                 f"prepare_user_facing_report failed: {exc}",
             )
+
+        final_summary, citation_issues = ReportStructureValidator.enforce_citations(
+            final_summary, registry
+        )
+        if final_boxed_answer not in (None, FORMAT_ERROR_MESSAGE):
+            final_boxed_answer, boxed_issues = (
+                ReportStructureValidator.enforce_citations(
+                    final_boxed_answer, registry, include_references=False
+                )
+            )
+            citation_issues.extend(boxed_issues)
+        result_quality["issues"] = list(
+            dict.fromkeys([*result_quality.get("issues", []), *citation_issues])
+        )
 
         final_output_emitted = await self._emit_final_output(
             final_summary,

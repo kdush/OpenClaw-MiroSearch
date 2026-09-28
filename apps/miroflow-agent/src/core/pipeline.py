@@ -47,6 +47,7 @@ def _build_pipeline_result(
     failure_experience_summary: Optional[str] = None,
     error: Optional[str] = None,
     result_quality: Optional[Dict[str, Any]] = None,
+    source_registry: dict,
 ) -> dict:
     """构建结构化 pipeline 结果，供 worker 根据 status 决定落库状态。"""
     return {
@@ -57,6 +58,7 @@ def _build_pipeline_result(
         "failure_experience_summary": failure_experience_summary,
         "error": error,
         "result_quality": result_quality,
+        "source_registry": source_registry,
     }
 
 
@@ -314,6 +316,7 @@ async def execute_task_pipeline(
                 failure_experience_summary=failure_experience_summary,
                 error=FINAL_ANSWER_UNAVAILABLE_ERROR,
                 result_quality=result_quality,
+                source_registry=task_log.source_registry.to_dict(),
             )
 
         task_log.status = "success"
@@ -332,6 +335,7 @@ async def execute_task_pipeline(
             log_file_path=log_file_path,
             failure_experience_summary=failure_experience_summary,
             result_quality=result_quality,
+            source_registry=task_log.source_registry.to_dict(),
         )
 
     except asyncio.CancelledError:
@@ -357,6 +361,7 @@ async def execute_task_pipeline(
             final_boxed_answer="",
             log_file_path=log_file_path,
             error=cancel_message,
+            source_registry=task_log.source_registry.to_dict(),
         )
 
     except Exception as e:
@@ -398,6 +403,7 @@ async def execute_task_pipeline(
             final_boxed_answer="",
             log_file_path=log_file_path,
             error=error_details,
+            source_registry=task_log.source_registry.to_dict(),
         )
 
     finally:
@@ -465,6 +471,17 @@ async def execute_task_pipeline(
                         {
                             "event": "run_metrics",
                             "data": task_log.run_metrics.to_dict(),
+                        }
+                    )
+                except Exception:
+                    pass
+
+            if stream_queue is not None:
+                try:
+                    await stream_queue.put(
+                        {
+                            "event": "source_registry",
+                            "data": task_log.source_registry.to_dict(),
                         }
                     )
                 except Exception:

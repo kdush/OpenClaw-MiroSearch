@@ -3,9 +3,7 @@
 from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-
 from settings import settings
-
 
 VALID_MODES = (
     "balanced",
@@ -223,6 +221,7 @@ class ResearchTaskStatusResponse(BaseModel):
     result: Optional[str] = None
     event_count: int = 0
     result_quality: "ResultQuality" = Field(default_factory=lambda: ResultQuality())
+    source_registry: dict = Field(default_factory=lambda: {"entries": []})
 
 
 class ResultQuality(BaseModel):

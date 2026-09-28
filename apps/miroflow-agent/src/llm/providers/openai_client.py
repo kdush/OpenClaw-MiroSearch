@@ -69,6 +69,23 @@ TIMEOUT_ERROR_TYPE_NAMES = frozenset(
 )
 
 
+def is_summary_or_fast_stage(agent_type: str) -> bool:
+    """summary/fast 阶段：不追求深度推理，可尝试关闭思考以加速。"""
+    return agent_type in SUMMARY_AGENT_TYPES or agent_type in FAST_AGENT_TYPES
+
+
+def is_unsupported_request_param_error(exc: Exception) -> bool:
+    """请求因「参数不被模型接受」被拒——与提供商无关，只看状态码。
+
+    400 是「请求本身有问题」的标准码。上下文超长另有专门处理路径，排除掉，
+    避免和它抢分支。这里刻意不匹配任何提供商特有的错误文案或模型名。
+    """
+    text = str(exc)
+    if "Error code: 400" not in text:
+        return False
+    return "longer than the model" not in text
+
+
 @dataclasses.dataclass
 class OpenAIClient(BaseClient):
     def __post_init__(self):
@@ -412,6 +429,10 @@ class OpenAIClient(BaseClient):
         attempt = 0
         _429_streak = 0  # 连续 429 计数，达到 pool.size 时视为一轮完整失败
         timeout_degrade_used = False
+        # 「关闭思考」是可选加速参数，各家模型支持情况不一。这里不做模型名单判断，
+        # 而是先尝试、被拒后剥离再试一次（见下方错误处理）。
+        thinking_opt_out_requested = is_summary_or_fast_stage(agent_type)
+        thinking_opt_out_stripped = False
         while attempt < max_retries:
             params = {
                 "model": request_model_name,
@@ -442,8 +463,10 @@ class OpenAIClient(BaseClient):
             ):
                 params["extra_body"]["thinking"] = {"type": "enabled"}
 
-            # summary/fast 场景不需要深度推理，显式禁用 thinking 以加速响应
-            if agent_type in SUMMARY_AGENT_TYPES or agent_type in FAST_AGENT_TYPES:
+            # summary/fast 场景不需要深度推理，尝试禁用 thinking 以加速响应。
+            # 这是可选优化：不支持该参数的模型会在下方被识别并剥离重试，
+            # 因此这里不需要知道模型是谁。
+            if thinking_opt_out_requested:
                 params["extra_body"]["thinking"] = {"type": "disabled"}
                 params["extra_body"]["reasoning"] = {
                     "effort": "none",
@@ -687,6 +710,27 @@ class OpenAIClient(BaseClient):
                         f"Error: {str(e)}",
                     )
                     raise e
+                elif (
+                    thinking_opt_out_requested
+                    and not thinking_opt_out_stripped
+                    and is_unsupported_request_param_error(e)
+                ):
+                    # 模型不接受「关闭思考」参数。它只是可选加速项，剥离后重试
+                    # 一次即可——且**不消耗 max_retries**：summary 阶段
+                    # max_retries=1，走常规重试等于直接失败，报告就出不来了。
+                    # 这里不认识任何模型名，纯靠「请求被拒」自适应。
+                    thinking_opt_out_requested = False
+                    thinking_opt_out_stripped = True
+                    self._record_llm_retry()
+                    self.task_log.log_step(
+                        "warning",
+                        "LLM | Thinking Opt-out Unsupported",
+                        (
+                            "模型不接受「关闭思考」参数，剥离该可选参数后重试一次"
+                            f"（不占用重试次数）: {str(e)[:200]}"
+                        ),
+                    )
+                    continue
                 else:
                     if attempt < max_retries - 1:
                         self._record_llm_retry()

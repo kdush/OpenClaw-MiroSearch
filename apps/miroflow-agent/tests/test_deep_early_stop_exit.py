@@ -268,7 +268,7 @@ async def test_new_search_conflict_invalidates_stale_agree():
     orch.answer_generator.generate_agreement_check = AsyncMock(return_value="conflict")
 
     orch._record_search_evidence(
-        "google_search", _search_result("https://www.apnews.com/contradicts")
+        "google_search", _search_result("https://www.apnews.com/contradicts"), 4
     )
 
     # 新证据已使旧 AGREE 无法通过早停门（复评之前也 fail-closed）
@@ -331,7 +331,7 @@ async def test_conflict_resolved_rearms_countdown_from_new_turn():
 
     # 回合 4：新搜索推翻旧结论，复评为 conflict，撤销倒计时
     orch._record_search_evidence(
-        "google_search", _search_result("https://www.apnews.com/x")
+        "google_search", _search_result("https://www.apnews.com/x"), 4
     )
     await orch._maybe_evaluate_evidence_agreement("sys", [], 4, "question")
     assert orch.evidence_agreement == "conflict"
@@ -340,7 +340,7 @@ async def test_conflict_resolved_rearms_countdown_from_new_turn():
 
     # 回合 6：又一轮新证据化解矛盾，复评为 agree
     orch._record_search_evidence(
-        "google_search", _search_result("https://www.bbc.com/corroborates")
+        "google_search", _search_result("https://www.bbc.com/corroborates"), 6
     )
     await orch._maybe_evaluate_evidence_agreement("sys", [], 6, "question")
     assert orch.evidence_agreement == "agree"
@@ -409,7 +409,7 @@ async def test_cap_exhausted_with_new_evidence_stays_fail_closed():
     orch.answer_generator.generate_agreement_check = AsyncMock(return_value="agree")
 
     orch._record_search_evidence(
-        "google_search", _search_result("https://www.apnews.com/x")
+        "google_search", _search_result("https://www.apnews.com/x"), 4
     )
     await orch._maybe_evaluate_evidence_agreement("sys", [], 4, "question")
 
@@ -458,8 +458,8 @@ async def test_no_readjudication_without_new_evidence():
     orch.evidence_agreement = "unknown"
     orch.evidence_revision = 0
     orch.agreement_checked_revision = 0
-    orch._record_search_evidence("google_search", _search_result("https://a.com/1"))
-    orch._record_search_evidence("google_search", _search_result("https://b.com/2"))
+    orch._record_search_evidence("google_search", _search_result("https://a.com/1"), 5)
+    orch._record_search_evidence("google_search", _search_result("https://b.com/2"), 5)
     await orch._maybe_evaluate_evidence_agreement("sys", [], 5, "question")
     orch.answer_generator.generate_agreement_check.assert_awaited_once()
     assert orch.agreement_checked_revision == orch.evidence_revision == 2
@@ -541,7 +541,7 @@ async def test_stale_agree_revocation_overrides_convergence_nudge():
     orch.answer_generator.generate_agreement_check = AsyncMock(return_value="conflict")
 
     orch._record_search_evidence(
-        "google_search", _search_result("https://www.apnews.com/x")
+        "google_search", _search_result("https://www.apnews.com/x"), 4
     )
     await orch._maybe_evaluate_evidence_agreement("sys", history, 4, "question")
 

@@ -19,10 +19,13 @@ import os
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional
 
 # Import colorama for cross-platform colored output
 from colorama import Fore, Style, init
+
+if TYPE_CHECKING:
+    from ..core.source_registry import SourceRegistry
 
 # Initialize colorama
 init(autoreset=True, strip=False)
@@ -110,6 +113,13 @@ def get_utc_plus_8_time() -> str:
     """Get UTC+8 timezone current time string"""
     utc_plus_8 = timezone(timedelta(hours=8))
     return datetime.now(utc_plus_8).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _default_source_registry() -> "SourceRegistry":
+    # core.__init__ 会导入 task_logger，需在模块初始化结束后加载。
+    from ..core.source_registry import SourceRegistry
+
+    return SourceRegistry()
 
 
 @dataclass
@@ -290,6 +300,7 @@ class TaskLog:
     step_logs: List[StepLog] = field(default_factory=list)
     trace_data: Dict[str, Any] = field(default_factory=dict)
     run_metrics: RunMetrics = field(default_factory=RunMetrics)
+    source_registry: "SourceRegistry" = field(default_factory=_default_source_registry)
 
     def record_stage_timing(
         self,
@@ -526,4 +537,9 @@ class TaskLog:
         Note:
             The dictionary keys should match the TaskLog field names.
         """
-        return cls(**d)
+        values = dict(d)
+        if isinstance(values.get("source_registry"), dict):
+            from ..core.source_registry import SourceRegistry
+
+            values["source_registry"] = SourceRegistry(**values["source_registry"])
+        return cls(**values)

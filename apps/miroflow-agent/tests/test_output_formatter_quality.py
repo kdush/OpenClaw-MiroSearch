@@ -30,11 +30,24 @@ def test_format_final_summary_payload_with_boxed_is_format_valid():
     formatter = OutputFormatter()
 
     payload = formatter.format_final_summary_payload(
-        "结果如下：\\boxed{正确答案}",
+        "结果如下：\\boxed{正确答案[7]}\n\n"
+        "## References\n\n[7]: https://example.com/other",
         client=None,
+        source_registry={
+            "entries": [
+                {
+                    "source_id": 7,
+                    "normalized_url": "https://example.com/source",
+                    "status": "snippet_only",
+                    "discoveries": [{"provider": "serper", "position": 1}],
+                }
+            ]
+        },
     )
 
-    assert payload["boxed_answer"] == "正确答案"
+    assert payload["boxed_answer"] == "正确答案（引用链接不匹配）"
+    assert "citation_target_mismatch:7" in payload["quality"]["issues"]
+    assert "\\boxed{正确答案（引用链接不匹配）}" in payload["summary"]
     assert payload["quality"]["format_valid"] is True
     assert payload["quality"]["fallback_used"] is False
 

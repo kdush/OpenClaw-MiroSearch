@@ -96,6 +96,9 @@ class TaskEventSink:
         elif event_type == "run_metrics":
             await self._store.set_last_run_metrics(data)
 
+        elif event_type == "source_registry":
+            await self._store.store_source_registry(self._task_id, data)
+
         # final_output: 只存储正文；终态由 Worker 根据结构化 pipeline 结果决定。
         elif event_type == "final_output" and self._store_result_on_final:
             markdown = data.get("markdown", "")
