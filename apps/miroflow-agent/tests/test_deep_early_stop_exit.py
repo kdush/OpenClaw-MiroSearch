@@ -3,13 +3,14 @@
 
 另含证据一致性裁决（agreement gate）回归：高可信域名数值门满足后，
 只有裁决为 agree 且已裁决当前证据版本才允许早停；新证据使旧裁决失效，
-conflict / unknown / 次数耗尽均 fail-closed。
+conflict / unknown / 次数耗尽均 fail-closed。失败/空抓取不算新证据。
 """
 
 from __future__ import annotations
 
 import json
 import sys
+import threading
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -57,6 +58,30 @@ def _bare_orchestrator(**kwargs) -> Orchestrator:
 def _search_result(url: str) -> dict:
     """google_search 工具结果载荷（_extract_search_links 可解析）。"""
     return {"result": json.dumps({"organic": [{"link": url}]})}
+
+
+def _scrape_url_result(*, success: bool, content: str = "", error: str = "") -> dict:
+    """scrape_url 内层 JSON 协议（由 ToolManager 包在外层 result 里）。
+
+    失败载荷按工具真实契约构造：`success=false` + `error`，且不含 `content`
+    字段（见 libs/miroflow-tools/.../search_and_scrape_webpage.py 全部错误分支）。
+    这正是必须嵌套解析而非看外层 `result` 是否为空的理由——失败时外层
+    `result` 仍是一段非空 JSON 字符串，旧逻辑会把整段 JSON 当正文当成新证据。
+    """
+    if not success:
+        payload: dict = {
+            "success": False,
+            "error": error or "request timed out",
+            "url": "https://example.com/x",
+        }
+    else:
+        payload = {
+            "success": True,
+            "url": "https://example.com/x",
+            "content": content,
+            "content_length": len(content),
+        }
+    return {"result": json.dumps(payload, ensure_ascii=False)}
 
 
 def test_force_summary_after_post_early_stop_turns():
@@ -128,6 +153,111 @@ def test_early_stop_blocked_when_agree_verdict_stale():
     assert orch._should_force_summary_after_early_stop(10) is False
 
 
+def test_failed_scrape_does_not_count_or_bump_evidence():
+    """内层 success=false（超时等）：不计入 scrape_count，不递增证据版本。"""
+    orch = _bare_orchestrator()
+    orch._record_scrape_metric(
+        "scrape_url",
+        _scrape_url_result(success=False, error="request timed out"),
+        4,
+    )
+    assert orch.task_log.run_metrics.scrape_count == 0
+    assert orch.evidence_revision == 2
+    assert orch.evidence_agreement == "agree"
+    assert orch._should_early_stop_clue_chase() is True
+
+
+def test_outer_envelope_error_does_not_count_or_bump_evidence():
+    """ToolManager 外层 envelope 带 error（无内层 result）：不计配额、不递增。"""
+    orch = _bare_orchestrator()
+    orch._record_scrape_metric(
+        "scrape_url",
+        {
+            "server_name": "search_and_scrape_webpage",
+            "tool_name": "scrape_url",
+            "error": "Tool execution failed: timeout",
+        },
+        4,
+    )
+    assert orch.task_log.run_metrics.scrape_count == 0
+    assert orch.evidence_revision == 2
+    assert orch._should_early_stop_clue_chase() is True
+
+
+def test_failed_scrape_releases_reserved_slot():
+    """失败抓取释放预占配额，避免 reservation 泄漏占满预算。"""
+    orch = _bare_orchestrator(max_scrape_per_task=8)
+    orch._scrape_budget_lock = threading.Lock()
+    orch._scrape_slots_reserved = 1
+    payload = _scrape_url_result(success=False, error="request timed out")
+    payload["_scrape_slot_reserved"] = True
+
+    orch._record_scrape_metric("scrape_url", payload, 4)
+
+    assert orch.task_log.run_metrics.scrape_count == 0
+    assert orch.evidence_revision == 2
+    assert orch._scrape_slots_reserved == 0
+
+
+def test_budget_skip_does_not_count_or_bump_evidence():
+    """预算 soft-skip：不计 scrape_count / evidence_revision。"""
+    orch = _bare_orchestrator()
+    orch._record_scrape_metric(
+        "scrape_url",
+        {"result": "[scrape_budget] Full-page scrape skipped (used 8/8)."},
+        4,
+    )
+    assert orch.task_log.run_metrics.scrape_count == 0
+    assert orch.evidence_revision == 2
+    assert orch._should_early_stop_clue_chase() is True
+
+
+def test_empty_success_scrape_counts_budget_but_not_evidence():
+    """success=true 但 content 为空：消耗抓取配额，不算新证据。"""
+    orch = _bare_orchestrator()
+    orch._record_scrape_metric(
+        "scrape_url",
+        _scrape_url_result(success=True, content=""),
+        4,
+    )
+    assert orch.task_log.run_metrics.scrape_count == 1
+    assert orch.evidence_revision == 2
+    assert orch._should_early_stop_clue_chase() is True
+
+
+def test_nonempty_scrape_counts_and_bumps_evidence():
+    """真正有正文：计入 scrape_count 并递增证据版本，使旧 AGREE 失效。"""
+    orch = _bare_orchestrator()
+    orch._record_scrape_metric(
+        "scrape_url",
+        _scrape_url_result(success=True, content="页面正文与核心结论相矛盾"),
+        4,
+    )
+    assert orch.task_log.run_metrics.scrape_count == 1
+    assert orch.evidence_revision == 3
+    assert orch._should_early_stop_clue_chase() is False
+
+
+def test_jina_extracted_info_counts_as_evidence():
+    """scrape_and_extract_info：正文在 extracted_info，非 content。"""
+    orch = _bare_orchestrator()
+    payload = {
+        "result": json.dumps(
+            {
+                "success": True,
+                "url": "https://example.com/x",
+                "extracted_info": "摘录：核心结论被独立来源印证",
+                "error": "",
+            },
+            ensure_ascii=False,
+        )
+    }
+    orch._record_scrape_metric("scrape_and_extract_info", payload, 4)
+    assert orch.task_log.run_metrics.scrape_count == 1
+    assert orch.evidence_revision == 3
+    assert orch._should_early_stop_clue_chase() is False
+
+
 @pytest.mark.asyncio
 async def test_new_search_conflict_invalidates_stale_agree():
     """场景①：AGREE 后新搜索带来关键冲突 → 撤销倒计时并复评为 conflict。"""
@@ -167,7 +297,11 @@ async def test_new_scrape_conflict_invalidates_stale_agree():
     orch.answer_generator = MagicMock()
     orch.answer_generator.generate_agreement_check = AsyncMock(return_value="conflict")
 
-    orch._record_scrape_metric("scrape_url", {"result": "页面正文与核心结论相矛盾"}, 4)
+    orch._record_scrape_metric(
+        "scrape_url",
+        _scrape_url_result(success=True, content="页面正文与核心结论相矛盾"),
+        4,
+    )
 
     assert orch.evidence_revision == 3
     assert orch.task_log.run_metrics.scrape_count == 1
@@ -212,7 +346,7 @@ async def test_conflict_resolved_rearms_countdown_from_new_turn():
     assert orch.evidence_agreement == "agree"
     assert orch._should_early_stop_clue_chase() is True
 
-    # 从新回合重新计时：回合 7 未到阈值，回合 8 强制总结
+    # 从新回合重新计时：回合 7 未到预算，回合 8 强制总结
     assert orch._should_force_summary_after_early_stop(6) is False
     assert orch.deep_early_stop_turn == 6
     assert orch._should_force_summary_after_early_stop(7) is False
@@ -221,6 +355,48 @@ async def test_conflict_resolved_rearms_countdown_from_new_turn():
     # 运行指标保留“曾触发”的首次记录
     assert orch.task_log.run_metrics.early_stop_triggered is True
     assert orch.task_log.run_metrics.early_stop_turn == 3
+
+
+@pytest.mark.asyncio
+async def test_supporting_new_evidence_can_reagree_after_neutral_revoke():
+    """新证据继续支持原结论：撤销提示保持中性，复评可重新取得 AGREE。"""
+    orch = _bare_orchestrator()
+    orch.deep_early_stop_triggered = True
+    orch.deep_early_stop_turn = 3
+    orch._deep_convergence_nudge_sent = True
+    history = [
+        {
+            "role": "user",
+            "content": "已有足够独立来源与检索轮次，请停止继续检索/抓取，"
+            "立即基于现有证据撰写完整研究报告。",
+        }
+    ]
+    orch.answer_generator = MagicMock()
+    orch.answer_generator.generate_agreement_check = AsyncMock(return_value="agree")
+
+    orch._record_scrape_metric(
+        "scrape_url",
+        _scrape_url_result(success=True, content="正文继续印证既有核心结论"),
+        4,
+    )
+    assert orch.evidence_revision == 3
+    assert orch._should_early_stop_clue_chase() is False
+
+    await orch._maybe_evaluate_evidence_agreement("sys", history, 4, "question")
+
+    assert orch.evidence_agreement == "agree"
+    assert orch.agreement_checked_revision == orch.evidence_revision == 3
+    assert orch._should_early_stop_clue_chase() is True
+    assert orch._deep_convergence_nudge_sent is False
+    assert len(history) == 2
+    revoke_msg = history[-1]["content"]
+    assert "作废" in revoke_msg
+    assert "支持" in revoke_msg and "反驳" in revoke_msg and "无关" in revoke_msg
+    assert "相冲突" not in revoke_msg
+    assert "化解冲突" not in revoke_msg
+    # 裁决输入应包含中性撤销提示，而非预设冲突
+    call_kwargs = orch.answer_generator.generate_agreement_check.await_args.kwargs
+    assert call_kwargs["message_history"][-1]["content"] == revoke_msg
 
 
 @pytest.mark.asyncio
@@ -349,7 +525,7 @@ async def test_agreement_attempts_capped_and_unknown_stays_fail_closed():
 
 @pytest.mark.asyncio
 async def test_stale_agree_revocation_overrides_convergence_nudge():
-    """旧 AGREE 失效时撤销收敛提示，并向会话写入覆盖指令。"""
+    """旧 AGREE 失效时撤销收敛提示，并向会话写入中性覆盖指令。"""
     orch = _bare_orchestrator()
     orch.deep_early_stop_triggered = True
     orch.deep_early_stop_turn = 3
@@ -375,6 +551,8 @@ async def test_stale_agree_revocation_overrides_convergence_nudge():
     assert len(history) == 2
     assert history[-1]["role"] == "user"
     assert "作废" in history[-1]["content"]
+    assert "相冲突" not in history[-1]["content"]
+    assert "支持" in history[-1]["content"]
 
 
 def test_parse_agreement_verdict_variants():

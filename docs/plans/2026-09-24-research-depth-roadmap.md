@@ -1,7 +1,7 @@
 # 谛听研究深度与证据可信度优化方案（评审回填版）
 
 - **日期：** 2026-09-24（v2，回填外部评审意见）
-- **状态：** 评审意见已合入本文档；路线图事项未动工。代码侧仅 §0 本 PR 阻塞项在工作区进行中（未提交）
+- **状态：** 评审意见已合入本文档；路线图事项未动工。§0 版本门与撤销机制已提交（`0334af2`），文档回填已提交（`8aa2b9c`）；合并前复核指出的失败/空抓取误计证据与撤销提示预设冲突两处已在工作区修补，并经三轮静态检查 + 全量测试复核（227 项通过，含按工具真实返回协议构造的失败/空正文回归用例），待再复核合并
 - **分支：** `feat/diting-research-quality-ui`
 - **v2 变更说明：** 按评审修正两处过期事实（provider 覆盖门槛、API 报告模式）；新增本 PR 合并门槛（§0）、数据契约（阶段 A）、统一完成标准（§7）；Q2/Q3 移出快赢批次改为与 M2 同批交付；移除未实测的工期估计；M3 计数口径、M5 范围按评审裁决收窄。
 - **关联文档：** [2026-09-24-jev-search-borrowing.md](./2026-09-24-jev-search-borrowing.md)（对标评审，已同步更正两处事实错误）
@@ -17,12 +17,13 @@
 - 新证据进入主历史后，对当前证据版本重裁决；
 - CONFLICT / UNKNOWN / 裁决调用失败 / 次数耗尽，一律不得强制总结（fail-closed，继续研究）；
 - 冲突解除并重新获得 AGREE 时，倒计时从当前回合重新起算。
+- 失败抓取与空正文不算新证据（不递增 `evidence_revision`）；撤销收敛提示须中性表述，不得预设“新证据相冲突”。
 
-**回归测试覆盖：** 新搜索带来反证、仅抓取带来反证、冲突解除后重新 AGREE、裁决调用失败、并行批次；每批最多裁决一次，整次运行维持 3 次裁决上限。
+**回归测试覆盖：** 新搜索带来反证、仅抓取带来反证、冲突解除后重新 AGREE、新证据继续支持原结论可再 AGREE、裁决调用失败、并行批次、失败/空抓取不计证据；每批最多裁决一次，整次运行维持 3 次裁决上限。
 
 **范围纪律：** M1–M5 不混入本修复。
 
-**实现现状（2026-09-24 核实）：** 版本绑定与撤销机制已在工作区实现（`evidence_revision` 绑定 `_should_early_stop_clue_chase`，orchestrator.py:697-712；`_bump_evidence_revision` :714-716；`_revoke_stale_early_stop_countdown` :718 起，配套 test_deep_early_stop_exit.py / test_parallel_scrape_budget.py 修改），未提交；合并前须按上述清单逐项核验。
+**实现现状（2026-09-24 核实）：** 版本绑定与撤销机制已提交于 `0334af2`（`evidence_revision` 绑定 `_should_early_stop_clue_chase`；`_bump_evidence_revision`；`_revoke_stale_early_stop_countdown`；配套 `test_deep_early_stop_exit.py` / `test_parallel_scrape_budget.py`）。合并前复核要求：按抓取工具返回协议判断成功且正文非空后才递增证据版本；撤销提示改为中性核查措辞。上述两处已在工作区修补：`_classify_scrape_result` 解析工具内层 JSON（`success=false` 计失败、`success=true` 且 `content`/`extracted_info` 为空计空抓取、仅成功且正文非空才递增证据版本并计抓取配额），撤销提示改为“请先重新核查新证据是支持、反驳还是与原结论无关”。已通过三轮复核：`ruff check`/`format` 干净、`apps/miroflow-agent` 全量 227 项测试通过；并按 `scrape_url` 真实错误载荷（`success=false` + `error`，无 `content` 字段）补强回归用例。
 
 ## 1. 项目定位与取舍判据
 

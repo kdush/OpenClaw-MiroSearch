@@ -466,23 +466,75 @@ class Orchestrator:
                 links.append(link.strip())
         return links
 
-    def _parse_search_tool_payload(self, tool_result: dict) -> dict:
-        """Parse google_search / sogou_search tool payload into a dict."""
+    def _parse_tool_result_payload(self, tool_result: dict) -> Optional[dict]:
+        """Parse a tool ``result`` field into a dict when it is structured JSON.
+
+        Most tools (``scrape_url``, ``jina_scrape_llm_summary``, …) return their
+        own JSON document *serialized as a string* inside the outer
+        ``{"server_name", "tool_name", "result"}`` envelope. Success/failure and
+        body text therefore live one level deeper than the envelope, so callers
+        must inspect the parsed document rather than the raw ``result`` text.
+        """
         raw_result = (
             tool_result.get("result") if isinstance(tool_result, dict) else None
         )
         if not raw_result:
-            return {}
+            return None
+        if isinstance(raw_result, dict):
+            return raw_result
         if isinstance(raw_result, str):
             try:
                 parsed = json.loads(raw_result)
             except json.JSONDecodeError:
-                return {}
-        elif isinstance(raw_result, dict):
-            parsed = raw_result
-        else:
-            return {}
-        return parsed if isinstance(parsed, dict) else {}
+                return None
+            return parsed if isinstance(parsed, dict) else None
+        return None
+
+    def _parse_search_tool_payload(self, tool_result: dict) -> dict:
+        """Parse google_search / sogou_search tool payload into a dict."""
+        return self._parse_tool_result_payload(tool_result) or {}
+
+    def _scrape_body_text(self, parsed: dict) -> str:
+        """Extract primary body text from a scrape-tool JSON payload."""
+        for key in ("content", "extracted_info", "text", "markdown"):
+            value = parsed.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return ""
+
+    def _classify_scrape_result(self, tool_result: dict) -> str:
+        """Classify scrape tool output for budget + evidence accounting.
+
+        Returns one of:
+        - ``budget_skip``: soft skip message, do not count
+        - ``failure``: tool/HTTP/timeout error or ``success=false``
+        - ``empty_success``: fetch succeeded but body/extracted text is empty
+        - ``evidence``: successful scrape with non-empty body (new evidence)
+
+        Scrape tools signal failure *inside* their JSON payload
+        (``{"success": false, "error": ...}`` with no ``content`` field). Both
+        success and failure envelopes carry a non-empty ``result`` JSON string,
+        so emptiness of the outer string is not a usable evidence signal.
+        """
+        result_text = str(tool_result.get("result") or "")
+        if "[scrape_budget]" in result_text:
+            return "budget_skip"
+        # ToolManager may surface transport/tool failures on the outer envelope.
+        if "error" in tool_result:
+            return "failure"
+
+        parsed = self._parse_tool_result_payload(tool_result)
+        if parsed is not None and "success" in parsed:
+            if not parsed.get("success"):
+                return "failure"
+            if self._scrape_body_text(parsed):
+                return "evidence"
+            return "empty_success"
+
+        # Legacy / unstructured tools: non-empty plain text counts as evidence.
+        if result_text.strip():
+            return "evidence"
+        return "failure"
 
     def _record_search_provider_metrics(self, parsed: dict) -> None:
         """Record which providers were attempted / returned results."""
@@ -608,17 +660,25 @@ class Orchestrator:
     def _record_scrape_metric(
         self, tool_name: str, tool_result: dict, turn_count: int
     ) -> None:
-        """Count only real full-page scrapes (budget-skip results excluded)."""
+        """Count successful scrapes; bump evidence only when body is non-empty.
+
+        Failures (``success=false``, timeouts, HTTP errors) and budget skips
+        release any reserved slot without incrementing ``scrape_count`` or
+        ``evidence_revision``. Empty successful fetches consume budget but are
+        not new evidence. Only success + non-empty body/extracted text bumps
+        the evidence revision.
+        """
         reserved = False
         if isinstance(tool_result, dict):
             reserved = bool(tool_result.pop("_scrape_slot_reserved", False))
 
-        result_text = str(tool_result.get("result") or "")
-        if (
-            tool_name not in SCRAPE_TOOL_NAMES
-            or "error" in tool_result
-            or "[scrape_budget]" in result_text
-        ):
+        if tool_name not in SCRAPE_TOOL_NAMES:
+            if reserved:
+                self._release_scrape_slot()
+            return
+
+        kind = self._classify_scrape_result(tool_result)
+        if kind in ("budget_skip", "failure"):
             if reserved:
                 self._release_scrape_slot()
             return
@@ -627,12 +687,12 @@ class Orchestrator:
             self._commit_scrape_slot()
         else:
             self.task_log.run_metrics.record_scrape(count=1)
-        if result_text.strip():
+        if kind == "evidence":
             self._bump_evidence_revision()
         self.task_log.log_step(
             "debug",
             f"Main Agent | Turn: {turn_count} | Metrics",
-            f"Recorded scrape for tool: {tool_name}",
+            f"Recorded scrape for tool: {tool_name} ({kind})",
         )
 
     async def _execute_regular_tool_call(
@@ -741,16 +801,16 @@ class Orchestrator:
                 {
                     "role": "user",
                     "content": (
-                        "注意：随后出现了与此前结论相冲突的新证据，"
-                        "之前“立即写报告”的指示作废；"
-                        "请优先核查新证据并化解冲突，暂不要撰写最终报告。"
+                        "注意：出现了新证据，此前“立即写报告”的收敛指示暂作废；"
+                        "请先重新核查新证据是支持、反驳还是与原结论无关，"
+                        "暂不要撰写最终报告。"
                     ),
                 }
             )
             self.task_log.log_step(
                 "info",
                 f"Main Agent | Turn: {turn_count} | Deep Convergence",
-                "已撤销收敛提示：新证据与继续核查指令覆盖此前的“立即写报告”。",
+                "已撤销收敛提示：中性新证据核查指令覆盖此前的“立即写报告”。",
             )
 
     async def _maybe_evaluate_evidence_agreement(

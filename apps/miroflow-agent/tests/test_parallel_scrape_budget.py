@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 import threading
 from pathlib import Path
@@ -43,7 +44,18 @@ async def test_parallel_scrapes_cannot_exceed_budget():
     async def fake_execute(*, server_name, tool_name, arguments):
         started.append(tool_name)
         await asyncio.sleep(0.01)
-        return {"server_name": server_name, "tool_name": tool_name, "result": "ok"}
+        return {
+            "server_name": server_name,
+            "tool_name": tool_name,
+            "result": json.dumps(
+                {
+                    "success": True,
+                    "url": arguments.get("url", ""),
+                    "content": "page body",
+                },
+                ensure_ascii=False,
+            ),
+        }
 
     orch.main_agent_tool_manager.execute_tool_call = AsyncMock(side_effect=fake_execute)
 
