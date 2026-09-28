@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pytest
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 GRADIO_DEMO_DIR = PROJECT_ROOT / "apps" / "gradio-demo"
 MIROFLOW_AGENT_DIR = PROJECT_ROOT / "apps" / "miroflow-agent"
@@ -113,9 +112,23 @@ async def test_local_cache_key_separates_effective_research_depth(
         # 差异必须落在正文里：结论卡标题会被渲染器统一改写，只有正文能反映两次
         # 请求真的用了不同的检索深度。
         conclusion = (
-            "这是用于验证真实缓存路由的完整结论 "
+            "这是用于验证真实缓存路由的完整结论 [7] "
             f"{search_result_num}/{verification_min_rounds}。" * 12
         )
+        yield {
+            "event": "source_registry",
+            "data": {
+                "entries": [
+                    {
+                        "source_id": 7,
+                        "normalized_url": "https://example.com/cached-source",
+                        "status": "fetched",
+                        "discoveries": [],
+                        "content_ref": "content-7",
+                    }
+                ]
+            },
+        }
         yield {"event": "final_output", "data": {"markdown": conclusion}}
         yield {"event": "done", "data": {"status": "completed"}}
 
@@ -153,6 +166,8 @@ async def test_local_cache_key_separates_effective_research_depth(
     assert len(executions) == 2
     assert first != second
     assert first_again == first
+    assert 'href="https://example.com/cached-source"' in first_again
+    assert 'class="ref-citation ref-chip">[7]</a>' in first_again
 
 
 @pytest.mark.asyncio
@@ -217,8 +232,21 @@ async def test_api_mode_run_once_uses_only_remote_backend_and_forwards_effective
         assert task_id == "remote-task-1"
         assert cancel_check is not None
         yield {
+            "event": "source_registry",
+            "data": {
+                "entries": [
+                    {
+                        "source_id": 9,
+                        "normalized_url": "https://example.com/remote-source",
+                        "status": "snippet_only",
+                        "discoveries": [{"provider": "searxng"}],
+                    }
+                ]
+            },
+        }
+        yield {
             "event": "final_output",
-            "data": {"markdown": "# 远端研究结论\n\n服务端返回的最终 Markdown。"},
+            "data": {"markdown": "# 远端研究结论\n\n服务端返回的最终 Markdown。[9]"},
         }
         yield {"event": "done", "data": {"status": "completed"}}
 
@@ -250,6 +278,8 @@ async def test_api_mode_run_once_uses_only_remote_backend_and_forwards_effective
 
     # 结论卡会重写报告标题，因此断言落在正文上；本用例考察的是路由与参数转发。
     assert "服务端返回的最终 Markdown。" in result
+    assert 'href="https://example.com/remote-source"' in result
+    assert 'class="ref-citation ref-chip">[9]</a>' in result
     assert create_calls == [
         {
             "query": "远端路由测试",

@@ -70,8 +70,9 @@ No further tool calls are allowed.
 - Use tables only when they genuinely improve clarity.
 - **Currency Format**: Use `\\$` instead of `$` for currency amounts (e.g., `\\$100`, `\\$1,000`) to avoid conflicts with inline math syntax.
 - **Citation Format**:
-  - **In-Text**: Use the format `[ID]`, where `ID` is a **numeric identifier only** (digits 0–9), e.g. `[1]`, `[2]`.
-  - **References Section(if has any sources)**: At the very end, add "References" (or equivalent in {target_language}). Format: [ID] TITLE/SECTION_TITLE. <URL>/<FILENAME>.
+  - **In-Text**: Cite only the stable `source_id` supplied by the core source registry, using `[source_id]`. Never invent, reorder, or renumber source identifiers, and never infer a citation URL from a title or domain.
+  - **References**: The core generates the unique References section from its source registry. Do not generate or duplicate a References list.
+  - A search snippet is not full-text evidence. Fetched full text does not mean a fact has been verified. A failed fetch with no search discoveries is not eligible for citation.
 - Do NOT mention tools, tool calls, or internal reasoning steps.
 - Focus solely on delivering a professional, comprehensive response that answers the user's original question with full information retention.
 
@@ -215,6 +216,7 @@ def _patch_summarize_prompt():
                 "If partial, conflicting, or inconclusive information was found, clearly indicate this in your response.\n\n"
                 "Your final response should be a clear, complete, and structured report.\n"
                 "Organize the content into logical sections with appropriate headings.\n"
+                "Preserve core source_id citations exactly; never invent or renumber identifiers, or generate a separate References list.\n"
                 "Do NOT include any tool call instructions, speculative filler, or vague summaries.\n"
                 "Focus on factual, specific, and well-organized information."
             )

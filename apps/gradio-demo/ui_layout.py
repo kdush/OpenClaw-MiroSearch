@@ -12,9 +12,8 @@ import html
 from functools import partial
 from typing import TYPE_CHECKING, Optional
 
-import gradio as gr
-
 import api_client
+import gradio as gr
 import static_assets
 from ui_i18n import (
     DEFAULT_LANG,
@@ -505,6 +504,7 @@ def build_demo():
         ui_state = gr.State(
             {
                 "task_id": None,
+                "source_registry": {"entries": []},
                 "ui_lang": DEFAULT_LANG,
                 "mode": _normalize_research_mode(DEFAULT_RESEARCH_MODE),
                 "search_profile": _normalize_search_profile(DEFAULT_SEARCH_PROFILE),

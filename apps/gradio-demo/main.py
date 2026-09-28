@@ -1,7 +1,7 @@
 import asyncio
 import base64
-import io
 import html
+import io
 import json
 import logging
 import os
@@ -14,39 +14,38 @@ import uuid
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 from urllib.parse import quote, urlparse
 
+import api_client
 import gradio as gr
+import static_assets
 from dotenv import load_dotenv
 from hydra import compose, initialize_config_dir
 from omegaconf import DictConfig
 from prompt_patch import apply_prompt_patch
+from src.cache.result_cache import ResultCache
 from src.config.search_policy import (
     apply_explicit_budget_overrides,
     apply_user_search_env_precedence,
 )
 from src.config.settings import expose_sub_agents_as_tools
-from src.cache.result_cache import ResultCache
 from src.core.deep_efficiency import resolve_research_intensity
 from src.core.pipeline import create_pipeline_components, execute_task_pipeline
 from src.io.report_presentation import prepare_user_facing_report
-from utils import replace_chinese_punctuation
-
-import api_client
-import static_assets
-
 from ui_i18n import (
+    _UI_LANG,
     DEFAULT_LANG,
     I18N,
     RESEARCH_MODE_LABELS,
     SEARCH_PROFILE_LABELS,
-    _UI_LANG,
     _label_for,
     _label_map,
     _progress_copy,
 )
+from utils import replace_chinese_punctuation
 
 # Create global cleanup thread pool for operations that won't be affected by asyncio.cancel
 cleanup_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="cleanup")
@@ -1367,15 +1366,25 @@ def filter_google_search_organic(organic: List[dict]) -> List[dict]:
     """
     Filter google search organic results to remove unnecessary information
     """
-    result = []
-    for item in organic:
-        result.append(
-            {
-                "title": item.get("title", ""),
-                "link": item.get("link", ""),
-            }
-        )
-    return result
+    if not isinstance(organic, list):
+        return []
+    return [
+        {
+            key: item[key]
+            for key in (
+                "title",
+                "link",
+                "url",
+                "snippet",
+                "provider",
+                "discoveries",
+                "position",
+            )
+            if key in item
+        }
+        for item in organic
+        if isinstance(item, dict)
+    ]
 
 
 def filter_google_search_payload(result_dict: dict) -> dict:
@@ -1384,6 +1393,8 @@ def filter_google_search_payload(result_dict: dict) -> dict:
         "organic": filter_google_search_organic(result_dict.get("organic", []))
     }
     for key in [
+        "success",
+        "error",
         "provider",
         "provider_fallback",
         "route_trace",
@@ -1396,48 +1407,34 @@ def filter_google_search_payload(result_dict: dict) -> dict:
     return filtered_payload
 
 
-def is_scrape_error(result: str) -> bool:
-    """
-    Check if the scrape result is an error
-    """
-    try:
-        json.loads(result)
-        return False
-    except json.JSONDecodeError:
-        return True
-
-
 def filter_message(message: dict) -> dict:
     """
     Filter message to remove unnecessary information
     """
-    if message["event"] == "tool_call":
-        tool_name = message["data"].get("tool_name")
-        tool_input = message["data"].get("tool_input")
-        if (
-            tool_name == "google_search"
-            and isinstance(tool_input, dict)
-            and "result" in tool_input
-        ):
-            try:
-                result_dict = json.loads(tool_input["result"])
-            except (TypeError, json.JSONDecodeError):
-                result_dict = {}
-            if isinstance(result_dict, dict) and "organic" in result_dict:
-                filtered_result = filter_google_search_payload(result_dict)
-                message["data"]["tool_input"]["result"] = json.dumps(
-                    filtered_result, ensure_ascii=False
-                )
-        if (
-            tool_name in ["scrape", "scrape_website"]
-            and isinstance(tool_input, dict)
-            and "result" in tool_input
-        ):
-            # if error, it can not be json
-            if is_scrape_error(tool_input["result"]):
-                message["data"]["tool_input"] = {"error": tool_input["result"]}
-            else:
-                message["data"]["tool_input"] = {}
+    if message.get("event") == "tool_call":
+        data = message.get("data") or {}
+        tool_input = data.get("tool_input")
+        if data.get("tool_name") == "google_search" and isinstance(tool_input, dict):
+            result_dict = tool_input.get("result")
+            if isinstance(result_dict, str):
+                try:
+                    result_dict = json.loads(result_dict)
+                except json.JSONDecodeError:
+                    result_dict = None
+            if isinstance(result_dict, dict):
+                message = {
+                    **message,
+                    "data": {
+                        **data,
+                        "tool_input": {
+                            **tool_input,
+                            "result": json.dumps(
+                                filter_google_search_payload(result_dict),
+                                ensure_ascii=False,
+                            ),
+                        },
+                    },
+                }
     return message
 
 
@@ -1832,6 +1829,7 @@ def _init_render_state():
         "agents": {},  # agent_id -> {"agent_name": str, "tool_call_order": [], "tools": {tool_call_id: {...}}}
         "current_agent_id": None,
         "errors": [],
+        "source_registry": {"entries": []},
         "runtime_stage": {
             "phase": "初始化",
             "search_round": 0,
@@ -1978,173 +1976,197 @@ def _is_empty_payload(value) -> bool:
     return False
 
 
+def _safe_http_url(url: Any) -> str:
+    if not isinstance(url, str):
+        return ""
+    candidate = url.strip()
+    if not candidate or any(
+        char.isspace() or ord(char) < 32 or ord(char) == 127 or char == "\\"
+        for char in candidate
+    ):
+        return ""
+    try:
+        parsed = urlparse(candidate)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            return ""
+        if any(char in parsed.hostname for char in "<>\"'"):
+            return ""
+        if parsed.username or parsed.password:
+            return ""
+        if parsed.port is not None and not 0 < parsed.port <= 65535:
+            return ""
+    except ValueError:
+        return ""
+    return candidate
+
+
+def _search_result_payload(tool_output: dict) -> dict:
+    if not isinstance(tool_output, dict):
+        return {}
+    payload = tool_output.get("result", tool_output)
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except json.JSONDecodeError:
+            return tool_output
+    return payload if isinstance(payload, dict) else tool_output
+
+
+def _escape_search_text(value: Any) -> str:
+    return (
+        html.escape(str(value), quote=True)
+        .replace("\r", "&#13;")
+        .replace("\n", "&#10;")
+    )
+
+
+def _format_search_result_item(item: dict, provider: Any = "") -> str:
+    title = _escape_search_text(
+        item.get("title") or _progress_copy("progress_untitled")
+    )
+    snippet = _escape_search_text(item.get("snippet") or "")
+    providers = []
+    if item.get("provider"):
+        providers.append(str(item["provider"]))
+    discoveries = item.get("discoveries")
+    if isinstance(discoveries, list):
+        providers.extend(
+            str(discovery["provider"])
+            for discovery in discoveries
+            if isinstance(discovery, dict) and discovery.get("provider")
+        )
+    if not providers and provider:
+        providers.append(str(provider))
+    provider_text = _escape_search_text(", ".join(dict.fromkeys(providers)))
+    content = f'<span class="result-title">{title}</span>'
+    if provider_text:
+        content += f'<span class="result-provider">{provider_text}</span>'
+    if snippet:
+        content += f'<span class="result-snippet">{snippet}</span>'
+    link = _safe_http_url(item.get("link")) or _safe_http_url(item.get("url"))
+    if link:
+        return (
+            f'<a href="{html.escape(link, quote=True)}" target="_blank" '
+            f'rel="noopener noreferrer" class="search-result-item">{content}</a>'
+        )
+    return f'<div class="search-result-item">{content}</div>'
+
+
 def _format_search_results(
     tool_input: dict,
     tool_output: dict,
     display_limit: Optional[int] = None,
 ) -> str:
     """Format google_search results in a beautiful card layout."""
-    lines = []
-
-    # Get search query from input
     query = ""
     if isinstance(tool_input, dict):
-        query = tool_input.get("q", "") or tool_input.get("query", "")
-
-    # Parse results from output - handle multiple formats
-    results = []
-    provider_mode = ""
-    providers_with_results: List[str] = []
-    route_trace: List[dict] = []
-    confidence_info: Dict[str, object] = {}
-    fallback_errors: List[str] = []
-    search_success = True
-    search_error = ""
-    if isinstance(tool_output, dict):
-        # Case 1: output has "result" field containing JSON string
-        result_str = tool_output.get("result", "")
-        if isinstance(result_str, str) and result_str.strip():
-            try:
-                result_data = json.loads(result_str)
-                if isinstance(result_data, dict):
-                    search_success = bool(result_data.get("success", True))
-                    search_error = str(result_data.get("error", "") or "").strip()
-                    results = result_data.get("organic", [])
-                    search_params = result_data.get("searchParameters", {})
-                    if isinstance(search_params, dict):
-                        provider_mode = str(
-                            search_params.get("provider_mode", "")
-                        ).strip()
-                        providers_with_results = [
-                            str(item)
-                            for item in search_params.get("providers_with_results", [])
-                        ]
-                        raw_route_trace = result_data.get(
-                            "route_trace"
-                        ) or search_params.get("route_trace")
-                        if isinstance(raw_route_trace, list):
-                            route_trace = [
-                                item
-                                for item in raw_route_trace
-                                if isinstance(item, dict)
-                            ]
-                    raw_confidence = result_data.get("confidence")
-                    if isinstance(raw_confidence, dict):
-                        confidence_info = raw_confidence
-                    raw_fallback = result_data.get("provider_fallback", [])
-                    if isinstance(raw_fallback, list):
-                        fallback_errors = [str(item) for item in raw_fallback if item]
-            except json.JSONDecodeError:
-                pass
-        elif isinstance(result_str, dict):
-            results = result_str.get("organic", [])
-
-        # Case 2: output directly contains "organic" field
-        if not results and "organic" in tool_output:
-            results = tool_output.get("organic", [])
-
-    if not results and not query:
+        query = str(tool_input.get("q") or tool_input.get("query") or "")
+    result_data = _search_result_payload(tool_output)
+    raw_results = result_data.get("organic")
+    results = (
+        [item for item in raw_results if isinstance(item, dict)]
+        if isinstance(raw_results, list)
+        else []
+    )
+    search_error = str(result_data.get("error") or "")
+    search_failed = result_data.get("success") is False or bool(search_error)
+    if not results and not query and not search_failed:
         return ""
-
-    # Build the card
-    lines.append('<div class="search-card">')
-
-    # Header with query
+    search_params = result_data.get("searchParameters")
+    if not isinstance(search_params, dict):
+        search_params = {}
+    provider = result_data.get("provider") or search_params.get("provider") or ""
+    provider_mode = search_params.get("provider_mode")
+    providers = search_params.get("providers_with_results")
+    lines = ['<div class="search-card">']
     if query:
-        lines.append('<div class="search-header">')
-        lines.append('<span class="search-icon">🔍</span>')
         lines.append(
-            f'<span class="search-query">{_progress_copy("progress_search")}: "{query}"</span>'
+            '<div class="search-header"><span class="search-query">'
+            f'{_progress_copy("progress_search")}: '
+            f'"{_escape_search_text(query)}"</span></div>'
         )
-        lines.append("</div>")
-
-    # Results count
     if results:
         lines.append(
-            f'<div class="search-count">≡ {_progress_copy("progress_found", n=len(results))}</div>'
+            '<div class="search-count">'
+            f'{_progress_copy("progress_found", n=len(results))}</div>'
         )
-        if provider_mode:
-            lines.append(
-                f'<div class="search-count">{_progress_copy("progress_provider_mode")}: <strong>{provider_mode}</strong></div>'
+    if provider_mode:
+        lines.append(
+            f'<div class="search-count">{_progress_copy("progress_provider_mode")}: '
+            f'<strong>{_escape_search_text(provider_mode)}</strong></div>'
+        )
+    provider_text = (
+        ", ".join(map(str, providers)) if isinstance(providers, list) else ""
+    )
+    provider_text = provider_text or str(provider)
+    if provider_text:
+        lines.append(
+            f'<div class="search-count">{_progress_copy("progress_sources_hit")}: '
+            f'<strong>{_escape_search_text(provider_text)}</strong></div>'
+        )
+    confidence = result_data.get("confidence")
+    if isinstance(confidence, dict) and confidence:
+        score, threshold, passed = (
+            _escape_search_text(confidence.get(key, ""))
+            for key in ("score", "threshold", "passed")
+        )
+        lines.append(
+            '<div class="search-count">'
+            f'{_progress_copy("search_confidence")}: <strong>{score}</strong>'
+            f' / {_progress_copy("search_threshold")} {threshold}'
+            f' / {_progress_copy("search_passed")}={passed}</div>'
+        )
+    route_trace = result_data.get("route_trace") or search_params.get("route_trace")
+    if isinstance(route_trace, list):
+        route_items = []
+        for item in route_trace[:8]:
+            if not isinstance(item, dict):
+                continue
+            route = ":".join(
+                str(item.get(key, "")) for key in ("phase", "provider", "status")
             )
-        if providers_with_results:
-            providers_text = ", ".join(providers_with_results)
+            if item.get("result_count") is not None:
+                route += f'({item["result_count"]})'
+            route_items.append(route)
+        if route_items:
             lines.append(
-                f'<div class="search-count">{_progress_copy("progress_sources_hit")}: <strong>{providers_text}</strong></div>'
+                f'<div class="search-count">{_progress_copy("search_route_trace")}: '
+                f'{_escape_search_text(" | ".join(route_items))}</div>'
             )
-        if confidence_info:
-            score = confidence_info.get("score")
-            threshold = confidence_info.get("threshold")
-            passed = confidence_info.get("passed")
-            lines.append(
-                '<div class="search-count">'
-                f'{_progress_copy("search_confidence")}: <strong>{score}</strong>'
-                f' / {_progress_copy("search_threshold")} {threshold}'
-                f' / {_progress_copy("search_passed")}={passed}</div>'
-            )
-        if route_trace:
-            route_items = []
-            for item in route_trace[:8]:
-                phase = item.get("phase", "")
-                provider = item.get("provider", "")
-                status = item.get("status", "")
-                count = item.get("result_count")
-                suffix = f"({count})" if count is not None else ""
-                route_items.append(f"{phase}:{provider}:{status}{suffix}")
-            if route_items:
-                lines.append(
-                    f'<div class="search-count">{_progress_copy("search_route_trace")}: {" | ".join(route_items)}</div>'
-                )
-        if fallback_errors:
-            lines.append(
-                f'<div class="search-count">{_progress_copy("search_fallback_errors")}: {"; ".join(fallback_errors[:3])}</div>'
-            )
-
-        # Results list
-        lines.append('<div class="search-results">')
+    fallback_errors = result_data.get("provider_fallback")
+    if isinstance(fallback_errors, list) and fallback_errors:
+        error_text = _escape_search_text("; ".join(map(str, fallback_errors[:3])))
+        lines.append(
+            f'<div class="search-count">{_progress_copy("search_provider_errors")}: '
+            f'{error_text}</div>'
+        )
+    if search_failed:
+        error_text = _escape_search_text(
+            search_error or _progress_copy("search_no_valid_results")
+        )
+        lines.append(
+            f'<div class="search-count">{_progress_copy("search_failed")}: '
+            f'<strong>{error_text}</strong></div>'
+        )
+    if results:
         safe_display_limit = SEARCH_RESULT_DISPLAY_MAX
         if display_limit is not None:
             safe_display_limit = max(
                 1, min(SEARCH_RESULT_DISPLAY_MAX, int(display_limit))
             )
         visible_count = min(len(results), safe_display_limit)
-        for item in results[:visible_count]:
-            title = item.get("title") or _progress_copy("progress_untitled")
-            link = item.get("link", "#")
-
-            lines.append(f"""<a href="{link}" target="_blank" class="search-result-item">
-                <span class="result-icon">🌐</span>
-                <span class="result-title">{title}</span>
-            </a>""")
+        lines.append('<div class="search-results">')
+        lines.extend(
+            _format_search_result_item(item, provider)
+            for item in results[:visible_count]
+        )
         lines.append("</div>")
         if len(results) > visible_count:
             lines.append(
-                f'<div class="search-count">'
+                '<div class="search-count">'
                 f'{_progress_copy("search_display_truncated", visible=visible_count, total=len(results))}</div>'
             )
-    elif not search_success:
-        lines.append(
-            f'<div class="search-count">⚠️ {_progress_copy("search_failed")}: '
-            f'<strong>{search_error or _progress_copy("search_no_valid_results")}</strong></div>'
-        )
-        if fallback_errors:
-            lines.append(
-                f'<div class="search-count">{_progress_copy("search_provider_errors")}: {"; ".join(fallback_errors[:3])}</div>'
-            )
-        if route_trace:
-            route_items = []
-            for item in route_trace[:8]:
-                phase = item.get("phase", "")
-                provider = item.get("provider", "")
-                status = item.get("status", "")
-                route_items.append(f"{phase}:{provider}:{status}")
-            if route_items:
-                lines.append(
-                    f'<div class="search-count">{_progress_copy("search_route_trace")}: {" | ".join(route_items)}</div>'
-                )
-
     lines.append("</div>")
-
     return "\n".join(lines)
 
 
@@ -2166,37 +2188,18 @@ def _extract_google_search_step_summary(tool_input: dict, tool_output: dict) -> 
     provider_mode = ""
     providers_with_results: List[str] = []
 
-    def _extract_result_data(output_payload: dict) -> Dict[str, Any]:
-        if not isinstance(output_payload, dict):
-            return {}
-        result_payload = output_payload.get("result", "")
-        if isinstance(result_payload, str) and result_payload.strip():
-            try:
-                parsed_payload = json.loads(result_payload)
-                if isinstance(parsed_payload, dict):
-                    return parsed_payload
-            except json.JSONDecodeError:
-                return {}
-        if isinstance(result_payload, dict):
-            return result_payload
-        if isinstance(output_payload.get("organic"), list):
-            return output_payload
-        return {}
-
-    result_data = _extract_result_data(
-        tool_output if isinstance(tool_output, dict) else {}
-    )
+    result_data = _search_result_payload(tool_output)
     organic_results = result_data.get("organic", [])
     if isinstance(organic_results, list):
         result_count = len(organic_results)
     search_params = result_data.get("searchParameters", {})
     if isinstance(search_params, dict):
-        provider_mode = str(search_params.get("provider_mode", "")).strip()
-        providers_with_results = [
-            str(item).strip()
-            for item in search_params.get("providers_with_results", [])
-            if str(item).strip()
-        ]
+        provider_mode = str(search_params.get("provider_mode") or "").strip()
+        providers = search_params.get("providers_with_results")
+        if isinstance(providers, list):
+            providers_with_results = [
+                str(item).strip() for item in providers if str(item).strip()
+            ]
 
     if (
         not query
@@ -2233,66 +2236,16 @@ def _extract_google_search_step_summary(tool_input: dict, tool_output: dict) -> 
 
 def _format_sogou_search_results(tool_input: dict, tool_output: dict) -> str:
     """Format sogou_search results in a beautiful card layout."""
-    lines = []
-
-    # Get search query from input
-    query = ""
-    if isinstance(tool_input, dict):
-        query = tool_input.get("q", "") or tool_input.get("query", "")
-
-    # Parse results from output - sogou uses "Pages" instead of "organic"
-    results = []
-    if isinstance(tool_output, dict):
-        result_str = tool_output.get("result", "")
-        if isinstance(result_str, str) and result_str.strip():
-            try:
-                result_data = json.loads(result_str)
-                if isinstance(result_data, dict):
-                    results = result_data.get("Pages", [])
-            except json.JSONDecodeError:
-                pass
-        elif isinstance(result_str, dict):
-            results = result_str.get("Pages", [])
-
-        if not results and "Pages" in tool_output:
-            results = tool_output.get("Pages", [])
-
-    if not results and not query:
-        return ""
-
-    # Build the card
-    lines.append('<div class="search-card">')
-
-    # Header with query
-    if query:
-        lines.append('<div class="search-header">')
-        lines.append('<span class="search-icon">🔍</span>')
-        lines.append(
-            f'<span class="search-query">{_progress_copy("progress_search")}: "{query}"</span>'
-        )
-        lines.append("</div>")
-
-    # Results count
-    if results:
-        lines.append(
-            f'<div class="search-count">≡ {_progress_copy("progress_found", n=len(results))}</div>'
-        )
-
-        # Results list
-        lines.append('<div class="search-results">')
-        for item in results[:10]:  # Limit to 10 results
-            title = item.get("title") or _progress_copy("progress_untitled")
-            link = item.get("url", item.get("link", "#"))
-
-            lines.append(f"""<a href="{link}" target="_blank" class="search-result-item">
-                <span class="result-icon">🌐</span>
-                <span class="result-title">{title}</span>
-            </a>""")
-        lines.append("</div>")
-
-    lines.append("</div>")
-
-    return "\n".join(lines)
+    payload = _search_result_payload(tool_output)
+    return _format_search_results(
+        tool_input,
+        {
+            **payload,
+            "organic": payload.get("Pages", []),
+            "provider": payload.get("provider") or "sogou",
+        },
+        display_limit=10,
+    )
 
 
 def _extract_sogou_search_step_summary(tool_input: dict, tool_output: dict) -> str:
@@ -2300,23 +2253,8 @@ def _extract_sogou_search_step_summary(tool_input: dict, tool_output: dict) -> s
     if isinstance(tool_input, dict):
         query = str(tool_input.get("q", "") or tool_input.get("query", "")).strip()
 
-    result_count = None
-    if isinstance(tool_output, dict):
-        result_payload = tool_output.get("result", "")
-        pages = []
-        if isinstance(result_payload, str) and result_payload.strip():
-            try:
-                parsed_payload = json.loads(result_payload)
-                if isinstance(parsed_payload, dict):
-                    pages = parsed_payload.get("Pages", [])
-            except json.JSONDecodeError:
-                pages = []
-        elif isinstance(result_payload, dict):
-            pages = result_payload.get("Pages", [])
-        elif isinstance(tool_output.get("Pages"), list):
-            pages = tool_output.get("Pages", [])
-        if isinstance(pages, list):
-            result_count = len(pages)
+    pages = _search_result_payload(tool_output).get("Pages")
+    result_count = len(pages) if isinstance(pages, list) else None
 
     if not query and result_count is None:
         return ""
@@ -2377,16 +2315,31 @@ def _format_scrape_results(
     # Get URL
     url = ""
     if isinstance(tool_input, dict):
-        url = tool_input.get("url", tool_input.get("link", ""))
+        url = str(tool_input.get("url") or tool_input.get("link") or "")
+    display_url = html.escape(_truncate_single_line(url, 60), quote=True)
+    result = _search_result_payload(tool_output)
+    raw_result = result.get("result")
+    text_error = isinstance(raw_result, str) and raw_result.lstrip().startswith(
+        (
+            "[ERROR]:",
+            "Invalid URL:",
+            "No content retrieved from URL:",
+            "JINA_API_KEY is not set,",
+            "You are trying to scrape a Hugging Face dataset for answers,",
+        )
+    )
 
     # Check for error
-    if isinstance(tool_output, dict) and "error" in tool_output:
+    if (
+        result.get("error")
+        or result.get("success") is False
+        or result.get("isError")
+        or text_error
+    ):
         lines.append('<div class="scrape-card scrape-error">')
         lines.append('<div class="scrape-header">')
         lines.append('<span class="scrape-icon">🌐</span>')
-        lines.append(
-            f'<span class="scrape-url">{url[:60]}{"..." if len(url) > 60 else ""}</span>'
-        )
+        lines.append(f'<span class="scrape-url">{display_url}</span>')
         lines.append("</div>")
         lines.append(
             f'<div class="scrape-status error">{_progress_copy("scrape_status_failed")}</div>'
@@ -2399,14 +2352,15 @@ def _format_scrape_results(
     if url:
         lines.append('<div class="scrape-header">')
         lines.append('<span class="scrape-icon">🌐</span>')
-        lines.append(
-            f'<span class="scrape-url">{url[:60]}{"..." if len(url) > 60 else ""}</span>'
-        )
+        lines.append(f'<span class="scrape-url">{display_url}</span>')
         lines.append("</div>")
-        lines.append(
-            f'<div class="scrape-status success">{_progress_copy("scrape_status_done")}</div>'
-        )
-    preview_text = _extract_scrape_preview_text(tool_output, preview_chars)
+        if not _is_empty_payload(tool_output):
+            lines.append(
+                f'<div class="scrape-status success">{_progress_copy("scrape_status_done")}</div>'
+            )
+    preview_text = html.escape(
+        _extract_scrape_preview_text(tool_output, preview_chars), quote=True
+    )
     if preview_text:
         lines.append("</div>")
         lines.append(
@@ -2445,107 +2399,53 @@ def _merge_final_summary_blocks(
     return [unique_blocks[-1]]
 
 
-_REFERENCES_HEADING_RE = re.compile(
-    r"(?im)^[ \t]*(?:#{1,6}[ \t]+)?(?:\*+[ \t]*)?"
+_CITATION_CONTEXT_RE = re.compile(
+    r"^[ \t]{0,3}(?P<fence>`{3,}|~{3,})[^\n]*\n[\s\S]*?"
+    r"(?:^[ \t]{0,3}(?P=fence)[ \t]*(?:\n|$)|\Z)"
+    r"|(?<!`)(?P<ticks>`+)(?!`)[\s\S]*?(?<!`)(?P=ticks)(?!`)"
+    r"|^(?: {4}|\t)[^\n]*(?:\n|$)"
+    r"|(?i:^[ \t]*(?:#{1,6}[ \t]+)?(?:\*+[ \t]*)?"
     r"(?:参考文献|参考资料|参考来源|引用|references?|sources?)"
-    r"(?:[ \t]*\*+)?[ \t]*$"
+    r"(?:[ \t]*\*+)?[ \t]*$)[\s\S]*?(?=^#{1,6}[ \t]|^</details>|\Z)"
+    r"|!?\[(?:\\.|[^\[\]\\\n]|\[[^\]\n]*\])*\]"
+    r"\((?:\\.|[^()\\\n]|\([^()\n]*\))*\)"
+    r"|!?\[(?![0-9]+\]\[[0-9]+\])"
+    r"(?:\\.|[^\[\]\\\n]|\[[^\]\n]*\])*\]\[[^\]\n]*\]"
+    r"|(?i:<a\b[^>]*>[\s\S]*?</a>|<code\b[^>]*>[\s\S]*?</code>"
+    r"|<pre\b[^>]*>[\s\S]*?</pre>"
+    r"|<span\b[^>]*class=\"ref-citation-unresolved\"[^>]*>[\s\S]*?</span>)"
+    r"|<[^>\n]*>"
+    r"|^ {0,3}\[[^\]\n]+\]:[^\n]*"
+    r"|(?<!\\)\[(?P<source_id>[0-9]+)\]",
+    re.MULTILINE,
 )
-_REFERENCE_ENTRY_RE = re.compile(r"\[(\d{1,4})\][^\n]*?(https?://\S+)")
-# 有序列表形态的参考文献条目（``3. 标题 …`` / ``3) 标题 …``）：LLM 通常按此写 References
-_REFERENCE_LIST_ENTRY_RE = re.compile(r"(?m)^[ \t]*(\d{1,4})[.)][ \t]+(\S[^\n]*)$")
-# 无 scheme 的裸域名：仅用于参考文献区补 https 链接，限定常见 TLD，
-# 避免把 DOI（10.1007/…）、arXiv 号（2507.09911）当成域名。
-_BARE_DOMAIN_RE = re.compile(
-    r"(?<![\w./-])((?:www\.)?(?:[a-z0-9-]+\.)+"
-    r"(?:com|org|net|edu|gov|io|ai|co|uk|de|jp|fr|cn|au|ca|us|info|me|dev|app|tech|work|xyz|tv|news)"
-    r"\b(?:/[^\s，；）)】\]]*)?)",
-    re.I,
-)
-# 规范化参考文献条目之间的换行：确保每条 [N] 前有双换行，Markdown 渲染时才能正确分行
-_REFERENCE_NEWLINE_RE = re.compile(r"(?<!\n)\n(\[\d{1,4}\])")
-_CITATION_RE = re.compile(r"\[(\d{1,4})\]")
-_CODE_SEGMENT_RE = re.compile(r"```[\s\S]*?```|`[^`\n]+`")
-_REFERENCE_URL_TRAILING = ".,;:)]>。，、；：）】》」’”"
 
 
-def _reference_url_in_entry(body: str) -> str:
-    """条目里的来源 URL：优先完整 http(s)，否则把裸域名补成 https。"""
-    full = re.search(r"https?://\S+", body or "")
-    if full:
-        return full.group(0).rstrip(_REFERENCE_URL_TRAILING)
-    bare = _BARE_DOMAIN_RE.search(body or "")
-    if bare:
-        return "https://" + bare.group(1).rstrip(_REFERENCE_URL_TRAILING)
-    return ""
-
-
-def _linkify_reference_citations(markdown_text: str) -> str:
-    """将研究总结中形如 ``[N]`` 的引用标记替换为指向文末 References 区真实 URL 的可点击链接。"""
+def _linkify_reference_citations(
+    markdown_text: str, source_registry: Optional[dict] = None
+) -> str:
     if not markdown_text:
         return markdown_text
-    heading_match = _REFERENCES_HEADING_RE.search(markdown_text)
-    if not heading_match:
-        return markdown_text
-
-    body = markdown_text[: heading_match.start()]
-    head_part = markdown_text[heading_match.start() : heading_match.end()]
-    references_tail = markdown_text[heading_match.end() :]
-    # References 之后常还有兄弟章节（如 深入了解）：只有标题到下一个标题之间
-    # 才是来源条目区，否则后续编号列表、裸域名会被误当成来源。
-    next_heading = re.search(r"(?m)^#{1,6}[ \t]", references_tail)
-    if next_heading:
-        references_block = references_tail[: next_heading.start()]
-        rest = references_tail[next_heading.start() :]
-    else:
-        references_block, rest = references_tail, ""
-
-    id_to_url: Dict[str, str] = {}
-    for entry in _REFERENCE_ENTRY_RE.finditer(references_block):
-        ref_id = entry.group(1)
-        raw_url = entry.group(2).rstrip(_REFERENCE_URL_TRAILING)
-        if ref_id and raw_url and ref_id not in id_to_url:
-            id_to_url[ref_id] = raw_url
-    # 有序列表条目按序号入表，正文 [N] 才能指向对应来源
-    for entry in _REFERENCE_LIST_ENTRY_RE.finditer(references_block):
-        ref_id = entry.group(1)
-        if ref_id in id_to_url:
-            continue
-        url = _reference_url_in_entry(entry.group(2))
-        if url:
-            id_to_url[ref_id] = url
-
-    if not id_to_url:
-        return markdown_text
+    id_to_url = {
+        str(entry["source_id"]): _safe_http_url(entry["normalized_url"])
+        for entry in _collect_report_sources({"source_registry": source_registry})
+    }
 
     def _replace_citation(match: "re.Match[str]") -> str:
-        ref_id = match.group(1)
+        ref_id = match.group("source_id")
+        if ref_id is None:
+            return match.group(0)
         url = id_to_url.get(ref_id)
         if not url:
-            return match.group(0)
+            label = html.escape(_progress_copy("citation_unavailable"), quote=True)
+            return f'<span class="ref-citation-unresolved">[{ref_id}] ({label})</span>'
         href = html.escape(url, quote=True)
         return (
             f'<a href="{href}" target="_blank" rel="noopener noreferrer" '
             f'class="ref-citation">[{ref_id}]</a>'
         )
 
-    pieces: List[str] = []
-    cursor = 0
-    for code_match in _CODE_SEGMENT_RE.finditer(body):
-        start, end = code_match.span()
-        pieces.append(_CITATION_RE.sub(_replace_citation, body[cursor:start]))
-        pieces.append(body[start:end])
-        cursor = end
-    pieces.append(_CITATION_RE.sub(_replace_citation, body[cursor:]))
-
-    # 裸域名补成 Markdown 链接，来源条目才有可点的落点
-    def _link_bare_domain(match: "re.Match[str]") -> str:
-        token = match.group(1)
-        return f"[{token}](https://{token.rstrip(_REFERENCE_URL_TRAILING)})"
-
-    references_block = _BARE_DOMAIN_RE.sub(_link_bare_domain, references_block)
-    # 规范化参考文献条目之间的换行，确保每条 [N] 独占一行
-    references_block = _REFERENCE_NEWLINE_RE.sub(r"\n\n\1", references_block)
-    return "".join(pieces) + head_part + references_block + rest
+    return _CITATION_CONTEXT_RE.sub(_replace_citation, markdown_text)
 
 
 FORMAT_ERROR_MARKERS = (
@@ -2990,112 +2890,24 @@ def _keep_last_report_glance(decorated_blocks: List[str]) -> List[str]:
     return [block for idx, block in enumerate(decorated_blocks) if idx not in drop]
 
 
-_REPORT_SOURCE_TOOL_NAMES = {"google_search", "sogou_search"}
-_REPORT_SCRAPE_TOOL_NAMES = {
-    "scrape_url",
-    "scrape",
-    "scrape_website",
-    "scrape_webpage",
-    "scrape_and_extract_info",
-}
-# 参考来源上限：论文式文末列表，太多反而淹没阅读
-MAX_REPORT_SOURCES = 30
-
-
-def _normalize_source_url(url: Any) -> str:
-    candidate = str(url or "").strip()
-    if not candidate:
-        return ""
-    if not candidate.lower().startswith(("http://", "https://")):
-        return ""
-    return candidate
-
-
-def _source_display_title(title: Any, url: str) -> str:
-    # 搜索结果标题常带 <b> 等高亮标签，剥掉避免破坏 Markdown 链接文本
-    text = re.sub(r"<[^>]+>", "", str(title or ""))
-    text = re.sub(r"\s+", " ", text).strip()
-    if text:
-        return text[:120]
-    host = urlparse(url).netloc or url
-    return host
-
-
-def _collect_report_sources(state: dict) -> List[Dict[str, str]]:
-    """汇总本轮研究实际命中/访问过的来源，按首次出现顺序去重。"""
-    sources: List[Dict[str, str]] = []
-    seen_urls = set()
-
-    def _add(url: Any, title: Any = "") -> None:
-        normalized = _normalize_source_url(url)
-        if not normalized or normalized in seen_urls:
-            return
-        seen_urls.add(normalized)
-        sources.append(
-            {"url": normalized, "title": _source_display_title(title, normalized)}
-        )
-
-    for agent_id in (state or {}).get("agent_order", []):
-        agent = (state or {}).get("agents", {}).get(agent_id, {})
-        for call_id in agent.get("tool_call_order", []):
-            call = agent.get("tools", {}).get(call_id, {})
-            tool_name = call.get("tool_name", "")
-            tool_input = call.get("input", {})
-            tool_output = call.get("output", {})
-            if tool_name in _REPORT_SOURCE_TOOL_NAMES:
-                result_data: Dict[str, Any] = {}
-                result_payload = (
-                    tool_output.get("result", "")
-                    if isinstance(tool_output, dict)
-                    else ""
-                )
-                if isinstance(result_payload, str) and result_payload.strip():
-                    try:
-                        parsed = json.loads(result_payload)
-                        if isinstance(parsed, dict):
-                            result_data = parsed
-                    except json.JSONDecodeError:
-                        result_data = {}
-                elif isinstance(result_payload, dict):
-                    result_data = result_payload
-                if not result_data and isinstance(tool_output, dict):
-                    result_data = tool_output
-                organic = result_data.get("organic")
-                if not isinstance(organic, list):
-                    organic = result_data.get("Pages")
-                if isinstance(organic, list):
-                    for item in organic:
-                        if not isinstance(item, dict):
-                            continue
-                        _add(
-                            item.get("link") or item.get("url"),
-                            item.get("title") or item.get("siteName"),
-                        )
-            elif tool_name in _REPORT_SCRAPE_TOOL_NAMES and isinstance(
-                tool_input, dict
-            ):
-                _add(tool_input.get("url") or tool_input.get("link"))
-            if len(sources) >= MAX_REPORT_SOURCES:
-                return sources
-    return sources
-
-
-def _build_references_section(sources: List[Dict[str, str]]) -> List[str]:
-    if not sources:
+def _collect_report_sources(state: dict) -> List[Dict[str, Any]]:
+    registry = (state or {}).get("source_registry")
+    if not isinstance(registry, dict) or not isinstance(registry.get("entries"), list):
         return []
-    heading = _progress_copy("references_heading")
-    lines = ["", "\n---\n", f"### {heading}\n"]
-    for idx, src in enumerate(sources, 1):
-        title = str(src.get("title") or src["url"]).replace("[", "(").replace("]", ")")
-        lines.append(f"[{idx}] [{title}]({src['url']})")
-        # 条目间空行：相邻行会被 Markdown 合并成一段，来源挤在一起无法逐条阅读
-        lines.append("")
-    return lines
+    return [
+        entry
+        for entry in registry["entries"]
+        if isinstance(entry, dict)
+        and re.fullmatch(r"[1-9][0-9]*", str(entry.get("source_id", "")))
+        and _safe_http_url(entry.get("normalized_url"))
+        and not (entry.get("status") == "fetch_failed" and not entry.get("discoveries"))
+    ]
 
 
 def _build_summary_section(
     final_summary_blocks: List[str],
     output_detail_level: Optional[str] = None,
+    source_registry: Optional[dict] = None,
 ) -> List[str]:
     if not final_summary_blocks:
         return []
@@ -3112,13 +2924,16 @@ def _build_summary_section(
     )
     normalized = (_normalize_latex_like_markup(block) for block in sanitized)
     rewritten = (_humanize_pipeline_fallback(block) for block in normalized)
-    # linkify first, then decorate so ref-chip class lands on citation anchors
-    linkified = [_linkify_reference_citations(block) for block in rewritten]
     decorated = [
         _decorate_report_for_web(block, detail_level=resolved_detail)
-        for block in linkified
+        for block in rewritten
     ]
-    lines.extend(_keep_last_report_glance(decorated))
+    lines.extend(
+        _linkify_reference_citations(block, source_registry).replace(
+            'class="ref-citation"', 'class="ref-citation ref-chip"'
+        )
+        for block in _keep_last_report_glance(decorated)
+    )
     return lines
 
 
@@ -3276,7 +3091,14 @@ def _plainify_report_html(text: str) -> str:
     # Glance card body is HTML-escaped for the browser; restore it as the 结论 section.
     def _restore_glance(glance_match: "re.Match[str]") -> str:
         block = glance_match.group(0)
-        body = html.unescape(glance_match.group(1) or "")
+        body = "".join(
+            part if part.startswith('<a href="') else html.unescape(part)
+            for part in re.split(
+                r'(<a href="[^"]*"[^>]*class="ref-citation[^"]*"[^>]*>.*?</a>)',
+                glance_match.group(1) or "",
+                flags=re.DOTALL,
+            )
+        )
         body = re.sub(r"(?i)<br\s*/?>", "\n", body).strip()
         confidence_match = re.search(
             r'class="confidence-badge[^"]*">([^<]*)</span>', block
@@ -3310,7 +3132,11 @@ def _plainify_report_html(text: str) -> str:
     text = re.sub(r'(?ms)\s*<span class="conflict-tag">.*?</span>', "", text)
     text = re.sub(
         r'(?ms)<a href="([^"]*)"[^>]*class="ref-citation[^"]*"[^>]*>(.*?)</a>',
-        lambda m: f"{m.group(2)}({html.unescape(m.group(1))})",
+        lambda m: (
+            f"{m.group(2)}(<{html.escape(html.unescape(m.group(1)), quote=True)}>)"
+            if _safe_http_url(html.unescape(m.group(1)))
+            else m.group(2)
+        ),
         text,
     )
     return re.sub(r"(?m)</?(?:div|span|p)[^>]*>\s*", "", text)
@@ -3570,6 +3396,12 @@ def _render_markdown_inner(
         agent = state["agents"].get(agent_id, {})
         agent_name = agent.get("agent_name", "")
         is_final_summary = agent_name == "Final Summary"
+        if (
+            is_final_summary
+            and agent_id != "final-output"
+            and "final-output" in state["agents"]
+        ):
+            continue
 
         for call_id in agent.get("tool_call_order", []):
             call = agent["tools"].get(call_id, {})
@@ -3717,6 +3549,7 @@ def _render_markdown_inner(
             _build_summary_section(
                 merged_final_summary_blocks,
                 output_detail_level=resolved_output_detail_level,
+                source_registry=state.get("source_registry"),
             )
         )
         folded_process: List[str] = []
@@ -3742,6 +3575,7 @@ def _render_markdown_inner(
                 _build_summary_section(
                     merged_final_summary_blocks,
                     output_detail_level=resolved_output_detail_level,
+                    source_registry=state.get("source_registry"),
                 )
             )
     elif resolved_render_mode == "summary_only":
@@ -3750,6 +3584,7 @@ def _render_markdown_inner(
                 _build_summary_section(
                     merged_final_summary_blocks,
                     output_detail_level=resolved_output_detail_level,
+                    source_registry=state.get("source_registry"),
                 )
             )
         else:
@@ -3760,6 +3595,7 @@ def _render_markdown_inner(
                 _build_summary_section(
                     merged_final_summary_blocks,
                     output_detail_level=resolved_output_detail_level,
+                    source_registry=state.get("source_registry"),
                 )
             )
             folded_process = []
@@ -3773,14 +3609,6 @@ def _render_markdown_inner(
             )
         else:
             lines.extend(_set_thought_cards_expanded(process_lines, expanded=True))
-
-    if has_final_summary:
-        # 论文式文末来源：LLM 没自己给出参考文献时，用实际命中/访问的来源补一节
-        joined_summary = "\n".join(merged_final_summary_blocks)
-        if not _REFERENCES_HEADING_RE.search(joined_summary):
-            sources = _collect_report_sources(state)
-            if sources:
-                lines.extend(_build_references_section(sources))
 
     runtime_stage = state.get("runtime_stage") or {}
     if str(runtime_stage.get("phase") or "") == "已取消":
@@ -3799,6 +3627,11 @@ def _render_markdown_inner(
 def _update_state_with_event(state: dict, message: dict):
     event = message.get("event")
     data = message.get("data", {})
+    registry = data.get("source_registry") if isinstance(data, dict) else None
+    if event == "source_registry" and registry is None:
+        registry = data
+    if isinstance(registry, dict) and isinstance(registry.get("entries"), list):
+        state["source_registry"] = deepcopy(registry)
     if event == "start_of_agent":
         agent_id = data.get("agent_id")
         agent_name = data.get("agent_name", "unknown")
@@ -4108,6 +3941,7 @@ def _build_initial_ui_state(
 ) -> dict:
     return {
         "task_id": task_id,
+        "source_registry": {"entries": []},
         "ui_lang": ui_lang if ui_lang in I18N else DEFAULT_LANG,
         "mode": mode,
         "search_profile": search_profile,
@@ -4149,6 +3983,10 @@ def _build_launch_kwargs(host: str, port: int) -> dict:
 
 def _build_reconnect_initial_render_state(snapshot: dict) -> dict:
     state = _init_render_state()
+    _update_state_with_event(
+        state,
+        {"event": "source_registry", "data": snapshot.get("source_registry")},
+    )
     meta = snapshot.get("meta") or {}
     status = str(snapshot.get("status") or meta.get("status") or "").strip().lower()
     current_stage = str(meta.get("current_stage") or "").strip().lower()
@@ -4262,6 +4100,7 @@ async def _render_stream_via_api(
          output_section, export_bar)
     """
     state = initial_state or _init_render_state()
+    ui_state = {**ui_state, "source_registry": state["source_registry"]}
     initial_markdown = _render_markdown(
         state,
         render_mode=resolved_ui_render_mode,
@@ -4287,6 +4126,7 @@ async def _render_stream_via_api(
             task_id, cancel_check=_cancel_check
         ):
             state = _update_state_with_event(state, message)
+            ui_state = {**ui_state, "source_registry": state["source_registry"]}
             if str(message.get("event") or "") == "done":
                 # 服务端终态信号：completed / cancelled / failed / cached
                 break
@@ -4512,6 +4352,7 @@ async def gradio_run(
             "final_summary_merge_strategy": resolved_summary_merge_strategy,
         }
     state = _init_render_state()
+    ui_state = {**ui_state, "source_registry": state["source_registry"]}
     try:
         initial_markdown = _render_markdown(
             state,
@@ -4539,6 +4380,7 @@ async def gradio_run(
             lambda: _disconnect_check_for_task(task_id),
         ):
             state = _update_state_with_event(state, message)
+            ui_state = {**ui_state, "source_registry": state["source_registry"]}
             md = _render_markdown(
                 state,
                 render_mode=resolved_ui_render_mode,
@@ -4636,8 +4478,24 @@ async def run_research_once(
     )
     cached = _result_cache.get(cache_key)
     if cached is not None:
-        logger.info("Cache hit | key=%s | query=%s", cache_key, query[:60])
-        return cached
+        try:
+            cached_state = json.loads(cached)
+        except (TypeError, json.JSONDecodeError):
+            cached_state = None
+        if (
+            isinstance(cached_state, dict)
+            and isinstance(cached_state.get("agents"), dict)
+            and isinstance(cached_state.get("source_registry"), dict)
+            and isinstance(cached_state["source_registry"].get("entries"), list)
+        ):
+            logger.info("Cache hit | key=%s | query=%s", cache_key, query[:60])
+            return _render_markdown(
+                cached_state,
+                render_mode=resolved_api_render_mode,
+                final_summary_merge_strategy=resolved_summary_merge_strategy,
+                output_detail_level=resolved_output_detail_level,
+            )
+        _result_cache.invalidate(cache_key)
 
     task_id = str(uuid.uuid4())
     _reset_cancel_flag(task_id)
@@ -4679,7 +4537,7 @@ async def run_research_once(
             and result
             and len(result) > 100
         ):
-            _result_cache.put(cache_key, result)
+            _result_cache.put(cache_key, json.dumps(state, ensure_ascii=False))
         return result
     finally:
         _unregister_active_task(task_id)
