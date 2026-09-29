@@ -144,11 +144,10 @@ class SourceRegistry:
             for alias in entry.aliases:
                 self._index.setdefault(alias, entry)
         # 编号单调递增且永不回收：并入/移除条目后，新来源不得复用已发布过的编号。
-        # 快照里已有的计数器优先（它记录了已退役编号），条目本身只是下界。
-        self.next_source_id = max(
-            [self.next_source_id if type(self.next_source_id) is int else 1, 1]
-            + [entry.source_id + 1 for entry in self.entries]
-        )
+        # 快照里的计数器优先（它记录了已退役编号），条目本身只是下界。
+        counter = self.next_source_id if type(self.next_source_id) is int else 1
+        entries_floor = max((entry.source_id + 1 for entry in self.entries), default=1)
+        self.next_source_id = max(counter, 1, entries_floor)
 
     def find(self, url: str) -> Optional[SourceEntry]:
         return self._index.get(normalize_source_url(url))

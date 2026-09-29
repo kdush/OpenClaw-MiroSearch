@@ -68,20 +68,20 @@ def _registry(*entries):
 # 确定数要求"支持依据能在该来源实际传入的正文片段里逐字核对到"，所以凡是要断言
 # certain=True 的用例，都得同时给出 evidence 与对应的 body_excerpts。
 _GROUNDED_EVIDENCE = "通报确认该说法成立"
+# 片段比依据长：核对走的是"依据是片段子串"，不是两者相等。
+_GROUNDED_EXCERPT = _GROUNDED_EVIDENCE + "（其余正文略）"
 
 
-def _grounded(claim, support, *, refute=None, unknown=None, origin_groups=None):
+def _grounded(claim, support, *, origin_groups=None):
     """构造"依据可在正文片段中核对到"的裁决结果，连同它对应的 body_excerpts。"""
     support = list(support)
     verdict = ClaimVerdict(
         claim=claim,
         support=support,
-        refute=list(refute or []),
-        unknown=list(unknown or []),
         evidence={sid: _GROUNDED_EVIDENCE for sid in support},
         origin_groups=list(origin_groups or []),
     )
-    return verdict, {sid: _GROUNDED_EVIDENCE for sid in support}
+    return verdict, {sid: _GROUNDED_EXCERPT for sid in support}
 
 
 class TestIndependentSupportFixtures:

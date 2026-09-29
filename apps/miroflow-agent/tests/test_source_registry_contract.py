@@ -323,5 +323,5 @@ class TestRedirectCanonicalIdentity:
         # 与同进程注册结果一致：新来源拿到 3，而不是复活的 2
         assert [entry.source_id for entry in restored.entries] == [1, 3]
         assert restored.find("https://e.com/c").source_id == 3
-        # 二次往返仍然单调递增，不因再次快照而回退
-        assert SourceRegistry(**restored.to_dict()).to_dict()["next_source_id"] == 4
+        # 再次往返不会让计数器回退
+        assert SourceRegistry(**restored.to_dict()).next_source_id == 4

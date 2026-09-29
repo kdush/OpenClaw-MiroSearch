@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import (
     Any,
@@ -35,7 +36,6 @@ from typing import (
     Dict,
     Iterable,
     List,
-    Mapping,
     Optional,
     Set,
     Tuple,
@@ -307,10 +307,8 @@ def _evidence_grounded(
     调用方据此不给确定数（fail-closed）。
     """
     excerpt = excerpts.get(source_id)
-    if not excerpt:
-        return False
     evidence = verdict.evidence.get(source_id)
-    if not isinstance(evidence, str):
+    if not isinstance(excerpt, str) or not isinstance(evidence, str):
         return False
     needle = re.sub(r"\s+", " ", evidence).strip()
     return bool(needle) and needle in excerpt
@@ -356,13 +354,9 @@ def independent_support(
     origins = {find(sid) for sid in supporting}
     count = len(origins)
 
-    excerpts: Dict[int, str] = {}
-    if isinstance(body_excerpts, Mapping):
-        excerpts = {
-            key: value
-            for key, value in body_excerpts.items()
-            if type(key) is int and isinstance(value, str) and value
-        }
+    excerpts: Mapping[int, str] = (
+        body_excerpts if isinstance(body_excerpts, Mapping) else {}
+    )
     with_body = set(excerpts) if bodies_adjudicated is None else set(bodies_adjudicated)
 
     reasons: List[str] = []
