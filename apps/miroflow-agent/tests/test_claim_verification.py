@@ -65,6 +65,25 @@ def _registry(*entries):
     return {"entries": list(entries)}
 
 
+# 确定数要求"支持依据能在该来源实际传入的正文片段里逐字核对到"，所以凡是要断言
+# certain=True 的用例，都得同时给出 evidence 与对应的 body_excerpts。
+_GROUNDED_EVIDENCE = "通报确认该说法成立"
+
+
+def _grounded(claim, support, *, refute=None, unknown=None, origin_groups=None):
+    """构造"依据可在正文片段中核对到"的裁决结果，连同它对应的 body_excerpts。"""
+    support = list(support)
+    verdict = ClaimVerdict(
+        claim=claim,
+        support=support,
+        refute=list(refute or []),
+        unknown=list(unknown or []),
+        evidence={sid: _GROUNDED_EVIDENCE for sid in support},
+        origin_groups=list(origin_groups or []),
+    )
+    return verdict, {sid: _GROUNDED_EVIDENCE for sid in support}
+
+
 class TestIndependentSupportFixtures:
     def test_same_url_two_engines_counts_once(self):
         """同 URL 被两个引擎命中：注册表已合并，只算一个原始来源。"""
@@ -78,9 +97,11 @@ class TestIndependentSupportFixtures:
                 ],
             )
         )
-        verdict = ClaimVerdict(claim="X", support=[1])
+        verdict, excerpts = _grounded("X", [1])
 
-        support = independent_support(verdict, registry, bodies_adjudicated={1})
+        support = independent_support(
+            verdict, registry, bodies_adjudicated={1}, body_excerpts=excerpts
+        )
 
         assert support.count == 1
         assert support.certain is True
@@ -88,18 +109,22 @@ class TestIndependentSupportFixtures:
     def test_cross_domain_republication_merges_via_origin_groups(self):
         """跨域转载由裁决给出的同一原文分组合并计数。"""
         registry = _registry(_entry(1, "https://a.com/x"), _entry(2, "https://b.com/x"))
-        verdict = ClaimVerdict(claim="X", support=[1, 2], origin_groups=[[1, 2]])
+        verdict, excerpts = _grounded("X", [1, 2], origin_groups=[[1, 2]])
 
-        support = independent_support(verdict, registry, bodies_adjudicated={1, 2})
+        support = independent_support(
+            verdict, registry, bodies_adjudicated={1, 2}, body_excerpts=excerpts
+        )
 
         assert support.count == 1
         assert support.certain is True
 
     def test_two_independent_sources_support(self):
         registry = _registry(_entry(1, "https://a.com/x"), _entry(2, "https://b.com/y"))
-        verdict = ClaimVerdict(claim="X", support=[1, 2])
+        verdict, excerpts = _grounded("X", [1, 2])
 
-        support = independent_support(verdict, registry, bodies_adjudicated={1, 2})
+        support = independent_support(
+            verdict, registry, bodies_adjudicated={1, 2}, body_excerpts=excerpts
+        )
 
         assert support.count == 2
         assert support.certain is True
@@ -178,11 +203,16 @@ class TestIndependentSupportFixtures:
 
     def test_below_minimum_reports_insufficient(self):
         registry = _registry(_entry(1, "https://a.com/x"))
-        verdict = ClaimVerdict(claim="X", support=[1])
+        verdict, excerpts = _grounded("X", [1])
 
         assert (
             render_independent_support(
-                independent_support(verdict, registry, bodies_adjudicated={1})
+                independent_support(
+                    verdict,
+                    registry,
+                    bodies_adjudicated={1},
+                    body_excerpts=excerpts,
+                )
             )
             == "来源不足（1 个独立来源，未达 2 个门槛）"
         )
@@ -326,7 +356,7 @@ class TestBodyAwareAdjudication:
         )
 
         assert all("body_excerpt" not in item for item in view)
-        assert bodies == set()
+        assert bodies == {}
         assert [item["snippet"] for item in view] == ["", "仅摘要"]
 
     def test_resolve_content_ref_rejects_dangling_and_malformed_pointers(self):
@@ -423,7 +453,7 @@ class TestBodyAwareAdjudication:
 
     @pytest.mark.asyncio
     async def test_readable_body_keeps_two_source_support_certain(self):
-        """正例：两条来源的正文都进了裁决且都判支持 → 仍能给出确定数。"""
+        """正例：两条来源的正文都进了裁决，且支持依据都能在片段里核对到 → 确定数。"""
         logs = self._logs("通报确认该说法成立。", "另一份通报亦确认。")
         registry = _registry(
             _entry(1, "https://a.com/x", content_ref="/step_logs/0/metadata/result"),
@@ -431,7 +461,20 @@ class TestBodyAwareAdjudication:
         )
 
         async def call_llm(_prompt):
-            return '{"claims": [{"claim": "X", "support": [1, 2]}]}'
+            return json.dumps(
+                {
+                    "claims": [
+                        {
+                            "claim": "X",
+                            "support": [1, 2],
+                            "evidence": {
+                                "1": "通报确认该说法成立",
+                                "2": "另一份通报亦确认",
+                            },
+                        }
+                    ]
+                }
+            )
 
         result = await adjudicate_claim_support(
             call_llm,
@@ -442,10 +485,124 @@ class TestBodyAwareAdjudication:
 
         assert result.bodies_adjudicated == {1, 2}
         support = independent_support(
-            result.claims[0], registry, bodies_adjudicated=result.bodies_adjudicated
+            result.claims[0],
+            registry,
+            bodies_adjudicated=result.bodies_adjudicated,
+            body_excerpts=result.body_excerpts,
         )
         assert support.certain is True
         assert render_independent_support(support) == "2 个独立来源支持"
+
+    @pytest.mark.asyncio
+    async def test_refutation_beyond_excerpt_boundary_gives_no_certain_count(self):
+        """反证落在 600 字截取边界之外：摘要支持、正文反驳，不得报确定支持数。
+
+        正文开头是无关背景，占满 600 字截取窗口，明确反驳在其后——反驳部分没有
+        进入 prompt。``body_excerpt`` 非空只说明"窗口里有内容"，裁决据此返回的
+        support 依据其实来自 snippet，在片段里核对不上，因此只能给"未核实"。
+        """
+        background = "无关背景" * 200  # 800 字，占满 600 字截取窗口
+        body = background + "该说法与官方通报不符。"
+        logs = self._logs(body, body)
+        registry = _registry(
+            _entry(
+                1,
+                "https://a.com/x",
+                snippet="据称该说法成立",
+                content_ref="/step_logs/0/metadata/result",
+            ),
+            _entry(
+                2,
+                "https://b.com/y",
+                snippet="据称该说法成立",
+                content_ref="/step_logs/1/metadata/result",
+            ),
+        )
+        captured = {}
+
+        async def call_llm(prompt):
+            captured["prompt"] = prompt
+            return json.dumps(
+                {
+                    "claims": [
+                        {
+                            "claim": "X",
+                            "support": [1, 2],
+                            "evidence": {
+                                "1": "据称该说法成立",
+                                "2": "据称该说法成立",
+                            },
+                        }
+                    ]
+                }
+            )
+
+        result = await adjudicate_claim_support(
+            call_llm,
+            claims=["X"],
+            source_registry=registry,
+            body_resolver=lambda ref: resolve_content_ref(ref, logs),
+        )
+
+        # 边界证明：反驳句根本没进 prompt，摘要进了
+        assert "与官方通报不符" not in captured["prompt"]
+        assert "据称该说法成立" in captured["prompt"]
+        assert result.bodies_adjudicated == {1, 2}
+        assert set(result.body_excerpts) == {1, 2}
+
+        verdict = result.claims[0]
+        assert verdict.support == [1, 2]
+        support = independent_support(
+            verdict,
+            registry,
+            bodies_adjudicated=result.bodies_adjudicated,
+            body_excerpts=result.body_excerpts,
+        )
+        assert support.count == 2
+        assert support.certain is False
+        assert "支持依据未能在传入的正文片段中核对" in support.reason
+        rendered = render_independent_support(support)
+        assert rendered.startswith("未核实")
+        assert "独立来源支持" not in rendered
+
+    def test_evidence_outside_passed_excerpt_is_not_grounded(self):
+        """依据来自 snippet 而非 body_excerpt → 计数不确定（直接走计数路径）。"""
+        registry = _registry(
+            _entry(1, "https://a.com/x", snippet="摘要说成立"),
+            _entry(2, "https://b.com/y", snippet="摘要说成立"),
+        )
+        verdict = ClaimVerdict(
+            claim="X",
+            support=[1, 2],
+            evidence={1: "摘要说成立", 2: "摘要说成立"},
+        )
+        excerpts = {1: "无关背景片段", 2: "无关背景片段"}
+
+        support = independent_support(
+            verdict,
+            registry,
+            bodies_adjudicated={1, 2},
+            body_excerpts=excerpts,
+        )
+
+        assert support.certain is False
+        assert "支持依据未能在传入的正文片段中核对" in support.reason
+
+        # 依据确实出现在各自片段里时才恢复确定数
+        grounded = ClaimVerdict(
+            claim="X",
+            support=[1, 2],
+            evidence={1: "无关背景片段", 2: "无关背景片段"},
+        )
+        assert (
+            independent_support(
+                grounded,
+                registry,
+                bodies_adjudicated={1, 2},
+                body_excerpts=excerpts,
+            ).certain
+            is True
+        )
 
 
 class TestSanitizeClaimMap:

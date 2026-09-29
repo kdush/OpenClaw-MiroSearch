@@ -299,3 +299,29 @@ class TestRedirectCanonicalIdentity:
         )
 
         assert [entry.source_id for entry in registry.entries] == [1, 3]
+
+    def test_merged_ids_survive_serialization_round_trip(self):
+        """合并 → 快照 → 恢复 → 新来源：退役编号不得在恢复后复活。
+
+        并入（重定向合并）退役了编号 2，而编号 2 只存在于 ``next_source_id``
+        计数器里——快照若不带上它，恢复后就只按现存条目的 ``max(source_id)+1``
+        重建，把 2 重新发给新来源，使旧引用 [2] 错指到别的来源。
+        """
+        registry = SourceRegistry()
+        self._register_pair(registry, "https://e.com/a", "https://e.com/b")
+        registry.mark_fetched("https://e.com/a", final_url="https://e.com/b", turn=3)
+        assert [entry.source_id for entry in registry.entries] == [1]
+
+        snapshot = registry.to_dict()
+        assert snapshot["next_source_id"] == 3
+
+        restored = SourceRegistry(**snapshot)
+        restored.register_search_hits(
+            {"provider": "serper", "organic": [{"link": "https://e.com/c"}]}, turn=4
+        )
+
+        # 与同进程注册结果一致：新来源拿到 3，而不是复活的 2
+        assert [entry.source_id for entry in restored.entries] == [1, 3]
+        assert restored.find("https://e.com/c").source_id == 3
+        # 二次往返仍然单调递增，不因再次快照而回退
+        assert SourceRegistry(**restored.to_dict()).to_dict()["next_source_id"] == 4

@@ -723,7 +723,8 @@ class AnswerGenerator:
         丰富化，绝不因核验失败而阻断报告输出。
 
         裁决输入包含来源的抓取正文片段（经 ``content_ref`` 解析），返回值带上
-        ``bodies_adjudicated``——计数只认正文确实进过 prompt 的来源。
+        ``bodies_adjudicated`` 与 ``body_excerpts``——计数只认正文确实进过 prompt、
+        且支持依据能在该段正文里核对到的来源。
         """
         registry = self.task_log.source_registry.to_dict()
         if not claims or not registry.get("entries"):

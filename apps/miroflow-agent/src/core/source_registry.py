@@ -127,6 +127,12 @@ class SourceEntry:
 @dataclass
 class SourceRegistry:
     entries: list[SourceEntry] = field(default_factory=list)
+    # 下一个待发布编号。必须随快照一起持久化：并入（重定向合并）会退役一个编号，
+    # 但退役编号只体现在这个计数器里——只按现存条目的 max(source_id)+1 重建，
+    # 恢复后就会把退役编号重新发给新来源，使旧引用（如 [2]）错指到别的来源。
+    # 它是 dataclass 字段（而非私有属性）是刻意的：``TaskLog.to_dict/to_json``
+    # 走 ``dataclasses.asdict``，只认字段；私有计数器不会被序列化。
+    next_source_id: int = 1
 
     def __post_init__(self) -> None:
         self.entries = [
@@ -138,9 +144,11 @@ class SourceRegistry:
             for alias in entry.aliases:
                 self._index.setdefault(alias, entry)
         # 编号单调递增且永不回收：并入/移除条目后，新来源不得复用已发布过的编号。
-        self._next_source_id = 1
-        for entry in self.entries:
-            self._next_source_id = max(self._next_source_id, entry.source_id + 1)
+        # 快照里已有的计数器优先（它记录了已退役编号），条目本身只是下界。
+        self.next_source_id = max(
+            [self.next_source_id if type(self.next_source_id) is int else 1, 1]
+            + [entry.source_id + 1 for entry in self.entries]
+        )
 
     def find(self, url: str) -> Optional[SourceEntry]:
         return self._index.get(normalize_source_url(url))
@@ -301,14 +309,14 @@ class SourceRegistry:
         entry = self._index.get(normalized)
         if entry is None:
             entry = SourceEntry(
-                source_id=self._next_source_id,
+                source_id=self.next_source_id,
                 raw_url=url,
                 normalized_url=normalized,
                 domain=normalize_domain(url),
                 first_seen_turn=turn,
                 last_seen_turn=turn,
             )
-            self._next_source_id += 1
+            self.next_source_id += 1
             self.entries.append(entry)
             self._index[normalized] = entry
         else:

@@ -227,3 +227,75 @@ async def test_serial_fallback_downgrades_after_provider_failure(monkeypatch):
         ]
         == 1
     )
+
+
+@pytest.mark.asyncio
+async def test_serial_fallback_success_converges_to_single_route(monkeypatch):
+    """串行回退第一路正常成功、第二路未调用：档位与门槛必须收敛为单路。
+
+    回归：回退模式命中即返回，second 从未被调用（没有任何"失败"，故
+    ``_recompute_tier_from_health`` 不会降档），但预先算出的 ``multi-provider``
+    仍要求两路覆盖——门槛对本次路由结构性不可达，正常成功的检索被判
+    ``passed=false``。
+    """
+    search_mod = _reload(monkeypatch)
+    monkeypatch.setenv("SEARCH_PROVIDER_ORDER", "first,second")
+    monkeypatch.setenv("SEARCH_PROVIDER_MODE", "fallback")
+    sys.modules.pop(_MODULE, None)
+    search_mod = importlib.import_module(_MODULE)
+
+    from miroflow_tools.dev_mcp_servers.providers.base import SearchResult
+    from miroflow_tools.dev_mcp_servers.providers.registry import ProviderRegistry
+
+    called: list[str] = []
+
+    class _AlwaysOkProvider:
+        def __init__(self, name, link):
+            self._name = name
+            self._link = link
+
+        @property
+        def name(self):
+            return self._name
+
+        def is_available(self):
+            return True
+
+        async def search(self, _params):
+            called.append(self._name)
+            return (
+                [
+                    SearchResult(
+                        position=1,
+                        title=self._name,
+                        link=self._link,
+                        snippet="s",
+                    )
+                ],
+                {"provider": self._name},
+            )
+
+    registry = ProviderRegistry()
+    registry.register(_AlwaysOkProvider("first", "https://www.reuters.com/world/x"))
+    registry.register(_AlwaysOkProvider("second", "https://apnews.com/article/x"))
+    monkeypatch.setattr(search_mod, "_registry", registry)
+    monkeypatch.setattr(search_mod, "SEARCH_PROVIDER_ORDER", "first,second")
+    monkeypatch.setattr(search_mod, "SEARCH_PROVIDER_MODE", "fallback")
+
+    payload = json.loads(await search_mod.google_search("test query", num=3))
+
+    params = payload["searchParameters"]
+    # 回退语义不变：命中即返回，第二路不应被调用
+    assert called == ["first"]
+
+    tier = params["provider_tier"]
+    assert tier["tier"] == "single-provider"
+    assert tier["min_provider_coverage"] == 1
+    assert tier["effective_order"] == ["first"]
+    assert tier["degraded_from"] == "multi-provider"
+    assert "first" in tier["reason"]
+
+    # 门槛随有效档位收敛，正常成功的检索不再被判失败
+    assert params["confidence"]["constraints"]["min_provider_coverage"] == 1
+    assert params["confidence"]["metrics"]["provider_coverage"] == 1
+    assert params["confidence"]["passed"] is True

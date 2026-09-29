@@ -184,8 +184,10 @@ def _claim_topology_lines(claim_map: Any, source_registry: Optional[dict]) -> Li
     def sid(source_id: int) -> str:
         return f"S{source_id}"
 
-    # 计数口径跟随裁决输入：只有正文进过 prompt 的来源才算"已读全文"。
+    # 计数口径跟随裁决输入：只有正文进过 prompt、且支持依据能在该段正文里核对
+    # 到的来源，才算"已读全文"。
     bodies = getattr(claim_map, "bodies_adjudicated", None)
+    excerpts = getattr(claim_map, "body_excerpts", None)
 
     used: List[int] = []
     for verdict in claim_map.claims:
@@ -213,7 +215,10 @@ def _claim_topology_lines(claim_map: Any, source_registry: Optional[dict]) -> Li
             if source_id in entries:
                 lines.append(f"  {cid} -.->|未知| {sid(source_id)}")
         if not independent_support(
-            verdict, source_registry, bodies_adjudicated=bodies
+            verdict,
+            source_registry,
+            bodies_adjudicated=bodies,
+            body_excerpts=excerpts,
         ).certain:
             lines.append(f"  {cid} -.-> G")
             needs_gap = True
@@ -244,6 +249,7 @@ def ensure_content_analysis_and_topology(
 
     claims = list(getattr(claim_map, "claims", []) or []) if claim_map else []
     bodies = getattr(claim_map, "bodies_adjudicated", None) if claim_map else None
+    excerpts = getattr(claim_map, "body_excerpts", None) if claim_map else None
 
     if not has_analysis and (claims or bullets):
         extras.append("## 内容分析 / Content Analysis\n")
@@ -260,7 +266,10 @@ def ensure_content_analysis_and_topology(
             for i, verdict in enumerate(claims, 1):
                 rendered = render_independent_support(
                     independent_support(
-                        verdict, source_registry, bodies_adjudicated=bodies
+                        verdict,
+                        source_registry,
+                        bodies_adjudicated=bodies,
+                        body_excerpts=excerpts,
                     )
                 )
                 extras.append(f"{i}. **{verdict.claim}** — {rendered}")

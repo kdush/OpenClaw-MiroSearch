@@ -39,7 +39,7 @@ from .providers.searxng import SearxngPrecheckError, SearXNGProvider
 from .providers.serpapi import SerpAPIProvider
 from .providers.serper import SerperProvider
 from .providers.tavily import TavilyProvider
-from .providers.tiering import resolve_provider_tier
+from .providers.tiering import TIER_SINGLE, resolve_provider_tier
 
 # Configure logging
 logger = logging.getLogger("miroflow")
@@ -460,6 +460,38 @@ def _recompute_tier_from_health(
         reason=(
             f"{phase}后 {', '.join(sorted(failed))} 不健康，"
             f"按剩余 {len(healthy)} 个 provider 重算档位（{recomputed.reason}）"
+        ),
+    )
+
+
+def _converge_serial_fallback_tier(
+    decision,
+    contributors: List[str],
+    *,
+    phase: str,
+):
+    """串行回退命中即返回：有效路由只有实际出结果的 provider。
+
+    ``_recompute_tier_from_health`` 只在有 provider 失败时降档；但回退模式第一路
+    正常返回时没有任何失败，后面的 provider 根本没被调用，而预先算出的
+    ``multi-provider`` 档仍要求两路覆盖——置信门槛对本次路由结构性不可达，
+    正常成功的检索也会被判 ``passed=false``。这里按"实际贡献了结果的 provider"
+    收敛档位与覆盖门槛；已经收敛过（门槛 ≤ 1）或确实有多路出结果时不改动。
+    """
+    effective = [name for name in decision.effective_order if name in contributors]
+    if not effective:
+        effective = list(contributors)
+    if len(effective) >= 2 or decision.min_provider_coverage <= 1:
+        return decision
+    return replace(
+        decision,
+        tier=TIER_SINGLE,
+        min_provider_coverage=1,
+        effective_order=effective,
+        degraded_from=decision.tier,
+        reason=(
+            f"{phase}命中即返回，本次仅 {', '.join(effective)} 出结果，"
+            f"档位收敛为单路（原 {decision.tier}）"
         ),
     )
 
@@ -893,6 +925,13 @@ async def google_search(
                             tier_decision,
                             providers,
                             fallback_failed,
+                            phase="串行回退",
+                        )
+                        # 命中即返回：本次只走到这一路，multi-provider 的两路覆盖
+                        # 门槛不可达，须把有效档位收敛为单路。
+                        tier_decision = _converge_serial_fallback_tier(
+                            tier_decision,
+                            [provider],
                             phase="串行回退",
                         )
                         search_params["provider_mode"] = "fallback"
