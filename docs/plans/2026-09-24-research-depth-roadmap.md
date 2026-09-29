@@ -269,15 +269,15 @@ deep/hotspot 用例会被限流打穿。
 | Q4 拓扑丰富 | `report_presentation.ensure_content_analysis_and_topology` | `test_report_presentation.py`（22 例）：支持/反驳/未知边、证据缺口、未登记来源不画、无 claim_map 时不加边、抽取主张端到端入图；**v3 新增**净化后的映射不再画互相矛盾的两种边、正文未参与裁决时不写确定支持数 |
 | Q1 渲染器 | `apps/gradio-demo/static/js/mermaid_render.js` | `test_static_assets.py::test_mermaid_renderer_is_strict_and_keeps_plaintext_fallback`（strict + 纯文本回退） |
 | M4 线索链 | `lead_tracker.snapshot()` / `get_trace()`；`orchestrator` 日志元数据 `lead_trace` | `test_lead_tracker.py`（11 例）：快照/reason/序列化 |
-| M5 分档 | `providers/tiering.py`，`search_and_scrape_webpage.perform_search` 消费档位与门槛；`_recompute_tier_from_health` 运行中重算；`_converge_tier_to_single_route` 串行回退 / 聚合收敛 | `test_provider_tiering.py`（9 例）：单 Serper、单 SearXNG、多 provider 升档、无凭据、中途超时降档、严格路由不静默扩档、每档门槛可达；**`test_search_runtime_tier_downgrade.py`（8 例）**：google_search 级一路超时后档位降为单 provider、门槛降为 1、`degraded_from`/原因可归因，两路健康时不降档，串行回退路径同样降档，**v4 新增**串行回退第一路正常成功、第二路未调用时收敛为单路且 `confidence.passed is True`，严格路由下收敛只降门槛、`strict` 与配置 profile 保持自洽，**v5 新增**聚合模式先补齐覆盖门槛再停、真实写出 `providers_with_results`，另一路失败或空结果时收敛为单路；§9.1 真机证据 |
+| M5 分档 | `providers/tiering.py`，`search_and_scrape_webpage.perform_search` 消费档位与门槛；`_recompute_tier_from_health` 运行中重算；`_converge_tier_to_single_route` 串行回退 / 聚合收敛 | `test_provider_tiering.py`（9 例）：单 Serper、单 SearXNG、多 provider 升档、无凭据、中途超时降档、严格路由不静默扩档、每档门槛可达；**`test_search_runtime_tier_downgrade.py`（9 例）**：google_search 级一路超时后档位降为单 provider、门槛降为 1、`degraded_from`/原因可归因，两路健康时不降档，串行回退路径同样降档，**v4 新增**串行回退第一路正常成功、第二路未调用时收敛为单路且 `confidence.passed is True`，严格路由下收敛只降门槛、`strict` 与配置 profile 保持自洽，**v5 新增**聚合模式先补齐覆盖门槛再停、真实写出 `providers_with_results`，另一路失败或空结果时收敛为单路，**v6 新增**覆盖率口径改为「真正进入最终输出的 provider」（`num` 小于 provider 数时不虚报覆盖）；§9.1 真机证据 |
 
 **本轮额外修复（提供商中立）：** summary/fast 阶段的「关闭思考」参数由**无条件下发**改为
 **能力自适应**——先尝试下发，被 `400` 拒绝即剥离该可选参数重试一次且**不消耗
 `max_retries`**；判定只看状态码，不匹配任何模型名或提供商文案。此前用模型名前缀黑名单
 的做法已废弃（违背「系统不绑定特定 LLM 提供商」的架构约束）。
 
-**测试与 lint 状态（2026-09-29 v5 复核）：** `apps/miroflow-agent` 374 passed / 7 skipped；
-`libs/miroflow-tools` 137 passed；`apps/gradio-demo` 132 passed；
+**测试与 lint 状态（2026-09-29 v6 复核）：** `apps/miroflow-agent` 374 passed / 7 skipped；
+`libs/miroflow-tools` 138 passed；`apps/gradio-demo` 132 passed；
 `apps/api-server` 203 passed / 13 skipped；`ruff check .` 全绿、`format --check` 干净。
 
 **CI 现状（v3 修复）：** `.github/workflows/run-tests.yml` 与 `run-ruff.yml` 原先带
@@ -364,7 +364,7 @@ python scripts/compare_acceptance_runs.py \
 |---|---|---|---|
 | 1 | **覆盖率恒为 1**：`merge` 分支返回的 `search_params` 只硬编码 `provider="multi-route"`，**从不写 `providers_with_results`**；而 `_ensure_confidence_evaluated` 的兜底是 `{search_params["provider"]}` → `provider_coverage` 恒为 1，**即使两路都调用了**（实测 `called=['first','second']` 时覆盖率仍是 1）。对照：并发分支会传 `providers_with_results` | `merge` 分支写出真实产出结果的 provider 列表 `providers_with_results`；`_ensure_confidence_evaluated` 的兜底链改为「显式参数 → `search_params["providers_with_results"]` → `provider`」 | `test_merge_mode_fills_coverage_floor_before_stopping`：断言两路都被调用、`providers_with_results == ["first","second"]`、覆盖率 2、门槛 2、`passed is True` |
 | 2 | **提前 break 让门槛不可达**：`len(merged_results) >= result_num: break` 使第一路返回够数即停，`second` 根本不调用；此时没有任何“失败”，`_recompute_tier_from_health` 不降档 → 档位仍是 `multi-provider`、门槛 2 → 正常成功的聚合检索被判 `passed=false`。而聚合的卖点正是交叉验真，**结果既没交叉、又被判置信不足** | break 条件补上覆盖门槛：`len(merged_results) >= result_num and len(provider_results_map) >= tier_decision.min_provider_coverage`（结果够了也要先凑齐门槛再停） | 同上（`first_count > num` 时仍须调用第二路） |
-| 3 | **只有一路贡献时档位不收敛**：另一路失败（进 `merge_failed`）或返回空结果（不进 `merge_failed`）时实际只有一路贡献，档位却可能仍停在 `multi-provider`（门槛 2）→ `passed=false` | `_converge_serial_fallback_tier` 泛化为 `_converge_tier_to_single_route`（`reason` 由 `detail` 参数化，串行回退传“命中即返回”、聚合传“只有一路产出结果”）；`merge` 分支在 `len(contributors) == 1` 时收敛档位与门槛 | `test_merge_mode_single_contributor_converges_to_single_route`（参数化 `raise` / `empty`）：断言档位收敛为 `single-provider`、门槛 1、覆盖率 1、`passed is True` |
+| 3 | **只有一路贡献时档位不收敛**：另一路失败（进 `merge_failed`）或返回空结果（不进 `merge_failed`）时实际只有一路贡献，档位却可能仍停在 `multi-provider`（门槛 2）→ `passed=false` | `_converge_serial_fallback_tier` 泛化为 `_converge_tier_to_single_route`（`reason` 由 `detail` 参数化，串行回退传“命中即返回”、聚合传“只有一路进入最终输出”）；`merge` 分支在 `len(contributors) == 1` 时收敛档位与门槛 | `test_merge_mode_single_contributor_converges_to_single_route`（参数化 `raise` / `empty`）：断言档位收敛为 `single-provider`、门槛 1、覆盖率 1、`passed is True` |
 
 **影响链（为什么必须修）**：`multi-route` profile 在 `apps/api-server/services/profile_resolver.py` 与
 `apps/gradio-demo/main.py` 中都映射到 `SEARCH_PROVIDER_MODE=merge`，且 `tiering._MULTI_PROFILE`
@@ -381,3 +381,29 @@ python scripts/compare_acceptance_runs.py \
 `apps/miroflow-agent` 374 passed / 7 skipped 不变；`ruff check`、`ruff format --check` 全绿。
 三个新回归测试均已在**回退到修复前源码**时确认失败，且失败点各自指向对应根因
 （`called` 只有一路 / 档位仍为 `multi-provider` / 缺 `providers_with_results`）。
+
+### 9.8 聚合模式覆盖率与交付证据不一致（2026-09-29 四轮评审）
+
+§9.7 把聚合的 break 条件改成「必须补齐覆盖门槛再停」后，暴露出一处口径错误：
+**覆盖率把「某 provider 返回过结果」当成了「该 provider 的证据进入了最终输出」**。
+两者在 `num` 小于 provider 数时并不等价，结论会与实际交付的证据不一致。
+
+| # | 问题（复现） | 修复 | 回归测试 |
+|---|---|---|---|
+| 1 | **第二路被 limit 整段截掉**：`_merge_provider_results` 按 provider 顺序填满 `limit`，满额后 `continue` 跳过后续 provider 的新链接。复现 `num=3`、两路各 5 条不同链接：`called=['first','second']`，但返回的 3 条 `organic[*].discoveries` **全部只有 first**，第二路的证据根本没交付 | 改为**轮询交错**填充：每轮从各路各取一条（去重后按首次出现的位置入列，命中同一链接的各路都记进该条 `discoveries`），`limit` 允许时保证每路都有代表进入输出 | `test_merge_mode_fills_coverage_floor_before_stopping` 增补断言：`organic` 的 `discoveries` 必须同时含两路 |
+| 2 | **覆盖率取自未截断的中间结果**：merge 分支的 `providers_with_results` 原先取 `sorted(provider_results_map)`（调用时返回过结果的 provider），据此算出覆盖率 2、`passed=true`，与只有一路证据的交付内容矛盾；`num=1` 时同样虚报 | 新增 `_providers_in_output(results)`，覆盖率口径改为**从最终交付结果的 `discoveries` 统计**；merge 分支改为 `contributors = sorted(_providers_in_output(final_results))`，break 条件同步改用「已进入输出的 provider 数」 | `test_merge_mode_does_not_overreport_coverage`：`num=1` 时断言 `providers_with_results == ["first"]`、覆盖率 1、档位收敛为单路（不虚报 2） |
+
+**口径原则（本轮确立）**：`provider_coverage` 只能反映**实际进入了最终交付的 provider**。
+`num` 或去重使某一路进不了输出时，宁可报覆盖率 1 并收敛档位，也不得报 2 且 `passed=true`。
+
+**本轮测试规模：** `libs/miroflow-tools` 由 137 增至 138 passed；
+`apps/miroflow-agent` 374 / 7 skipped、`gradio-demo` 132、`api-server` 203 / 13 skipped 不变；
+`ruff check`、`ruff format --check` 全绿。两个新/改断言均已在**回退到修复前源码**时确认失败
+（失败点分别为「`discoveries` 只有一路」与「覆盖率虚报为 2」）。
+
+**已知同类隐患（本轮未修，超出评审点名范围）**：并发分支（`parallel` / `parallel_conf_fallback`）
+同样把 `providers_with_results` 直接传给 `_evaluate_confidence` 算覆盖率，`num` 小于 provider 数时
+会虚报（复现：`SEARCH_PROVIDER_MODE=parallel`、`num=1`、两路各 5 条 → `organic` 只有 first，
+覆盖率仍报 2、`passed=true`）。未一并修改的原因：该集合在并发分支还承担「成功路数」语义
+（驱动 `SEARCH_PROVIDER_PARALLEL_MIN_SUCCESS` 补检决策），要修需先把两个口径拆成不同字段，
+不宜在本轮顺手改。建议后续单独处理。

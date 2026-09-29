@@ -335,6 +335,16 @@ def test_strict_serial_fallback_converges_without_rewriting_profile(monkeypatch)
     assert converged.profile == "searxng-only"
 
 
+def _providers_in_output(organic: list[dict]) -> set[str]:
+    """测试侧独立统计"真正进入最终输出的 provider"（不复用被测实现，避免循环论证）。"""
+    return {
+        str(discovery.get("provider"))
+        for item in organic
+        for discovery in item.get("discoveries") or []
+        if discovery.get("provider")
+    }
+
+
 def _merge_registry(*, first_count: int = 5, second_behavior: str = "ok"):
     """构造聚合场景的注册表：first 返回 ``first_count`` 条，second 行为可控。
 
@@ -431,7 +441,14 @@ async def test_merge_mode_fills_coverage_floor_before_stopping(monkeypatch):
 
     # 第一路已够 result_num，但覆盖门槛未满足 → 必须继续调第二路
     assert called == ["first", "second"]
-    assert params["providers_with_results"] == ["first", "second"]
+
+    # 覆盖率的依据必须是"真正进入最终输出的 provider"，而不是"调用时返回过结果的"：
+    # 逐路填满会让第二路被 limit 整段截掉，此时报两路覆盖就是虚报。
+    organic = payload["organic"]
+    assert len(organic) == 3
+    in_output = _providers_in_output(organic)
+    assert in_output == {"first", "second"}
+    assert params["providers_with_results"] == sorted(in_output)
 
     tier = params["provider_tier"]
     assert tier["tier"] == "multi-provider"
@@ -441,6 +458,38 @@ async def test_merge_mode_fills_coverage_floor_before_stopping(monkeypatch):
     assert confidence["metrics"]["provider_coverage"] == 2
     assert confidence["constraints"]["min_provider_coverage"] == 2
     assert confidence["passed"] is True
+
+
+@pytest.mark.asyncio
+async def test_merge_mode_does_not_overreport_coverage(monkeypatch):
+    """第二路进不了最终输出时，覆盖率不得仍报 2（num 小于 provider 数）。
+
+    回归：``providers_with_results`` 原先取自未截断的 ``provider_results_map``，
+    ``num`` 只容得下一路证据时仍会报覆盖率 2、``passed=true``，与交付的 organic
+    只有一路来源相矛盾。
+    """
+    search_mod, called = _reload_for_merge(monkeypatch)
+
+    payload = json.loads(await search_mod.google_search("test query", num=1))
+    params = payload["searchParameters"]
+
+    assert called == ["first", "second"]
+
+    organic = payload["organic"]
+    assert len(organic) == 1
+    in_output = _providers_in_output(organic)
+    assert in_output == {"first"}
+
+    # 覆盖率必须与交付证据一致，不虚报第二路
+    assert params["providers_with_results"] == ["first"]
+    confidence = params["confidence"]
+    assert confidence["metrics"]["provider_coverage"] == 1
+    assert confidence["passed"] is True
+
+    # 档位随之收敛，避免"门槛 2 / 覆盖 1"自相矛盾
+    tier = params["provider_tier"]
+    assert tier["tier"] == "single-provider"
+    assert tier["min_provider_coverage"] == 1
 
 
 @pytest.mark.asyncio

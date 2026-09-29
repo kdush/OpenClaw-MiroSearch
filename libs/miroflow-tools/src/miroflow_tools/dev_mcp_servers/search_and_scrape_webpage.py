@@ -283,24 +283,60 @@ def _normalize_domain(url: str) -> str:
 def _merge_provider_results(
     ordered_providers: list[str], provider_results: dict[str, list[dict]], limit: int
 ) -> list[dict]:
+    """按 provider 轮询交错填充，``limit`` 允许时保证每路都有结果进入输出。
+
+    逐路填满会让靠后的 provider 完全进不了输出，而覆盖率若按"该 provider 返回过
+    结果"统计，合并路由就会声称两路交叉覆盖、实际交付的证据却只有一路。这里改成
+    每轮从各路各取一条（去重后仍按首次出现的位置入列，命中同一链接的 provider
+    都记进该条的 ``discoveries``），从而让"进入输出的 provider"与覆盖率口径一致。
+    """
     merged: list[dict] = []
     by_key: dict[str, dict] = {}
-    for provider in ordered_providers:
-        for item in provider_results.get(provider, []):
-            link = str(item.get("link", "")).strip()
-            title = str(item.get("title", "")).strip()
-            dedupe_key = link or title
-            if not dedupe_key:
-                continue
-            if dedupe_key not in by_key:
-                if len(merged) >= limit:
+    remaining = {
+        provider: list(provider_results.get(provider, []))
+        for provider in ordered_providers
+    }
+    while len(merged) < limit:
+        took_any = False
+        for provider in ordered_providers:
+            if len(merged) >= limit:
+                break
+            queue = remaining.get(provider) or []
+            while queue:
+                item = queue.pop(0)
+                dedupe_key = (
+                    str(item.get("link", "")).strip()
+                    or str(item.get("title", "")).strip()
+                )
+                if not dedupe_key:
                     continue
-                by_key[dedupe_key] = {**item, "discoveries": []}
-                merged.append(by_key[dedupe_key])
-            by_key[dedupe_key]["discoveries"].append(
-                {"provider": provider, "position": item.get("position")}
-            )
+                entry = by_key.get(dedupe_key)
+                if entry is None:
+                    entry = {**item, "discoveries": []}
+                    by_key[dedupe_key] = entry
+                    merged.append(entry)
+                entry["discoveries"].append(
+                    {"provider": provider, "position": item.get("position")}
+                )
+                took_any = True
+                break
+        if not took_any:
+            break
     return merged
+
+
+def _providers_in_output(results: list[dict]) -> set[str]:
+    """统计真正进入了最终输出的 provider（按每条结果的 ``discoveries``）。
+
+    覆盖率必须以此为准，而不是"该 provider 调用时返回过结果"——后者会把被
+    ``limit`` 截掉、证据其实没交付的那一路也算进来。
+    """
+    return {
+        str(discovery.get("provider"))
+        for item in results
+        for discovery in item.get("discoveries") or []
+        if discovery.get("provider")
+    }
 
 
 def _evaluate_confidence(
@@ -890,11 +926,13 @@ async def google_search(
                         merged_results = _merge_provider_results(
                             providers, provider_results_map, result_num
                         )
-                        # 聚合的卖点是交叉验真：结果够了也要先凑齐覆盖门槛再停，
-                        # 否则 multi-route 会退化成"只调一路"，门槛结构性不可达。
+                        # 聚合的卖点是交叉验真：结果够了也要先让覆盖门槛真的达成
+                        # 再停——门槛按"已进入最终输出的 provider"计，而不是按
+                        # "调用时返回过结果的 provider"，否则第二路可能被 limit
+                        # 截掉、证据没交付却仍被算作覆盖。
                         if (
                             len(merged_results) >= result_num
-                            and len(provider_results_map)
+                            and len(_providers_in_output(merged_results))
                             >= tier_decision.min_provider_coverage
                         ):
                             break
@@ -907,23 +945,25 @@ async def google_search(
                             str(exc),
                         )
 
-                contributors = sorted(provider_results_map)
+                final_results = merged_results[:result_num]
+                # 覆盖率口径 = 真正进入最终交付的 provider，而不是"返回过结果的"。
+                contributors = sorted(_providers_in_output(final_results))
                 # M5: 聚合路径同样按运行中健康情况降档，门槛不落后于实际路由。
                 tier_decision = _recompute_tier_from_health(
                     tier_decision, providers, merge_failed, phase="聚合检索"
                 )
-                # 另一路失败或无结果，实际只有一路贡献 → 覆盖门槛不可达，收敛为单路。
+                # 只有一路真正进入输出 → 覆盖门槛不可达，收敛为单路，不虚报覆盖率。
                 if len(contributors) == 1:
                     tier_decision = _converge_tier_to_single_route(
                         tier_decision,
                         contributors[0],
                         phase="聚合检索",
-                        detail="只有一路产出结果",
+                        detail="只有一路进入最终输出",
                     )
                 provider_tier = tier_decision.to_dict()
 
                 return (
-                    merged_results[:result_num],
+                    final_results,
                     {
                         "q": search_query.strip(),
                         "hl": hl,
