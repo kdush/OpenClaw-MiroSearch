@@ -527,3 +527,53 @@ async def test_merge_mode_single_contributor_converges_to_single_route(
 
     # 记录必须写明真实产出结果的 provider，而不是让覆盖率退回 provider="multi-route"
     assert params["providers_with_results"] == ["first"]
+
+
+def _reload_for_parallel(monkeypatch, *, mode: str = "parallel"):
+    search_mod = _reload(monkeypatch)
+    monkeypatch.setenv("SEARCH_PROVIDER_ORDER", "first,second")
+    monkeypatch.setenv("SEARCH_PROVIDER_MODE", mode)
+    sys.modules.pop(_MODULE, None)
+    search_mod = importlib.import_module(_MODULE)
+
+    registry, called = _merge_registry()
+    monkeypatch.setattr(search_mod, "_registry", registry)
+    monkeypatch.setattr(search_mod, "SEARCH_PROVIDER_ORDER", "first,second")
+    monkeypatch.setattr(search_mod, "SEARCH_PROVIDER_MODE", mode)
+    return search_mod, called
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["parallel", "parallel_conf_fallback"])
+async def test_parallel_coverage_reflects_output_not_call_results(monkeypatch, mode):
+    """并发分支的覆盖率同样只能反映真正进入最终输出的 provider。
+
+    回归：并发分支把 ``providers_with_results``（并发时返回过结果的 provider）直接
+    当作覆盖率传给 ``_evaluate_confidence``，``num`` 小于 provider 数时会虚报——
+    交付的 organic 只有一路证据，覆盖率却报 2、``passed=true``。
+    """
+    search_mod, called = _reload_for_parallel(monkeypatch, mode=mode)
+
+    # num 足够：两路的结果都进了输出 → 覆盖率 2 属实
+    payload = json.loads(await search_mod.google_search("test query", num=3))
+    params = payload["searchParameters"]
+    assert sorted(called) == ["first", "second"]
+    in_output = _providers_in_output(payload["organic"])
+    assert in_output == {"first", "second"}
+    assert params["providers_with_results"] == ["first", "second"]
+    assert params["confidence"]["metrics"]["provider_coverage"] == 2
+    assert params["confidence"]["passed"] is True
+
+    # num 只容得下一路：覆盖率必须跟着降到 1，不得虚报第二路
+    called.clear()
+    payload = json.loads(await search_mod.google_search("test query", num=1))
+    params = payload["searchParameters"]
+    in_output = _providers_in_output(payload["organic"])
+    assert in_output == {"first"}
+    assert params["providers_with_results"] == ["first"]
+    assert params["confidence"]["metrics"]["provider_coverage"] == 1
+    assert params["confidence"]["passed"] is True
+    # 档位随之收敛，避免"门槛 2 / 覆盖 1"自相矛盾
+    tier = params["provider_tier"]
+    assert tier["tier"] == "single-provider"
+    assert tier["min_provider_coverage"] == 1

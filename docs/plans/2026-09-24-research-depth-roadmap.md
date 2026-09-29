@@ -269,15 +269,15 @@ deep/hotspot 用例会被限流打穿。
 | Q4 拓扑丰富 | `report_presentation.ensure_content_analysis_and_topology` | `test_report_presentation.py`（22 例）：支持/反驳/未知边、证据缺口、未登记来源不画、无 claim_map 时不加边、抽取主张端到端入图；**v3 新增**净化后的映射不再画互相矛盾的两种边、正文未参与裁决时不写确定支持数 |
 | Q1 渲染器 | `apps/gradio-demo/static/js/mermaid_render.js` | `test_static_assets.py::test_mermaid_renderer_is_strict_and_keeps_plaintext_fallback`（strict + 纯文本回退） |
 | M4 线索链 | `lead_tracker.snapshot()` / `get_trace()`；`orchestrator` 日志元数据 `lead_trace` | `test_lead_tracker.py`（11 例）：快照/reason/序列化 |
-| M5 分档 | `providers/tiering.py`，`search_and_scrape_webpage.perform_search` 消费档位与门槛；`_recompute_tier_from_health` 运行中重算；`_converge_tier_to_single_route` 串行回退 / 聚合收敛 | `test_provider_tiering.py`（9 例）：单 Serper、单 SearXNG、多 provider 升档、无凭据、中途超时降档、严格路由不静默扩档、每档门槛可达；**`test_search_runtime_tier_downgrade.py`（9 例）**：google_search 级一路超时后档位降为单 provider、门槛降为 1、`degraded_from`/原因可归因，两路健康时不降档，串行回退路径同样降档，**v4 新增**串行回退第一路正常成功、第二路未调用时收敛为单路且 `confidence.passed is True`，严格路由下收敛只降门槛、`strict` 与配置 profile 保持自洽，**v5 新增**聚合模式先补齐覆盖门槛再停、真实写出 `providers_with_results`，另一路失败或空结果时收敛为单路，**v6 新增**覆盖率口径改为「真正进入最终输出的 provider」（`num` 小于 provider 数时不虚报覆盖）；§9.1 真机证据 |
+| M5 分档 | `providers/tiering.py`，`search_and_scrape_webpage.perform_search` 消费档位与门槛；`_recompute_tier_from_health` 运行中重算；`_converge_tier_to_single_route` 串行回退 / 聚合收敛 | `test_provider_tiering.py`（9 例）：单 Serper、单 SearXNG、多 provider 升档、无凭据、中途超时降档、严格路由不静默扩档、每档门槛可达；**`test_search_runtime_tier_downgrade.py`（11 例）**：google_search 级一路超时后档位降为单 provider、门槛降为 1、`degraded_from`/原因可归因，两路健康时不降档，串行回退路径同样降档，**v4 新增**串行回退第一路正常成功、第二路未调用时收敛为单路且 `confidence.passed is True`，严格路由下收敛只降门槛、`strict` 与配置 profile 保持自洽，**v5 新增**聚合模式先补齐覆盖门槛再停、真实写出 `providers_with_results`，另一路失败或空结果时收敛为单路，**v6/v7 新增**覆盖率口径改为「真正进入最终输出的 provider」（聚合与并发分支的 `num` 小于 provider 数时都不虚报覆盖）；§9.1 真机证据 |
 
 **本轮额外修复（提供商中立）：** summary/fast 阶段的「关闭思考」参数由**无条件下发**改为
 **能力自适应**——先尝试下发，被 `400` 拒绝即剥离该可选参数重试一次且**不消耗
 `max_retries`**；判定只看状态码，不匹配任何模型名或提供商文案。此前用模型名前缀黑名单
 的做法已废弃（违背「系统不绑定特定 LLM 提供商」的架构约束）。
 
-**测试与 lint 状态（2026-09-29 v6 复核）：** `apps/miroflow-agent` 374 passed / 7 skipped；
-`libs/miroflow-tools` 138 passed；`apps/gradio-demo` 132 passed；
+**测试与 lint 状态（2026-09-29 v7 复核）：** `apps/miroflow-agent` 374 passed / 7 skipped；
+`libs/miroflow-tools` 140 passed；`apps/gradio-demo` 132 passed；
 `apps/api-server` 203 passed / 13 skipped；`ruff check .` 全绿、`format --check` 干净。
 
 **CI 现状（v3 修复）：** `.github/workflows/run-tests.yml` 与 `run-ruff.yml` 原先带
@@ -396,14 +396,25 @@ python scripts/compare_acceptance_runs.py \
 **口径原则（本轮确立）**：`provider_coverage` 只能反映**实际进入了最终交付的 provider**。
 `num` 或去重使某一路进不了输出时，宁可报覆盖率 1 并收敛档位，也不得报 2 且 `passed=true`。
 
-**本轮测试规模：** `libs/miroflow-tools` 由 137 增至 138 passed；
+**本轮测试规模：** `libs/miroflow-tools` 由 137 增至 140 passed（聚合 1 例 + 并发参数化 2 项）；
 `apps/miroflow-agent` 374 / 7 skipped、`gradio-demo` 132、`api-server` 203 / 13 skipped 不变；
-`ruff check`、`ruff format --check` 全绿。两个新/改断言均已在**回退到修复前源码**时确认失败
-（失败点分别为「`discoveries` 只有一路」与「覆盖率虚报为 2」）。
+`ruff check`、`ruff format --check` 全绿。新增 / 修改的断言均已在**回退到修复前源码**时确认失败
+（失败点分别为「`discoveries` 只有一路」「覆盖率虚报为 2」「并发分支覆盖率虚报第二路」）。
 
-**已知同类隐患（本轮未修，超出评审点名范围）**：并发分支（`parallel` / `parallel_conf_fallback`）
-同样把 `providers_with_results` 直接传给 `_evaluate_confidence` 算覆盖率，`num` 小于 provider 数时
-会虚报（复现：`SEARCH_PROVIDER_MODE=parallel`、`num=1`、两路各 5 条 → `organic` 只有 first，
-覆盖率仍报 2、`passed=true`）。未一并修改的原因：该集合在并发分支还承担「成功路数」语义
-（驱动 `SEARCH_PROVIDER_PARALLEL_MIN_SUCCESS` 补检决策），要修需先把两个口径拆成不同字段，
-不宜在本轮顺手改。建议后续单独处理。
+**同源点已一并修复（并发分支）**：`parallel` / `parallel_conf_fallback` 原先同样把
+`providers_with_results` 直接当作覆盖率传给 `_evaluate_confidence`——该集合在并发分支
+还承担「成功路数」语义（驱动 `SEARCH_PROVIDER_PARALLEL_MIN_SUCCESS` 与补检跳过），
+两个口径混用导致 `num` 小于 provider 数时同样虚报（复现：`num=1`、两路各 5 条 →
+`organic` 只有 first，覆盖率仍报 2、`passed=true`）。修法是把两个口径**拆开**：
+覆盖率统一改用 `_providers_in_output(merged_results)`，`providers_with_results` 只保留
+「成功路数」语义；`search_params.providers_with_results` 字段也统一为「进入输出的 provider」
+（各 provider 的成功 / 超时状态本就已记在 `route_trace`）。只有一路进输出时同样收敛为单路，
+避免「门槛 2 / 覆盖 1」的结构性失败。回归测试：`test_parallel_coverage_reflects_output_not_call_results`
+（参数化 `parallel` / `parallel_conf_fallback`，`num=3` 断言两路都进输出且覆盖率为 2，
+`num=1` 断言覆盖率降到 1 且档位收敛）。
+
+**顺带清理（同一次修改内）**：`_evaluate_confidence` 的第二个形参由 `providers_with_results`
+改名为 `providers_in_output`，使其名字与「实际进入输出」的口径一致（该形参此前已按新口径传值，
+只有名字滞后）；同时删除 `_ensure_confidence_evaluated` 第三个形参
+`providers_with_results: Optional[set[str]] = None`——全部调用点都只传两个位置参数，
+该分支恒为 `None`，属死接口。两处均为纯改名 / 删死参，行为不变（全套测试数不变）。

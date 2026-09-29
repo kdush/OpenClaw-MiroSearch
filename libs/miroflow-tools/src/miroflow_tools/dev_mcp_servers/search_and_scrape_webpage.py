@@ -341,7 +341,7 @@ def _providers_in_output(results: list[dict]) -> set[str]:
 
 def _evaluate_confidence(
     organic_results: list[dict],
-    providers_with_results: set[str],
+    providers_in_output: set[str],
     *,
     allowed_providers: Optional[list[str] | set[str]] = None,
     min_provider_coverage: Optional[int] = None,
@@ -394,7 +394,7 @@ def _evaluate_confidence(
         1.0,
     )
     provider_ratio = min(
-        len(providers_with_results) / max(1, min_provider_coverage),
+        len(providers_in_output) / max(1, min_provider_coverage),
         1.0,
     )
     high_conf_ratio = min(
@@ -412,7 +412,7 @@ def _evaluate_confidence(
     hard_constraints_passed = (
         len(organic_results) >= SEARCH_CONFIDENCE_MIN_RESULTS
         and len(unique_domains) >= SEARCH_CONFIDENCE_MIN_UNIQUE_DOMAINS
-        and len(providers_with_results) >= min_provider_coverage
+        and len(providers_in_output) >= min_provider_coverage
         and len(high_conf_domains_hit) >= SEARCH_CONFIDENCE_MIN_HIGH_CONF_HITS
     )
     passed = hard_constraints_passed and score >= SEARCH_CONFIDENCE_SCORE_THRESHOLD
@@ -425,7 +425,7 @@ def _evaluate_confidence(
         "metrics": {
             "results": len(organic_results),
             "unique_domains": len(unique_domains),
-            "provider_coverage": len(providers_with_results),
+            "provider_coverage": len(providers_in_output),
             "high_conf_domain_hits": len(high_conf_domains_hit),
         },
         "constraints": {
@@ -441,21 +441,18 @@ def _evaluate_confidence(
 def _ensure_confidence_evaluated(
     organic_results: list[dict],
     search_params: dict[str, Any],
-    providers_with_results: Optional[set[str]] = None,
 ) -> None:
     """串行回退/合并模式同样产出置信度，否则该门控只在并发路由下生效。"""
     if search_params.get("confidence") is not None:
         return
-    # 合并模式会写明真实产出结果的 provider 列表（多路），回退模式没有该字段，
+    # 合并模式会写明真正进入输出的 provider 列表（多路），回退模式没有该字段，
     # 退回单个 provider 名；并发分支已自行评估过 confidence，不会走到这里。
     reported = search_params.get("providers_with_results")
     if not isinstance(reported, list):
         reported = []
-    covered = (
-        providers_with_results
-        or {str(name) for name in reported}
-        or {str(search_params.get("provider", "")).strip()}
-    )
+    covered = {str(name) for name in reported} or {
+        str(search_params.get("provider", "")).strip()
+    }
     allowed = search_params.get("provider_order")
     if not isinstance(allowed, list):
         allowed = None
@@ -776,14 +773,27 @@ async def google_search(
                     failed_providers,
                     phase="并发检索",
                 )
-                provider_tier = tier_decision.to_dict()
 
                 merged_results = _merge_provider_results(
                     providers, provider_results_map, result_num
                 )
+                # 覆盖率口径 = 真正进入最终输出的 provider（不是"并发时返回过结果的"）。
+                # 只有一路进输出时收敛为单路，避免"门槛 2 / 覆盖 1"的结构性失败，
+                # 与聚合路径同一口径。注意 providers_with_results 仍保留"成功路数"
+                # 语义，用于补检跳过与 parallel_min_success 判定，两者不可混用。
+                in_output = _providers_in_output(merged_results)
+                if len(in_output) == 1:
+                    tier_decision = _converge_tier_to_single_route(
+                        tier_decision,
+                        next(iter(in_output)),
+                        phase="并发检索",
+                        detail="只有一路进入最终输出",
+                    )
+                provider_tier = tier_decision.to_dict()
+
                 confidence = _evaluate_confidence(
                     merged_results,
-                    providers_with_results,
+                    in_output,
                     allowed_providers=providers,
                     min_provider_coverage=tier_decision.min_provider_coverage,
                 )
@@ -803,7 +813,7 @@ async def google_search(
                     "provider_tier": provider_tier,
                     "searxng_only_downgraded": searxng_only_downgraded,
                     "searxng_only_downgrade_added": searxng_only_downgrade_added,
-                    "providers_with_results": sorted(providers_with_results),
+                    "providers_with_results": sorted(in_output),
                     "parallel_min_success": SEARCH_PROVIDER_PARALLEL_MIN_SUCCESS,
                     "parallel_min_success_passed": parallel_min_success_passed,
                     "confidence": confidence,
@@ -885,7 +895,7 @@ async def google_search(
                     )
                     confidence = _evaluate_confidence(
                         merged_results,
-                        providers_with_results,
+                        _providers_in_output(merged_results),
                         allowed_providers=merge_order,
                         min_provider_coverage=tier_decision.min_provider_coverage,
                     )
@@ -898,7 +908,9 @@ async def google_search(
                     ):
                         break
 
-                search_params["providers_with_results"] = sorted(providers_with_results)
+                search_params["providers_with_results"] = sorted(
+                    _providers_in_output(merged_results)
+                )
                 search_params["confidence"] = confidence
                 search_params["route_trace"] = route_trace
                 search_params["trusted_fallback_order"] = trusted_order
