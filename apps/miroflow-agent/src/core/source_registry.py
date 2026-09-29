@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import asdict, dataclass, field
-from typing import Any, Optional, Sequence
+from typing import Any, Optional
 from urllib.parse import urlparse, urlsplit
 
 STATUS_SNIPPET_ONLY = "snippet_only"
@@ -81,12 +81,12 @@ def resolve_content_ref(content_ref: Any, step_logs: Any) -> str:
     if not isinstance(content_ref, str):
         return ""
     match = _CONTENT_REF_RE.match(content_ref.strip())
-    if match is None or not isinstance(step_logs, Sequence):
+    if match is None or step_logs is None:
         return ""
-    index = int(match.group(1))
-    if index < 0 or index >= len(step_logs):
+    try:
+        step_log = step_logs[int(match.group(1))]
+    except (IndexError, KeyError, TypeError):
         return ""
-    step_log = step_logs[index]
     metadata = (
         step_log.get("metadata")
         if isinstance(step_log, dict)
@@ -215,16 +215,15 @@ class SourceRegistry:
             self.mark_fetch_empty(url, turn=turn)
             return
 
-        urls = [url, *(redirect_chain or []), final_url]
+        if not normalize_source_url(url):
+            return
         normalized_urls = list(
             dict.fromkeys(
                 normalized
-                for value in urls
+                for value in [url, *(redirect_chain or []), final_url]
                 if (normalized := normalize_source_url(value))
             )
         )
-        if not normalize_source_url(url):
-            return
         related = [
             entry
             for entry in self.entries
@@ -247,18 +246,18 @@ class SourceRegistry:
         for entry in related:
             if entry is not canonical:
                 self._fold_into(entry, canonical)
-        canonical.aliases = [
-            value for value in normalized_urls if value != canonical.normalized_url
-        ]
+        # 其余 URL 一律互为别名，并让它们继续解析到规范条目。
+        canonical.aliases = []
+        for value in normalized_urls:
+            if value != canonical.normalized_url:
+                canonical.aliases.append(value)
+                self._index[value] = canonical
         canonical.status = STATUS_FETCHED
         canonical.last_seen_turn = max(canonical.last_seen_turn, turn)
         if content_ref and not canonical.content_ref:
             canonical.content_ref = content_ref
         if not canonical.title and isinstance(title, str):
             canonical.title = title
-        for value in normalized_urls:
-            if value != canonical.normalized_url:
-                self._index[value] = canonical
 
     def mark_fetch_empty(self, url: str, *, turn: int = 0) -> None:
         """抓取到达页面但没有正文：不得升级为 ``fetched``。

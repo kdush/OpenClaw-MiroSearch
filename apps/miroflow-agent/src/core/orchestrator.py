@@ -498,14 +498,6 @@ class Orchestrator:
         """Parse google_search / sogou_search tool payload into a dict."""
         return self._parse_tool_result_payload(tool_result) or {}
 
-    def _scrape_body_text(self, parsed: dict) -> str:
-        """Extract primary body text from a scrape-tool JSON payload.
-
-        与来源注册表 / M3 裁决共用同一提取口径（``extract_scrape_body_text``），
-        否则"算不算有正文"会出现两套判断。
-        """
-        return extract_scrape_body_text(parsed)
-
     def _classify_scrape_result(self, tool_result: dict) -> str:
         """Classify scrape tool output for budget + evidence accounting.
 
@@ -531,7 +523,7 @@ class Orchestrator:
         if parsed is not None and "success" in parsed:
             if not parsed.get("success"):
                 return "failure"
-            if self._scrape_body_text(parsed):
+            if extract_scrape_body_text(parsed):
                 return "evidence"
             return "empty_success"
 
@@ -739,7 +731,7 @@ class Orchestrator:
             if kind == "failure":
                 registry.mark_fetch_failed(url, turn=turn_count)
                 return
-            body_text = self._scrape_body_text(parsed)
+            body_text = extract_scrape_body_text(parsed)
             if not body_text:
                 # 空抓取：HTTP 成功但没有正文，不得取得 fetched（否则会被展示成
                 # 「已抓取全文」并拿到引用/独立计数资格）。
@@ -1961,7 +1953,9 @@ class Orchestrator:
                 "Main Agent | Claim Verification",
                 f"Adjudicated {len(claim_map.claims)}/{len(claims)} claims "
                 f"against {len(registry.get('entries', []))} registered sources"
-                + (f"；已剔除 {len(issues)} 项畸形判定" if issues else ""),
+                + (
+                    f"；发现 {len(issues)} 项畸形判定（已降级或丢弃）" if issues else ""
+                ),
             )
             if issues:
                 self.task_log.log_step(

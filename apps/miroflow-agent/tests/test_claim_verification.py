@@ -14,8 +14,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.core.source_registry import resolve_content_ref  # noqa: E402
-
 from src.core.claim_verification import (  # noqa: E402
     ClaimSupportMap,
     ClaimVerdict,
@@ -29,6 +27,7 @@ from src.core.claim_verification import (  # noqa: E402
     sanitize_claim_map,
     validate_claim_map,
 )
+from src.core.source_registry import resolve_content_ref  # noqa: E402
 
 
 def _entry(

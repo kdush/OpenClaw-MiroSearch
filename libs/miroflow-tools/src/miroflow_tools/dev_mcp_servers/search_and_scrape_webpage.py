@@ -426,7 +426,7 @@ def _ensure_confidence_evaluated(
 
 def _recompute_tier_from_health(
     decision,
-    attempted: List[str],
+    route_providers: List[str],
     failed: set[str],
     *,
     phase: str,
@@ -434,15 +434,16 @@ def _recompute_tier_from_health(
     """M5 运行中降档：按实际健康情况重算档位、门槛与降级原因。
 
     超时/失败的 provider 退出健康集合后必须重算，否则一路超时仍按
-    ``multi-provider`` 要求两路覆盖，置信门槛结构性不可达。重算只在
-    ``attempted`` 的子集内进行，因此只会降档、不会升档。
+    ``multi-provider`` 要求两路覆盖，置信门槛结构性不可达。``route_providers``
+    是本次路由的候选 provider（并发档为全部；聚合/串行档为配置顺序，可能尚未
+    全部走到），重算只在该集合内进行，因此只会降档、不会升档。
     """
-    healthy = [name for name in attempted if name not in failed]
-    if not failed or len(healthy) == len(attempted):
+    healthy = [name for name in route_providers if name not in failed]
+    if not failed or len(healthy) == len(route_providers):
         return decision
     recomputed = resolve_provider_tier(
         SEARCH_PROFILE,
-        list(attempted),
+        list(route_providers),
         requested_order=SEARCH_PROVIDER_ORDER,
         strict=SEARCH_PROVIDER_ORDER_STRICT,
         healthy=set(healthy),

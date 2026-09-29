@@ -467,6 +467,27 @@ def _render_claim_support_prompt(wanted: List[str], source_view: List[dict]) -> 
     )
 
 
+def _prompt_and_bodies(
+    claims: Iterable[str],
+    source_registry: Any,
+    *,
+    body_resolver: Optional[Callable[[str], str]],
+    max_body_chars: int = _MAX_BODY_CHARS,
+) -> Tuple[str, Set[int]]:
+    """构造裁决 prompt，并返回"正文可读"的来源编号集合。
+
+    裁决输入与计数口径必须出自同一次视图构造，否则 prompt 里看到的来源和
+    ``bodies_adjudicated`` 记的来源可能不是同一批。
+    """
+    wanted = [c.strip() for c in claims if isinstance(c, str) and c.strip()]
+    source_view, bodies = adjudication_source_view(
+        source_registry,
+        body_resolver=body_resolver,
+        max_body_chars=max_body_chars,
+    )
+    return _render_claim_support_prompt(wanted, source_view), bodies
+
+
 def build_claim_support_prompt(
     claims: Iterable[str],
     source_registry: Any,
@@ -479,13 +500,13 @@ def build_claim_support_prompt(
     ``body_resolver`` 把来源条目的 ``content_ref`` 解析成抓取正文，使裁决不再
     只看搜索摘要——否则"摘要支持、正文反驳"会被判成支持并计入确定来源数。
     """
-    wanted = [c.strip() for c in claims if isinstance(c, str) and c.strip()]
-    source_view, _ = adjudication_source_view(
+    prompt, _ = _prompt_and_bodies(
+        claims,
         source_registry,
         body_resolver=body_resolver,
         max_body_chars=max_body_chars,
     )
-    return _render_claim_support_prompt(wanted, source_view)
+    return prompt
 
 
 async def adjudicate_claim_support(
@@ -500,14 +521,13 @@ async def adjudicate_claim_support(
     ``call_llm`` 接收 prompt 并返回模型文本（或 None）。调用方负责把
     AnswerGenerator 的 LLM 通道适配成这个签名，便于离线测试注入假实现。
 
-    ``body_resolver`` 用于把来源 ``content_ref`` 解析成正文片段；返回值会带上
-    ``bodies_adjudicated``（正文确实进了 prompt 的来源编号），计数只认这个集合。
+    ``body_resolver`` 用于把来源 ``content_ref`` 解析成正文片段；成功解析时返回值
+    会带上 ``bodies_adjudicated``（正文确实进了 prompt 的来源编号），计数只认这个
+    集合。
     """
-    wanted = [c.strip() for c in claims if isinstance(c, str) and c.strip()]
-    source_view, bodies = adjudication_source_view(
-        source_registry, body_resolver=body_resolver
+    prompt, bodies = _prompt_and_bodies(
+        claims, source_registry, body_resolver=body_resolver
     )
-    prompt = _render_claim_support_prompt(wanted, source_view)
     try:
         raw_text = await call_llm(prompt)
     except Exception:  # noqa: BLE001 - 裁决失败必须 fail-closed，不打断主流程
@@ -524,7 +544,7 @@ async def adjudicate_claim_support(
     try:
         payload = json.loads(text)
     except (ValueError, TypeError):
-        return ClaimSupportMap(bodies_adjudicated=bodies)
+        return ClaimSupportMap()
     claim_map = parse_claim_support_map(payload)
     claim_map.bodies_adjudicated = bodies
     return claim_map
