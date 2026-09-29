@@ -1,10 +1,9 @@
 """Worker 测试。"""
 
 import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from unittest.mock import AsyncMock, patch, MagicMock
-
 from arq import Retry
 from services.task_queue import TaskPayload
 from services.task_store import TaskStatus
@@ -133,6 +132,7 @@ async def test_successful_worker_populates_shared_result_cache(
                     "status": "completed",
                     "final_summary": "# 可复用结果",
                     "result_quality": result_quality,
+                    "source_registry": {"entries": []},
                 }
             ),
         ),
@@ -146,6 +146,7 @@ async def test_successful_worker_populates_shared_result_cache(
         "shared-cache-key",
         "# 可复用结果",
         result_quality,
+        source_registry={"entries": []},
     )
 
 
@@ -191,6 +192,7 @@ async def test_completed_worker_without_valid_quality_does_not_populate_shared_c
     pipeline_result = {
         "status": "completed",
         "final_summary": "# 旧版无有效质量结果",
+        "source_registry": {"entries": []},
     }
     if result_quality is not None:
         pipeline_result["result_quality"] = result_quality

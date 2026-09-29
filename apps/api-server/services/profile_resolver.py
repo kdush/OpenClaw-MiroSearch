@@ -633,6 +633,11 @@ def build_search_env(profile: str, result_num: int) -> Dict[str, str]:
         SEARCH_PROFILE_ENV_MAP.get(profile, SEARCH_PROFILE_ENV_MAP["searxng-first"])
     )
     base["SEARCH_RESULT_NUM"] = str(result_num)
+    # M5：把 profile 名一并透给检索工具。provider 顺序串无法反推 profile 名
+    # （serp-first 与 parallel-trusted 共用同一顺序串），所以档位决策的
+    # degraded_from 归因必须靠它。未知 profile 不写，宁可不记也不写错归因。
+    if profile in SEARCH_PROFILE_ENV_MAP:
+        base["SEARCH_PROFILE"] = profile
     return base
 
 

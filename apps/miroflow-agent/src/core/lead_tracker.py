@@ -65,6 +65,20 @@ class Lead:
     followed_up: bool = False
     follow_up_turn: Optional[int] = None
     findings: str = ""
+    follow_up_reason: str = ""
+
+    def to_dict(self) -> dict:
+        """M4 trace payload: one node of the lead chain (why we kept digging)."""
+        return {
+            "question": self.question,
+            "source": self.source,
+            "turn": self.turn,
+            "priority": self.priority,
+            "followed_up": self.followed_up,
+            "follow_up_turn": self.follow_up_turn,
+            "follow_up_reason": self.follow_up_reason,
+            "findings": self.findings,
+        }
 
 
 @dataclass
@@ -109,15 +123,32 @@ class LeadTrail:
         unfollowed.sort(key=lambda x: x.priority, reverse=True)
         return unfollowed[:k]
 
-    def mark_followed_up(self, lead: Lead, turn: int, findings: str = "") -> None:
+    def mark_followed_up(
+        self, lead: Lead, turn: int, findings: str = "", reason: str = ""
+    ) -> None:
         """Mark a lead as followed up."""
         lead.followed_up = True
         lead.follow_up_turn = turn
         lead.findings = findings
+        if reason:
+            lead.follow_up_reason = reason
         self.follow_up_count += 1
         logger.info(
             "Marked lead as followed up at turn %d: %s", turn, lead.question[:80]
         )
+
+    def snapshot(self) -> dict:
+        """M4: serializable lead chain — search, follow-up, and why we continued.
+
+        Kept separate from M3 claim verification: this explains *why research
+        continued*, not *what proves a conclusion*.
+        """
+        return {
+            "original_query": self.original_query,
+            "follow_up_count": self.follow_up_count,
+            "max_follow_ups": self.max_follow_ups,
+            "leads": [lead.to_dict() for lead in self.leads],
+        }
 
     def should_continue_following(self) -> bool:
         """Check if we should continue following leads."""
@@ -146,6 +177,8 @@ class LeadTrail:
                 lines.append(f"**来源**: {lead.source} (Turn {lead.turn})")
                 lines.append(f"**优先级**: {lead.priority:.2f}")
                 lines.append("**状态**: followed")
+                if lead.follow_up_reason:
+                    lines.append(f"**为何继续查**: {lead.follow_up_reason}")
                 if lead.follow_up_turn:
                     lines.append(f"**追踪轮次**: Turn {lead.follow_up_turn}")
                 if lead.findings:
@@ -384,7 +417,7 @@ class LeadTrackingManager:
         return [lead.question for lead in top_leads]
 
     def record_follow_up(
-        self, lead_question: str, turn: int, findings: str = ""
+        self, lead_question: str, turn: int, findings: str = "", reason: str = ""
     ) -> None:
         """Record that a lead was followed up."""
         if not self.enabled or not self.trail:
@@ -395,8 +428,14 @@ class LeadTrackingManager:
             normalized_q = LeadTrail._normalize_question(lead.question)
             normalized_search = LeadTrail._normalize_question(lead_question)
             if normalized_q == normalized_search or normalized_search in normalized_q:
-                self.trail.mark_followed_up(lead, turn, findings)
+                self.trail.mark_followed_up(lead, turn, findings, reason=reason)
                 break
+
+    def get_trace(self) -> Dict[str, Any]:
+        """M4: the lead chain (search / follow-up / why) as a trace payload."""
+        if not self.enabled or not self.trail:
+            return {"original_query": "", "follow_up_count": 0, "leads": []}
+        return self.trail.snapshot()
 
     def get_trail_section(self) -> str:
         """Get the formatted trail section for the final report."""

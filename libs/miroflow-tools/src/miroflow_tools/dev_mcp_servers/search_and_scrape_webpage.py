@@ -10,6 +10,7 @@ import re
 import socket
 import time
 import xml.etree.ElementTree as ET
+from dataclasses import replace
 from io import BytesIO, StringIO
 from ipaddress import ip_address, ip_network
 from typing import Any, Dict, List, Optional, Tuple
@@ -34,10 +35,11 @@ from tencentcloud.common.profile.http_profile import HttpProfile
 from ..mcp_servers.utils.url_unquote import decode_http_urls_in_dict
 from .providers.base import SearchParams
 from .providers.registry import ProviderRegistry
-from .providers.searxng import SearXNGProvider, SearxngPrecheckError
+from .providers.searxng import SearxngPrecheckError, SearXNGProvider
 from .providers.serpapi import SerpAPIProvider
 from .providers.serper import SerperProvider
 from .providers.tavily import TavilyProvider
+from .providers.tiering import resolve_provider_tier
 
 # Configure logging
 logger = logging.getLogger("miroflow")
@@ -58,6 +60,10 @@ DEFAULT_SEARCH_PROVIDER_MODE = "fallback"
 SEARCH_PROVIDER_MODE = os.getenv(
     "SEARCH_PROVIDER_MODE", DEFAULT_SEARCH_PROVIDER_MODE
 ).strip()
+# M5：上层 profile 名（如 serp-first / searxng-only / multi-route），由
+# profile_resolver.build_search_env 注入。provider 顺序串无法反推 profile 名，
+# 故缺省留空——档位决策宁可不记 degraded_from，也不写错误的归因。
+SEARCH_PROFILE = os.getenv("SEARCH_PROFILE", "").strip()
 VALID_SEARCH_PROVIDER_MODES = {
     "fallback",
     "merge",
@@ -277,27 +283,68 @@ def _normalize_domain(url: str) -> str:
 def _merge_provider_results(
     ordered_providers: list[str], provider_results: dict[str, list[dict]], limit: int
 ) -> list[dict]:
+    """按 provider 轮询交错填充，``limit`` 允许时保证每路都有结果进入输出。
+
+    逐路填满会让靠后的 provider 完全进不了输出，而覆盖率若按"该 provider 返回过
+    结果"统计，合并路由就会声称两路交叉覆盖、实际交付的证据却只有一路。这里改成
+    每轮从各路各取一条（去重后仍按首次出现的位置入列，命中同一链接的 provider
+    都记进该条的 ``discoveries``），从而让"进入输出的 provider"与覆盖率口径一致。
+    """
     merged: list[dict] = []
-    seen_keys: set[str] = set()
-    for provider in ordered_providers:
-        for item in provider_results.get(provider, []):
-            link = str(item.get("link", "")).strip()
-            title = str(item.get("title", "")).strip()
-            dedupe_key = link or title
-            if not dedupe_key or dedupe_key in seen_keys:
-                continue
-            seen_keys.add(dedupe_key)
-            merged.append(item)
+    by_key: dict[str, dict] = {}
+    remaining = {
+        provider: list(provider_results.get(provider, []))
+        for provider in ordered_providers
+    }
+    while len(merged) < limit:
+        took_any = False
+        for provider in ordered_providers:
             if len(merged) >= limit:
-                return merged
+                break
+            queue = remaining.get(provider) or []
+            while queue:
+                item = queue.pop(0)
+                dedupe_key = (
+                    str(item.get("link", "")).strip()
+                    or str(item.get("title", "")).strip()
+                )
+                if not dedupe_key:
+                    continue
+                entry = by_key.get(dedupe_key)
+                if entry is None:
+                    entry = {**item, "discoveries": []}
+                    by_key[dedupe_key] = entry
+                    merged.append(entry)
+                entry["discoveries"].append(
+                    {"provider": provider, "position": item.get("position")}
+                )
+                took_any = True
+                break
+        if not took_any:
+            break
     return merged
+
+
+def _providers_in_output(results: list[dict]) -> set[str]:
+    """统计真正进入了最终输出的 provider（按每条结果的 ``discoveries``）。
+
+    覆盖率必须以此为准，而不是"该 provider 调用时返回过结果"——后者会把被
+    ``limit`` 截掉、证据其实没交付的那一路也算进来。
+    """
+    return {
+        str(discovery.get("provider"))
+        for item in results
+        for discovery in item.get("discoveries") or []
+        if discovery.get("provider")
+    }
 
 
 def _evaluate_confidence(
     organic_results: list[dict],
-    providers_with_results: set[str],
+    providers_in_output: set[str],
     *,
     allowed_providers: Optional[list[str] | set[str]] = None,
+    min_provider_coverage: Optional[int] = None,
 ) -> dict[str, Any]:
     unique_domains = {
         _normalize_domain(str(item.get("link", "")).strip())
@@ -324,13 +371,19 @@ def _evaluate_confidence(
         coverage_ceiling = len(route_pool) if route_pool else 1
     else:
         coverage_ceiling = len(_registry.available_names()) or 1
-    min_provider_coverage = max(
-        1,
-        min(
-            SEARCH_CONFIDENCE_MIN_PROVIDER_COVERAGE,
-            coverage_ceiling,
-        ),
+    # M5: the resolved provider tier owns the coverage floor, so a
+    # single-provider deployment is never held to the multi-provider default.
+    # The floor stays capped by what this route can actually reach.
+    requested_coverage = (
+        SEARCH_CONFIDENCE_MIN_PROVIDER_COVERAGE
+        if min_provider_coverage is None
+        else min_provider_coverage
     )
+    min_provider_coverage = min(requested_coverage, coverage_ceiling)
+    if requested_coverage > 0:
+        min_provider_coverage = max(1, min_provider_coverage)
+    else:
+        min_provider_coverage = max(0, min_provider_coverage)
 
     result_ratio = min(
         len(organic_results) / max(1, SEARCH_CONFIDENCE_MIN_RESULTS),
@@ -341,7 +394,7 @@ def _evaluate_confidence(
         1.0,
     )
     provider_ratio = min(
-        len(providers_with_results) / max(1, min_provider_coverage),
+        len(providers_in_output) / max(1, min_provider_coverage),
         1.0,
     )
     high_conf_ratio = min(
@@ -359,7 +412,7 @@ def _evaluate_confidence(
     hard_constraints_passed = (
         len(organic_results) >= SEARCH_CONFIDENCE_MIN_RESULTS
         and len(unique_domains) >= SEARCH_CONFIDENCE_MIN_UNIQUE_DOMAINS
-        and len(providers_with_results) >= min_provider_coverage
+        and len(providers_in_output) >= min_provider_coverage
         and len(high_conf_domains_hit) >= SEARCH_CONFIDENCE_MIN_HIGH_CONF_HITS
     )
     passed = hard_constraints_passed and score >= SEARCH_CONFIDENCE_SCORE_THRESHOLD
@@ -372,7 +425,7 @@ def _evaluate_confidence(
         "metrics": {
             "results": len(organic_results),
             "unique_domains": len(unique_domains),
-            "provider_coverage": len(providers_with_results),
+            "provider_coverage": len(providers_in_output),
             "high_conf_domain_hits": len(high_conf_domains_hit),
         },
         "constraints": {
@@ -388,19 +441,104 @@ def _evaluate_confidence(
 def _ensure_confidence_evaluated(
     organic_results: list[dict],
     search_params: dict[str, Any],
-    providers_with_results: Optional[set[str]] = None,
 ) -> None:
     """串行回退/合并模式同样产出置信度，否则该门控只在并发路由下生效。"""
     if search_params.get("confidence") is not None:
         return
-    covered = providers_with_results or {str(search_params.get("provider", "")).strip()}
+    # 合并模式会写明真正进入输出的 provider 列表（多路），回退模式没有该字段，
+    # 退回单个 provider 名；并发分支已自行评估过 confidence，不会走到这里。
+    reported = search_params.get("providers_with_results")
+    if not isinstance(reported, list):
+        reported = []
+    covered = {str(name) for name in reported} or {
+        str(search_params.get("provider", "")).strip()
+    }
     allowed = search_params.get("provider_order")
     if not isinstance(allowed, list):
         allowed = None
+    tier = search_params.get("provider_tier")
+    floor = tier.get("min_provider_coverage") if isinstance(tier, dict) else None
     search_params["confidence"] = _evaluate_confidence(
         organic_results,
         {name for name in covered if name},
         allowed_providers=allowed,
+        min_provider_coverage=floor if isinstance(floor, int) else None,
+    )
+
+
+def _recompute_tier_from_health(
+    decision,
+    route_providers: List[str],
+    failed: set[str],
+    *,
+    phase: str,
+):
+    """M5 运行中降档：按实际健康情况重算档位、门槛与降级原因。
+
+    超时/失败的 provider 退出健康集合后必须重算，否则一路超时仍按
+    ``multi-provider`` 要求两路覆盖，置信门槛结构性不可达。``route_providers``
+    是本次路由的候选 provider（并发档为全部；聚合/串行档为配置顺序，可能尚未
+    全部走到），重算只在该集合内进行，因此只会降档、不会升档。
+    """
+    healthy = [name for name in route_providers if name not in failed]
+    if not failed or len(healthy) == len(route_providers):
+        return decision
+    recomputed = resolve_provider_tier(
+        SEARCH_PROFILE,
+        list(route_providers),
+        requested_order=SEARCH_PROVIDER_ORDER,
+        strict=SEARCH_PROVIDER_ORDER_STRICT,
+        healthy=set(healthy),
+    )
+    if (
+        recomputed.tier == decision.tier
+        and recomputed.min_provider_coverage == decision.min_provider_coverage
+    ):
+        return decision
+    return replace(
+        recomputed,
+        effective_order=healthy,
+        degraded_from=decision.tier,
+        reason=(
+            f"{phase}后 {', '.join(sorted(failed))} 不健康，"
+            f"按剩余 {len(healthy)} 个 provider 重算档位（{recomputed.reason}）"
+        ),
+    )
+
+
+def _converge_tier_to_single_route(
+    decision,
+    contributor: str,
+    *,
+    phase: str,
+    detail: str,
+):
+    """本次实际只有一路 provider 贡献结果：把档位、门槛与有效路由收敛到那一路。
+
+    ``_recompute_tier_from_health`` 只在有 provider 失败时降档；但有两条路径
+    **没有任何失败**、却让预先算出的 ``multi-provider`` 档结构性不可达：
+    串行回退第一路正常返回就结束（后面的 provider 根本没被调用），以及聚合检索
+    只有一路产出结果。此时门槛仍要求两路覆盖，正常成功的检索也会被判
+    ``passed=false``。这里把生效档位、profile、覆盖门槛与有效路由一并收敛到实际
+    出结果的 provider；已经收敛过（门槛 ≤ 1）时不改动。
+    """
+    if decision.min_provider_coverage <= 1:
+        return decision
+    # 档位、profile 与 strict 口径都交回 tiering 决定，这里不维护第二份
+    # provider → profile 对照：严格路由保持配置的 profile，自动路由才落单路 profile。
+    converged = resolve_provider_tier(
+        SEARCH_PROFILE,
+        [contributor],
+        requested_order=SEARCH_PROVIDER_ORDER,
+        strict=decision.strict,
+    )
+    return replace(
+        converged,
+        degraded_from=decision.tier,
+        reason=(
+            f"{phase}{detail}，档位收敛为单路"
+            f"（本次仅 {contributor} 出结果，原 {decision.tier}）"
+        ),
     )
 
 
@@ -523,6 +661,23 @@ async def google_search(
                     "No search provider configured. Set SERPER_API_KEY or SERPAPI_API_KEY or SEARXNG_BASE_URL."
                 )
 
+            # M5: resolve the effective provider tier from what is actually
+            # configured. Records the tier + reason + degradation path and
+            # supplies the adaptive confidence floor below. The effective order
+            # is pinned to the resolved route so the record matches reality.
+            # requested_profile carries the *profile name* (not the provider
+            # order string); it is empty when the caller has no profile concept.
+            tier_decision = replace(
+                resolve_provider_tier(
+                    SEARCH_PROFILE,
+                    providers,
+                    requested_order=SEARCH_PROVIDER_ORDER,
+                    strict=SEARCH_PROVIDER_ORDER_STRICT,
+                ),
+                effective_order=list(providers),
+            )
+            provider_tier = tier_decision.to_dict()
+
             requested_result_num = num if num is not None else SEARCH_RESULT_NUM
             try:
                 requested_result_num = int(requested_result_num)
@@ -605,13 +760,42 @@ async def google_search(
                             str(exc),
                         )
 
+                # M5: 运行中降档——并发阶段超时/报错的 provider 退出健康集合，
+                # 档位与置信门槛按剩余健康 provider 重算后再评估 confidence。
+                failed_providers = {
+                    str(entry.get("provider"))
+                    for entry in route_trace
+                    if entry.get("status") in {"timeout", "error"}
+                }
+                tier_decision = _recompute_tier_from_health(
+                    tier_decision,
+                    providers,
+                    failed_providers,
+                    phase="并发检索",
+                )
+
                 merged_results = _merge_provider_results(
                     providers, provider_results_map, result_num
                 )
+                # 覆盖率口径 = 真正进入最终输出的 provider（不是"并发时返回过结果的"）。
+                # 只有一路进输出时收敛为单路，避免"门槛 2 / 覆盖 1"的结构性失败，
+                # 与聚合路径同一口径。注意 providers_with_results 仍保留"成功路数"
+                # 语义，用于补检跳过与 parallel_min_success 判定，两者不可混用。
+                in_output = _providers_in_output(merged_results)
+                if len(in_output) == 1:
+                    tier_decision = _converge_tier_to_single_route(
+                        tier_decision,
+                        next(iter(in_output)),
+                        phase="并发检索",
+                        detail="只有一路进入最终输出",
+                    )
+                provider_tier = tier_decision.to_dict()
+
                 confidence = _evaluate_confidence(
                     merged_results,
-                    providers_with_results,
+                    in_output,
                     allowed_providers=providers,
+                    min_provider_coverage=tier_decision.min_provider_coverage,
                 )
                 parallel_min_success_passed = (
                     len(providers_with_results) >= SEARCH_PROVIDER_PARALLEL_MIN_SUCCESS
@@ -626,9 +810,10 @@ async def google_search(
                     "provider": "multi-route",
                     "provider_mode": configured_mode,
                     "provider_order": providers,
+                    "provider_tier": provider_tier,
                     "searxng_only_downgraded": searxng_only_downgraded,
                     "searxng_only_downgrade_added": searxng_only_downgrade_added,
-                    "providers_with_results": sorted(providers_with_results),
+                    "providers_with_results": sorted(in_output),
                     "parallel_min_success": SEARCH_PROVIDER_PARALLEL_MIN_SUCCESS,
                     "parallel_min_success_passed": parallel_min_success_passed,
                     "confidence": confidence,
@@ -710,8 +895,9 @@ async def google_search(
                     )
                     confidence = _evaluate_confidence(
                         merged_results,
-                        providers_with_results,
+                        _providers_in_output(merged_results),
                         allowed_providers=merge_order,
+                        min_provider_coverage=tier_decision.min_provider_coverage,
                     )
                     confidence_passed = (
                         not SEARCH_CONFIDENCE_ENABLED
@@ -722,7 +908,9 @@ async def google_search(
                     ):
                         break
 
-                search_params["providers_with_results"] = sorted(providers_with_results)
+                search_params["providers_with_results"] = sorted(
+                    _providers_in_output(merged_results)
+                )
                 search_params["confidence"] = confidence
                 search_params["route_trace"] = route_trace
                 search_params["trusted_fallback_order"] = trusted_order
@@ -734,7 +922,8 @@ async def google_search(
 
             if configured_mode == "merge":
                 merged_results: list[dict] = []
-                seen_links: set[str] = set()
+                provider_results_map = {}
+                merge_failed: set[str] = set()
                 for provider in providers:
                     search_provider = provider
                     try:
@@ -745,20 +934,22 @@ async def google_search(
                             provider_errors.append(f"{provider}: empty organic results")
                             continue
 
-                        for item in provider_results:
-                            link = str(item.get("link", "")).strip()
-                            title = str(item.get("title", "")).strip()
-                            dedupe_key = link or title
-                            if not dedupe_key or dedupe_key in seen_links:
-                                continue
-                            seen_links.add(dedupe_key)
-                            merged_results.append(item)
-                            if len(merged_results) >= result_num:
-                                break
-
-                        if len(merged_results) >= result_num:
+                        provider_results_map[provider] = provider_results
+                        merged_results = _merge_provider_results(
+                            providers, provider_results_map, result_num
+                        )
+                        # 聚合的卖点是交叉验真：结果够了也要先让覆盖门槛真的达成
+                        # 再停——门槛按"已进入最终输出的 provider"计，而不是按
+                        # "调用时返回过结果的 provider"，否则第二路可能被 limit
+                        # 截掉、证据没交付却仍被算作覆盖。
+                        if (
+                            len(merged_results) >= result_num
+                            and len(_providers_in_output(merged_results))
+                            >= tier_decision.min_provider_coverage
+                        ):
                             break
                     except Exception as exc:
+                        merge_failed.add(provider)
                         provider_errors.append(_format_provider_error(provider, exc))
                         logger.warning(
                             "Search provider failed in merge mode | provider=%s | err=%s",
@@ -766,8 +957,25 @@ async def google_search(
                             str(exc),
                         )
 
+                final_results = merged_results[:result_num]
+                # 覆盖率口径 = 真正进入最终交付的 provider，而不是"返回过结果的"。
+                contributors = sorted(_providers_in_output(final_results))
+                # M5: 聚合路径同样按运行中健康情况降档，门槛不落后于实际路由。
+                tier_decision = _recompute_tier_from_health(
+                    tier_decision, providers, merge_failed, phase="聚合检索"
+                )
+                # 只有一路真正进入输出 → 覆盖门槛不可达，收敛为单路，不虚报覆盖率。
+                if len(contributors) == 1:
+                    tier_decision = _converge_tier_to_single_route(
+                        tier_decision,
+                        contributors[0],
+                        phase="聚合检索",
+                        detail="只有一路进入最终输出",
+                    )
+                provider_tier = tier_decision.to_dict()
+
                 return (
-                    merged_results[:result_num],
+                    final_results,
                     {
                         "q": search_query.strip(),
                         "hl": hl,
@@ -777,12 +985,15 @@ async def google_search(
                         "provider": "multi-route",
                         "provider_mode": "merge",
                         "provider_order": providers,
+                        "providers_with_results": contributors,
+                        "provider_tier": provider_tier,
                         "searxng_only_downgraded": searxng_only_downgraded,
                         "searxng_only_downgrade_added": searxng_only_downgrade_added,
                     },
                     provider_errors,
                 )
 
+            fallback_failed: set[str] = set()
             for provider in providers:
                 search_provider = provider
                 try:
@@ -790,8 +1001,24 @@ async def google_search(
                         provider, search_query, result_num, result_page
                     )
                     if organic_results:
+                        # M5: 串行回退时前面的 provider 可能已超时，档位要跟着降。
+                        tier_decision = _recompute_tier_from_health(
+                            tier_decision,
+                            providers,
+                            fallback_failed,
+                            phase="串行回退",
+                        )
+                        # 命中即返回：本次只走到这一路，multi-provider 的两路覆盖
+                        # 门槛不可达，须把有效档位收敛为单路。
+                        tier_decision = _converge_tier_to_single_route(
+                            tier_decision,
+                            provider,
+                            phase="串行回退",
+                            detail="命中即返回",
+                        )
                         search_params["provider_mode"] = "fallback"
                         search_params["provider_order"] = providers
+                        search_params["provider_tier"] = tier_decision.to_dict()
                         search_params["searxng_only_downgraded"] = (
                             searxng_only_downgraded
                         )
@@ -803,6 +1030,7 @@ async def google_search(
                     provider_errors.append(f"{provider}: empty organic results")
 
                 except Exception as exc:
+                    fallback_failed.add(provider)
                     provider_errors.append(_format_provider_error(provider, exc))
                     logger.warning(
                         "Search provider failed, fallback to next provider | provider=%s | err=%s",
@@ -810,6 +1038,9 @@ async def google_search(
                         str(exc),
                     )
 
+            tier_decision = _recompute_tier_from_health(
+                tier_decision, providers, fallback_failed, phase="串行回退"
+            )
             return (
                 [],
                 {
@@ -821,6 +1052,7 @@ async def google_search(
                     "provider": search_provider,
                     "provider_mode": "fallback",
                     "provider_order": providers,
+                    "provider_tier": tier_decision.to_dict(),
                     "searxng_only_downgraded": searxng_only_downgraded,
                     "searxng_only_downgrade_added": searxng_only_downgrade_added,
                     "fallback_errors": provider_errors,

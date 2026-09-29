@@ -1,6 +1,7 @@
 """Pipeline 最终答案状态与质量透传测试。"""
 
 import asyncio
+import json
 import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -40,7 +41,14 @@ def _install_pipeline_fakes(monkeypatch, outcome):
 
     class FakeOrchestrator:
         def __init__(self, **kwargs):
-            del kwargs
+            kwargs["task_log"].source_registry.register_search_hits(
+                {
+                    "organic": [
+                        {"link": "https://example.com/source", "snippet": "证据"}
+                    ]
+                },
+                turn=1,
+            )
 
         async def run_main_agent(self, **kwargs):
             del kwargs
@@ -125,6 +133,7 @@ async def test_pipeline_closes_all_tool_managers_on_every_exit_path(
     main_manager = _make_tool_manager()
     first_sub_manager = _make_tool_manager()
     second_sub_manager = _make_tool_manager()
+    stream_queue = asyncio.Queue()
 
     result = await pipeline.execute_task_pipeline(
         cfg=_make_pipeline_config(),
@@ -138,9 +147,20 @@ async def test_pipeline_closes_all_tool_managers_on_every_exit_path(
         },
         output_formatter=OutputFormatter(),
         log_dir=str(tmp_path),
+        stream_queue=stream_queue,
     )
 
     assert result["status"] == expected_status
+    registry = result["source_registry"]
+    assert registry["entries"][0]["snippet"] == "证据"
+    persisted = json.loads(Path(result["log_file_path"]).read_text(encoding="utf-8"))
+    assert persisted["source_registry"] == registry
+    events = []
+    while not stream_queue.empty():
+        events.append(stream_queue.get_nowait())
+    assert [
+        event["data"] for event in events if event["event"] == "source_registry"
+    ] == [registry]
     main_manager.aclose.assert_awaited_once_with()
     first_sub_manager.aclose.assert_awaited_once_with()
     second_sub_manager.aclose.assert_awaited_once_with()

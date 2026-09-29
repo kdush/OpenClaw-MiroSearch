@@ -38,6 +38,7 @@ def _make_generator(**agent_overrides) -> AnswerGenerator:
     stream.update = AsyncMock()
     task_log = MagicMock()
     task_log.run_metrics = RunMetrics()
+    task_log.source_registry.to_dict.return_value = {"entries": []}
     return AnswerGenerator(
         llm_client=llm_client,
         output_formatter=OutputFormatter(),

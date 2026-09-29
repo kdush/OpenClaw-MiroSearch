@@ -22,6 +22,7 @@ def _reset_search_env(monkeypatch) -> None:
     for env_key in (
         "SEARCH_PROVIDER_ORDER",
         "SEARCH_PROVIDER_TRUSTED_ORDER",
+        "SEARCH_PROFILE",
         "SEARCH_CONFIDENCE_ENABLED",
         "SEARCH_CONFIDENCE_SCORE_THRESHOLD",
         "SEARCH_CONFIDENCE_MIN_RESULTS",
@@ -148,3 +149,181 @@ def test_searxng_only_confidence_ignores_other_available_providers(monkeypatch):
     wide = module._evaluate_confidence(organic, {"searxng"})
     assert wide["constraints"]["min_provider_coverage"] == 2
     assert wide["passed"] is False
+
+
+@pytest.mark.unit
+def test_confidence_floor_follows_resolved_provider_tier(monkeypatch):
+    """M5：生效档位决定覆盖门槛——单 provider 档不得被套上多 provider 默认值。"""
+    _reset_search_env(monkeypatch)
+    module = _reload_search_module()
+
+    results = [{"title": "t", "link": "https://a.com/x", "snippet": "s"}]
+
+    single = module._evaluate_confidence(
+        results,
+        {"serper"},
+        allowed_providers=["serper", "searxng"],
+        min_provider_coverage=1,
+    )
+    multi = module._evaluate_confidence(
+        results,
+        {"serper"},
+        allowed_providers=["serper", "searxng"],
+        min_provider_coverage=2,
+    )
+    default = module._evaluate_confidence(
+        results,
+        {"serper"},
+        allowed_providers=["serper", "searxng"],
+    )
+
+    assert single["constraints"]["min_provider_coverage"] == 1
+    assert multi["constraints"]["min_provider_coverage"] == 2
+    # 不传档位时保持历史默认
+    assert default["constraints"]["min_provider_coverage"] == 2
+
+
+@pytest.mark.unit
+def test_tier_floor_still_capped_by_reachable_route(monkeypatch):
+    """档位门槛高于本路由实际可达数时仍被钳制，避免结构性不可达。"""
+    _reset_search_env(monkeypatch)
+    module = _reload_search_module()
+
+    confidence = module._evaluate_confidence(
+        [{"title": "t", "link": "https://a.com/x", "snippet": "s"}],
+        {"serper"},
+        allowed_providers=["serper"],
+        min_provider_coverage=2,
+    )
+
+    assert confidence["constraints"]["min_provider_coverage"] == 1
+
+
+@pytest.mark.unit
+def test_no_provider_tier_relaxes_coverage_floor(monkeypatch):
+    """no-provider 档（min_provider_coverage=0）不得被强制抬回 1。"""
+    _reset_search_env(monkeypatch)
+    module = _reload_search_module()
+
+    confidence = module._evaluate_confidence(
+        [],
+        set(),
+        allowed_providers=["serper", "searxng"],
+        min_provider_coverage=0,
+    )
+
+    assert confidence["constraints"]["min_provider_coverage"] == 0
+
+
+@pytest.mark.unit
+def test_serial_fallback_reads_tier_floor_from_search_params(monkeypatch):
+    """串行回退路径同样要吃到档位门槛，否则门控只在并发路由下生效。"""
+    _reset_search_env(monkeypatch)
+    module = _reload_search_module()
+
+    search_params = {
+        "provider": "serper",
+        "provider_order": ["serper", "searxng"],
+        "provider_tier": {"tier": "single-provider", "min_provider_coverage": 1},
+    }
+    module._ensure_confidence_evaluated(
+        [{"title": "t", "link": "https://a.com/x", "snippet": "s"}], search_params
+    )
+
+    assert search_params["confidence"]["constraints"]["min_provider_coverage"] == 1
+
+
+@pytest.mark.unit
+def test_serial_fallback_without_tier_keeps_default_floor(monkeypatch):
+    _reset_search_env(monkeypatch)
+    module = _reload_search_module()
+
+    search_params = {
+        "provider": "serper",
+        "provider_order": ["serper", "searxng"],
+    }
+    module._ensure_confidence_evaluated(
+        [{"title": "t", "link": "https://a.com/x", "snippet": "s"}], search_params
+    )
+
+    assert search_params["confidence"]["constraints"]["min_provider_coverage"] == 2
+
+
+@pytest.mark.unit
+def test_single_provider_deployment_tier_is_reachable(monkeypatch):
+    """端到端：只配 serper 时档位判为单 provider，门槛 1，confidence 可用。"""
+    _set_single_provider_env(monkeypatch)
+    module = _reload_search_module()
+
+    from miroflow_tools.dev_mcp_servers.providers.tiering import resolve_provider_tier
+
+    decision = resolve_provider_tier(
+        module.SEARCH_PROVIDER_ORDER,
+        module._registry.available_names(),
+        requested_order=module.SEARCH_PROVIDER_ORDER,
+        strict=module.SEARCH_PROVIDER_ORDER_STRICT,
+    )
+
+    assert decision.tier == "single-provider"
+    assert decision.min_provider_coverage == 1
+    assert decision.effective_order == ["serper"]
+
+    confidence = module._evaluate_confidence(
+        [{"title": "t", "link": "https://a.com/x", "snippet": "s"}],
+        {"serper"},
+        allowed_providers=decision.effective_order,
+        min_provider_coverage=decision.min_provider_coverage,
+    )
+    assert confidence["constraints"]["min_provider_coverage"] == 1
+    assert confidence["metrics"]["provider_coverage"] == 1
+
+
+@pytest.mark.unit
+def test_search_profile_env_drives_degradation_attribution(monkeypatch):
+    """M5：SEARCH_PROFILE 让档位决策准确记录「从哪个 profile 降级」。
+
+    provider 顺序串无法反推 profile 名（serp-first 与 parallel-trusted 共用同一
+    顺序串），所以归因只能靠显式传入的 profile 名。
+    """
+    _set_single_provider_env(monkeypatch)
+    monkeypatch.setenv("SEARCH_PROFILE", "parallel-trusted")
+    module = _reload_search_module()
+
+    assert module.SEARCH_PROFILE == "parallel-trusted"
+
+    from miroflow_tools.dev_mcp_servers.providers.tiering import resolve_provider_tier
+
+    decision = resolve_provider_tier(
+        module.SEARCH_PROFILE,
+        module._registry.available_names(),
+        requested_order=module.SEARCH_PROVIDER_ORDER,
+        strict=module.SEARCH_PROVIDER_ORDER_STRICT,
+    )
+
+    # 只配 serper 却请求 parallel-trusted → 降级到单 provider 档，归因准确
+    assert decision.tier == "single-provider"
+    assert decision.degraded_from == "parallel-trusted"
+    assert decision.min_provider_coverage == 1
+
+
+@pytest.mark.unit
+def test_absent_search_profile_leaves_attribution_empty(monkeypatch):
+    """无 profile 概念时归因留空，而不是把 provider 顺序串误当 profile 名。"""
+    _set_single_provider_env(monkeypatch)
+    monkeypatch.delenv("SEARCH_PROFILE", raising=False)
+    module = _reload_search_module()
+
+    assert module.SEARCH_PROFILE == ""
+
+    from miroflow_tools.dev_mcp_servers.providers.tiering import resolve_provider_tier
+
+    decision = resolve_provider_tier(
+        module.SEARCH_PROFILE,
+        module._registry.available_names(),
+        requested_order=module.SEARCH_PROVIDER_ORDER,
+        strict=module.SEARCH_PROVIDER_ORDER_STRICT,
+    )
+
+    assert decision.tier == "single-provider"
+    # 关键回归：不能是 "serper"（那是 provider 名，不是 profile 名）
+    assert decision.degraded_from == ""

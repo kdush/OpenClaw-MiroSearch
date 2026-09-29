@@ -3,9 +3,11 @@
 
 """Report structure validation and enforcement for research outputs."""
 
+import html
 import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import quote, urlsplit
 
 
 @dataclass
@@ -56,11 +58,280 @@ _CONFIRMED = (
     r"能确认[与和]不能确认|确认与未确认|"
     r"已知与未知)"
 )
-_REFERENCES = r"(?i)##?\s*(?:references|参考文献|参考资料|来源列表|引用)"
+_REFERENCES = r"(?i)##?\s*(?:references|参考文献|参考资料|参考来源|来源列表|引用)"
+_REFERENCE_HEADING = re.compile(
+    r"(?i)^\s*(?:references?|sources?|参考文献|参考资料|参考来源|来源列表|引用)"
+    r"(?:\s*[/／]\s*(?:references?|sources?|参考文献|参考资料|参考来源))?\s*$"
+)
+_CODE_SEGMENT = re.compile(r"(`{3,}|~{3,})[^\n]*\n[\s\S]*?\1|`[^`\n]+`")
+_CITATION = re.compile(r"(?<!\\)\[(\d+)\]")
+_MARKDOWN_LINK = re.compile(
+    r"!?\[((?:\\.|\[[^\]\n]*\]|[^\]\\\n])*)\]"
+    r"\(\s*(?:<([^>\n]*)>|([^\s()]*(?:\([^()\n]*\)[^\s()]*)*))"
+    r"(?:\s+[\"'][^\n]*?[\"'])?\s*\)"
+)
+_REFERENCE_DEFINITION = re.compile(r"(?m)^[ \t]{0,3}\[[^\]\n]+\]:[^\n]*(?:\n|$)")
+_REPORT_SEGMENT = re.compile(
+    _CODE_SEGMENT.pattern
+    + "|"
+    + _MARKDOWN_LINK.pattern
+    + r"|<[^>]*>|(?m:^[ \t]{0,3}\[[^\]\n]+\]:[^\n]*(?:\n|$))"
+)
 
 
 class ReportStructureValidator:
     """Validates and enforces readable report structure."""
+
+    @staticmethod
+    def citable_sources(source_registry: dict) -> List[dict]:
+        sources = []
+        for entry in source_registry.get("entries", []):
+            if not isinstance(entry, dict):
+                continue
+            source_id = entry.get("source_id")
+            if type(source_id) is not int or source_id <= 0:
+                continue
+            status = entry.get("status")
+            if status not in {"snippet_only", "fetched", "fetch_failed"}:
+                continue
+            if status != "fetched" and not entry.get("discoveries"):
+                continue
+            url = entry.get("normalized_url", "")
+            try:
+                parts = urlsplit(url)
+                if parts.scheme not in {"http", "https"} or not parts.hostname:
+                    continue
+                _ = parts.port
+            except (TypeError, ValueError):
+                continue
+            sources.append(entry)
+        return sources
+
+    @staticmethod
+    def _reference_text(value: str) -> str:
+        text = html.escape(" ".join(str(value or "").split()))
+        return re.sub(r"([\\`*_\[\]{}()#!|>~])", r"\\\1", text)
+
+    @classmethod
+    def build_source_references(cls, source_registry: dict) -> str:
+        sources = cls.citable_sources(source_registry)
+        lines = ["## References", ""]
+        if not sources:
+            lines.append("未获得可引用来源；相关结论未经来源核实。")
+        for source in sources:
+            url = quote(source["normalized_url"], safe=":/?#[]@!$&'()*+,;=%-._~")
+            title = cls._reference_text(
+                source.get("title") or source.get("domain") or source["normalized_url"]
+            )
+            status = {
+                "snippet_only": "仅摘要",
+                "fetched": "已抓取全文（不代表事实核实）",
+                "fetch_failed": "抓取失败（仅摘要）",
+            }[source["status"]]
+            lines.append(f"- [{source['source_id']}] [{title}](<{url}>) — {status}")
+            snippet = cls._reference_text(source.get("snippet", ""))
+            lines.extend([f"  {snippet}" if snippet else "  未返回摘要。", ""])
+        return "\n".join(lines).strip() + "\n"
+
+    @staticmethod
+    def _split_reference_sections(text: str) -> Tuple[str, str]:
+        kept = []
+        references = []
+        reference_level = None
+        fence = ""
+        for line in text.splitlines(keepends=True):
+            fence_match = re.match(r"^\s*(`{3,}|~{3,})", line)
+            if fence_match:
+                marker = fence_match.group(1)
+                if not fence:
+                    fence = marker
+                elif marker[0] == fence[0] and len(marker) >= len(fence):
+                    fence = ""
+                if reference_level is None:
+                    kept.append(line)
+                else:
+                    references.append(line)
+                continue
+            if not fence:
+                heading = re.match(r"^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$", line)
+                if heading:
+                    level = len(heading.group(1))
+                    if reference_level is not None and level <= reference_level:
+                        reference_level = None
+                    title = heading.group(2).strip("* ")
+                    if _REFERENCE_HEADING.fullmatch(title):
+                        reference_level = level
+                elif _REFERENCE_HEADING.fullmatch(line.strip().strip("* ")):
+                    reference_level = 6
+            if reference_level is None:
+                kept.append(line)
+            else:
+                references.append(line)
+        return "".join(kept).strip(), "".join(references)
+
+    @classmethod
+    def enforce_citations(
+        cls,
+        markdown_text: str,
+        source_registry: dict,
+        *,
+        include_references: bool = True,
+        require_citation_targets: bool = False,
+    ) -> Tuple[str, List[str]]:
+        if not markdown_text or not markdown_text.strip():
+            return markdown_text, []
+        sources = cls.citable_sources(source_registry)
+        targets_by_id = {}
+        by_url = {}
+        for source in sources:
+            source_id = str(source["source_id"])
+            targets = set()
+            for url in [
+                source["normalized_url"],
+                source.get("raw_url", ""),
+                *source.get("aliases", []),
+            ]:
+                if url:
+                    targets.add(url.strip())
+                    targets.add(quote(url.strip(), safe=":/?#[]@!$&'()*+,;=%-._~"))
+            targets_by_id[source_id] = targets
+            for url in targets:
+                by_url.setdefault(url, source_id)
+        for source in sources:
+            for url in (source["normalized_url"], source.get("raw_url", "")):
+                if url:
+                    by_url[url.strip()] = str(source["source_id"])
+                    by_url[quote(url.strip(), safe=":/?#[]@!$&'()*+,;=%-._~")] = str(
+                        source["source_id"]
+                    )
+        issues = []
+        resolved_ids = set()
+        mismatched_ids = set()
+        body, reference_text = cls._split_reference_sections(markdown_text)
+        definitions = re.findall(
+            r"(?m)^[ \t]{0,3}\[(\d+)\]:[ \t]*(.+)$",
+            _CODE_SEGMENT.sub("", body + "\n" + reference_text),
+        )
+        reference_entries = re.findall(
+            r"(?m)^\s*(?:[-*]\s+)?(?:\[(\d+)\]|(\d+)[.)])\s+(.+)$",
+            _CODE_SEGMENT.sub("", reference_text),
+        )
+        for raw_id, entry in definitions + [
+            (bracket_id or list_id, entry)
+            for bracket_id, list_id, entry in reference_entries
+        ]:
+            source_id = raw_id.lstrip("0") or "0"
+            target_link = _MARKDOWN_LINK.search(entry)
+            if target_link:
+                url = target_link.group(2) or target_link.group(3) or ""
+            else:
+                target = re.search(r"https?://[^\s<>\"]+", entry)
+                if target is None:
+                    continue
+                url = target[0]
+            url = html.unescape(url)
+            targets = targets_by_id.get(source_id, set())
+            if url in targets or url.rstrip(").,;'") in targets:
+                resolved_ids.add(source_id)
+            else:
+                mismatched_ids.add(source_id)
+                issues.append(f"citation_target_mismatch:{source_id}")
+
+        def citation(match: re.Match) -> str:
+            source_id = match.group(1).lstrip("0") or "0"
+            if source_id in mismatched_ids:
+                return "（引用链接不匹配）"
+            if source_id in targets_by_id and (
+                not require_citation_targets or source_id in resolved_ids
+            ):
+                return f"[{source_id}]"
+            issues.append(f"unregistered_citation:{source_id}")
+            return "（引用未登记）"
+
+        def link(match: re.Match) -> str:
+            label = match.group(1)
+            url = html.unescape(match.group(2) or match.group(3) or "")
+            numeric_label = label.strip("[]")
+            if re.fullmatch(r"[0-9]+", numeric_label):
+                source_id = numeric_label.lstrip("0") or "0"
+                targets = targets_by_id.get(source_id)
+                if targets is not None:
+                    if url in targets:
+                        resolved_ids.add(source_id)
+                        return f"[{source_id}]"
+                    issues.append(f"citation_target_mismatch:{source_id}")
+                    return "（引用链接不匹配）"
+                issues.append(f"unregistered_citation:{source_id}")
+                return "（引用未登记）"
+            source_id = by_url.get(url)
+            label = cls._reference_text(label)
+            if source_id is not None:
+                resolved_ids.add(source_id)
+                return f"{label}[{source_id}]"
+            issues.append("unregistered_source_link")
+            return f"{label}（来源未登记）"
+
+        def bare_url(match: re.Match) -> str:
+            raw = html.unescape(match.group(0))
+            url = raw.rstrip(".,;:)，。；：、）】》")
+            if raw in by_url:
+                resolved_ids.add(by_url[raw])
+                return f"[{by_url[raw]}]"
+            source_id = by_url.get(url)
+            if source_id is not None:
+                resolved_ids.add(source_id)
+                return f"[{source_id}]" + raw[len(url) :]
+            issues.append("unregistered_source_link")
+            return "（来源未登记）"
+
+        def clean(segment: str) -> str:
+            segment = _MARKDOWN_LINK.sub(link, segment)
+            segment = re.sub(
+                r"(?<!\\)\[([^\]\n]+)\]\[[^\]\n]*\]",
+                lambda m: cls._reference_text(m[1]) + "（引用未登记）",
+                segment,
+            )
+            segment = re.sub(r"https?://[^\s<>\]\"']+", bare_url, segment)
+            segment = _CITATION.sub(citation, segment)
+            return segment.replace("<", "&lt;").replace(">", "&gt;")
+
+        pieces = []
+        cursor = 0
+        for match in _REPORT_SEGMENT.finditer(body):
+            token = match.group(0)
+            preceding = clean(body[cursor : match.start()])
+            if _REFERENCE_DEFINITION.fullmatch(token):
+                token = ""
+            elif _MARKDOWN_LINK.fullmatch(token):
+                token = clean(token)
+            elif token.startswith(("<http://", "<https://")):
+                token = clean(token[1:-1])
+            elif token.startswith("<") and not re.fullmatch(
+                r"<!--\s*confidence:(?:high|mid|low)\s*-->", token
+            ):
+                token = html.escape(token)
+            pieces.extend([preceding, token])
+            cursor = match.end()
+        pieces.append(clean(body[cursor:]))
+        result = "".join(pieces).strip()
+        if not sources:
+            issues.append("no_citable_sources")
+        if include_references:
+            result += "\n\n" + cls.build_source_references(source_registry)
+        return result, list(dict.fromkeys(issues))
+
+    @classmethod
+    def validate_claim_support_map(
+        cls, claim_map: Any, source_registry: dict
+    ) -> List[str]:
+        """M3 可机械验证的结构检查：主张→来源映射必须落在注册表内。
+
+        只做结构校验（引用是否登记、同一来源是否被同时判为支持与反驳）；
+        语义支持判断属于 ``claim_verification`` 的裁决职责，二者不混用。
+        """
+        from ..core.claim_verification import validate_claim_map
+
+        return validate_claim_map(claim_map, source_registry)
 
     # Expected sections for a well-structured research report.
     # detailed/deep hotspot reports MUST surface Conflicts explicitly (Round 5).
@@ -119,9 +390,10 @@ class ReportStructureValidator:
             "unsourced_number_warnings": [],
         }
 
-        # Check for citations ([1] style or URL/domain mentions)
-        citation_pattern = r"\[\d+\]"
-        citations = re.findall(citation_pattern, markdown_text)
+        citation_body = _CODE_SEGMENT.sub(
+            "", cls._split_reference_sections(markdown_text)[0]
+        )
+        citations = _CITATION.findall(citation_body)
         metadata["has_citations"] = len(citations) > 0
         metadata["citation_count"] = len(citations)
 
@@ -154,10 +426,7 @@ class ReportStructureValidator:
 
         # Additional quality checks
         if detail_level in ["balanced", "detailed"] and metadata["citation_count"] < 3:
-            # Also accept bare URLs as weak citations for live Chinese sources
-            url_hits = re.findall(r"https?://[^\s\)]+", markdown_text)
-            if len(url_hits) + metadata["citation_count"] < 3:
-                issues.append("insufficient_citations")
+            issues.append("insufficient_citations")
 
         if detail_level == "detailed":
             # heading followed by content (not just an alias mention in prose)

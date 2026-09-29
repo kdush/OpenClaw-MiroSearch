@@ -6,7 +6,6 @@ from types import SimpleNamespace
 
 import pytest
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 GRADIO_DEMO_DIR = PROJECT_ROOT / "apps" / "gradio-demo"
 MIROFLOW_AGENT_DIR = PROJECT_ROOT / "apps" / "miroflow-agent"
@@ -38,6 +37,17 @@ async def test_reconnect_or_init_first_frame_uses_running_placeholder(monkeypatc
             "task_id": task_id,
             "status": "running",
             "event_count": 5,
+            "source_registry": {
+                "entries": [
+                    {
+                        "source_id": 12,
+                        "normalized_url": "https://example.com/restored",
+                        "status": "snippet_only",
+                        "discoveries": [{"provider": "sogou"}],
+                        "snippet": "重连保留的摘要",
+                    }
+                ]
+            },
             "meta": {
                 "task_id": task_id,
                 "status": "running",
@@ -88,6 +98,8 @@ async def test_reconnect_or_init_first_frame_uses_running_placeholder(monkeypatc
     assert run_update["interactive"] is False
     assert stop_update["interactive"] is True
     assert ui_state["task_id"] == "task-running-1"
+    assert ui_state["source_registry"]["entries"][0]["source_id"] == 12
+    assert ui_state["source_registry"]["entries"][0]["snippet"] == "重连保留的摘要"
     assert task_id_bridge == "task-running-1"
     assert output_visible.get("visible") is True
     assert export_visible.get("visible") is False

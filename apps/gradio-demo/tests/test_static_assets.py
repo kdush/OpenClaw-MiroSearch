@@ -74,3 +74,15 @@ def test_starfield_has_perf_guards(static_assets):
 
 def test_gradio_css_import_points_at_theme(static_assets):
     assert "/diting-static/theme.css" in static_assets.gradio_css_import()
+
+
+def test_mermaid_renderer_is_strict_and_keeps_plaintext_fallback(static_assets):
+    """Q1：安全渲染 + 纯文本回退；渲染只是展示，不赋予关系真实性。"""
+    js = _read("js/mermaid_render.js")
+    assert "js/mermaid_render.js" in static_assets.HEAD_SCRIPTS
+    assert "securityLevel" in js and '"strict"' in js
+    # 只处理报告里的 mermaid 代码块，失败/不可用时保留原块
+    assert "language-mermaid" in js
+    assert "catch" in js
+    assert "replaceWith" in js
+    assert ".mermaid-rendered" in _read("css/report-document.css")

@@ -42,6 +42,7 @@ HEAD_SCRIPTS = (
     "js/export_titles.js",
     "js/elapsed_timer.js",
     "js/starfield.js",
+    "js/mermaid_render.js",
 )
 
 

@@ -306,6 +306,23 @@
         overflow-x: auto !important;
     }
 
+    /* Q1: mermaid blocks are rendered to SVG client-side; the raw code block
+       stays as the fallback when mermaid is unavailable or a diagram fails. */
+    .mermaid-rendered {
+        margin: 12px 0 18px !important;
+        padding: 12px 14px !important;
+        border-radius: 14px !important;
+        border: 1px solid rgba(34, 211, 238, 0.2) !important;
+        background: rgba(2, 6, 23, 0.65) !important;
+        overflow-x: auto !important;
+        text-align: center !important;
+    }
+
+    .mermaid-rendered svg {
+        max-width: 100% !important;
+        height: auto !important;
+    }
+
     a.ref-citation, a.ref-chip {
         display: inline-flex !important;
         align-items: center !important;

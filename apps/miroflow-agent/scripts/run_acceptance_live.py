@@ -2,7 +2,8 @@
 # Copyright (c) 2025 MiroMind
 """Live acceptance harness for research-quality cases A–E (Round 3+).
 
-Loads Zhipu/OpenAI credentials from an external JSON file (never printed).
+Loads Zhipu/OpenAI credentials from an external JSON file (never printed),
+falling back to the gitignored apps/gradio-demo/.env when the JSON is absent.
 Runs the agent pipeline via Hydra compose + execute_task_pipeline.
 """
 
@@ -686,8 +687,33 @@ CASES: Dict[str, Dict[str, Any]] = {
 }
 
 
+def _parse_env_file(path: Path) -> Dict[str, str]:
+    data: Dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip("'\"")
+        if key and value:
+            data[key] = value
+    return data
+
+
 def _load_credentials(path: Path) -> None:
-    data = json.loads(path.read_text())
+    if path.exists():
+        data = json.loads(path.read_text(encoding="utf-8"))
+    else:
+        # Local fallback: gitignored gradio-demo .env; values never printed.
+        env_path = ROOT.parents[1] / "apps" / "gradio-demo" / ".env"
+        if not env_path.exists():
+            raise FileNotFoundError(
+                f"Credentials file not found: {path}; "
+                f"no .env fallback at {env_path}"
+            )
+        print(f"[creds] JSON not found: {path}; using {env_path} fallback")
+        data = _parse_env_file(env_path)
     # Map into env expected by OpenAI-compatible client / Hydra overrides / search MCP
     mapping = {
         "OPENAI_API_KEY": data.get("OPENAI_API_KEY") or data.get("API_KEY"),
@@ -735,62 +761,193 @@ def _compose_cfg(overrides: List[str]):
         OmegaConf.update(cfg, "llm.api_key", api_key, merge=True)
     if base_url:
         OmegaConf.update(cfg, "llm.base_url", base_url, merge=True)
-    OmegaConf.update(cfg, "llm.model_name", "glm-5.3-flash", merge=True)
+    # 尊重 DEFAULT_MODEL_NAME（与 gradio-demo / api-server 同一开关），
+    # 让 harness 能指向任意 OpenAI 兼容模型；未设置时回落到 case 的 llm 配置。
+    # 也保证 [creds] 打印的 model 与实际使用的模型一致。
+    model_name = os.environ.get("DEFAULT_MODEL_NAME") or cfg.llm.get("model_name")
+    if model_name:
+        OmegaConf.update(cfg, "llm.model_name", model_name, merge=True)
     OmegaConf.update(cfg, "llm.provider", "openai", merge=True)
     return cfg
 
 
-def _extract_route_traces_from_log(log_path: Optional[str]) -> List[Dict[str, Any]]:
-    """Pull search route_trace / provider fields from tool call logs."""
+_LOG_SCRAPE_TOOL_NAMES = {
+    # 从日志识别「抓取类」工具调用。基础口径同 orchestrator.SCRAPE_TOOL_NAMES，
+    # 另含历史日志里可能出现的通用别名 scrape / scrape_website；
+    # 截图类（browser_screenshot）不计入正文抓取。
+    "jina_reader",
+    "firecrawl",
+    "fetch_page",
+    "scrape_webpage",
+    "search_and_scrape_webpage",
+    "jina_scrape_llm_summary",
+    "browser_navigate",
+    "scrape_url",
+    "scrape_and_extract_info",
+    "scrape",
+    "scrape_website",
+}
+
+
+def _read_token_usage_from_log(log_path: Optional[str]) -> Dict[str, Any]:
+    """Run-wide cumulative token totals from the Usage Calculation step.
+
+    All LLM calls route through one client instance, so the usage_log logged
+    at the end of the pipeline is a cumulative total; the per-model split
+    lives in run_metrics.model_route_hits.
+    """
+    if not log_path:
+        return {}
+    p = Path(log_path)
+    if not p.exists():
+        return {}
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    usage: Dict[str, Any] = {}
+    for step in data.get("step_logs") or []:
+        if not isinstance(step, dict):
+            continue
+        if "Usage Calculation" not in str(step.get("step_name") or ""):
+            continue
+        match = re.search(
+            r"Total Input:\s*(\d+)\s*,\s*Cache Input:\s*(\d+)\s*,\s*Output:\s*(\d+)",
+            str(step.get("message") or ""),
+        )
+        if match:
+            usage = {
+                "total_input_tokens": int(match.group(1)),
+                "total_cache_input_tokens": int(match.group(2)),
+                "total_output_tokens": int(match.group(3)),
+            }
+    return usage
+
+
+def _iter_log_json_objects(text: str):
+    """Yield complete JSON objects embedded in a tool-result text.
+
+    History compression / the LLM-side sanitizer can break a payload tail;
+    raw_decode skips fragments instead of failing the whole text.
+    """
+    decoder = json.JSONDecoder()
+    idx = 0
+    while idx < len(text):
+        start = text.find("{", idx)
+        if start < 0:
+            return
+        try:
+            obj, end = decoder.raw_decode(text, start)
+            idx = end
+            if isinstance(obj, dict):
+                yield obj
+        except json.JSONDecodeError:
+            idx = start + 1
+
+
+def _extract_source_inventory_from_log(
+    log_path: Optional[str], max_snippet_chars: int = 200
+) -> List[Dict[str, Any]]:
+    """Best-effort source inventory: hits + scrape outcomes, first-seen order.
+
+    Membership mirrors gradio-demo _collect_report_sources (organic links plus
+    scrape target URLs) and adds the fetch status required by the source
+    contract. Log-derived, so mid-run history compression can drop early
+    sources; the M1 source registry is the structural fix.
+    """
     if not log_path:
         return []
     p = Path(log_path)
     if not p.exists():
         return []
     try:
-        data = json.loads(p.read_text())
+        data = json.loads(p.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return []
-    traces: List[Dict[str, Any]] = []
-    steps = data.get("step_logs") or data.get("steps") or data.get("log_steps") or []
-    for step in steps:
+
+    order: List[str] = []
+    by_url: Dict[str, Dict[str, Any]] = {}
+    status_rank = {"snippet_only": 0, "fetch_failed": 1, "fetched": 2}
+
+    def _touch(url: Any) -> Optional[Dict[str, Any]]:
+        key = str(url or "").strip()
+        if not key.lower().startswith(("http://", "https://")):
+            return None
+        if key not in by_url:
+            by_url[key] = {
+                "url": key,
+                "title": "",
+                "status": "snippet_only",
+                "providers": [],
+                "snippet": "",
+            }
+            order.append(key)
+        return by_url[key]
+
+    def _register_hit(item: Dict[str, Any], provider: str) -> None:
+        entry = _touch(item.get("link") or item.get("url"))
+        if entry is None:
+            return
+        if provider and str(provider) not in entry["providers"]:
+            entry["providers"].append(str(provider))
+        if not entry["title"]:
+            entry["title"] = str(item.get("title") or "")[:120]
+        if not entry["snippet"]:
+            entry["snippet"] = str(item.get("snippet") or "")[:max_snippet_chars]
+
+    def _upgrade(entry: Dict[str, Any], status: str) -> None:
+        if status_rank[status] > status_rank.get(entry["status"], 0):
+            entry["status"] = status
+
+    history = (data.get("main_agent_message_history") or {}).get(
+        "message_history"
+    ) or []
+    for message in history:
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if not isinstance(content, str) or not content:
+            continue
+        for obj in _iter_log_json_objects(content):
+            organic = obj.get("organic")
+            if isinstance(organic, list):
+                params = obj.get("searchParameters") or {}
+                provider = obj.get("provider") or (
+                    params.get("provider") if isinstance(params, dict) else ""
+                )
+                for item in organic:
+                    if isinstance(item, dict):
+                        _register_hit(item, str(provider or ""))
+            elif isinstance(obj.get("success"), bool) and obj.get("url"):
+                status = "fetched" if obj.get("success") else "fetch_failed"
+                for url in (obj.get("url"), obj.get("final_url")):
+                    entry = _touch(url)
+                    if entry is not None:
+                        _upgrade(entry, status)
+            elif "link" in obj and (
+                "position" in obj or "snippet" in obj or "title" in obj
+            ):
+                # Standalone organic item: the outer search payload was
+                # truncated by the LLM-side sanitizer, but per-item objects
+                # still parse. Provider attribution is lost with the tail.
+                _register_hit(obj, "")
+
+    # Scrape targets whose result JSON was unparseable still enter the
+    # inventory (demo parity), conservatively as snippet_only.
+    for step in data.get("step_logs") or []:
         if not isinstance(step, dict):
             continue
-        tool_calls = step.get("tool_calls") or step.get("tools") or []
-        if isinstance(step.get("tool_call"), dict):
-            tool_calls = [step["tool_call"]]
-        if not isinstance(tool_calls, list):
+        if "Tool Call Start" not in str(step.get("step_name") or ""):
             continue
-        for tc in tool_calls:
-            if not isinstance(tc, dict):
-                continue
-            name = str(tc.get("tool_name") or tc.get("name") or "")
-            if "search" not in name.lower() and "google" not in name.lower():
-                continue
-            result = tc.get("result")
-            parsed: Any = result
-            if isinstance(result, str):
-                try:
-                    parsed = json.loads(result)
-                except json.JSONDecodeError:
-                    continue
-            if not isinstance(parsed, dict):
-                continue
-            params = parsed.get("searchParameters") or {}
-            traces.append(
-                {
-                    "tool_name": name,
-                    "provider": parsed.get("provider") or params.get("provider"),
-                    "provider_mode": params.get("provider_mode"),
-                    "provider_order": params.get("provider_order"),
-                    "route_trace": parsed.get("route_trace")
-                    or params.get("route_trace"),
-                    "success": parsed.get("success"),
-                    "organic_count": len(parsed.get("organic") or []),
-                    "error": (parsed.get("error") or "")[:300],
-                }
-            )
-    return traces
+        metadata = step.get("metadata") or {}
+        arguments = metadata.get("arguments") if isinstance(metadata, dict) else None
+        if not isinstance(arguments, dict):
+            continue
+        tool_match = re.search(r"call tool '([^']+)'", str(step.get("message") or ""))
+        if tool_match and tool_match.group(1) in _LOG_SCRAPE_TOOL_NAMES:
+            _touch(arguments.get("url") or arguments.get("link"))
+
+    return [by_url[key] for key in order]
 
 
 def _read_raw_summary_from_log(log_path: Optional[str]) -> str:
@@ -806,7 +963,7 @@ def _read_raw_summary_from_log(log_path: Optional[str]) -> str:
     if not p.exists():
         return ""
     try:
-        data = json.loads(p.read_text())
+        data = json.loads(p.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return ""
     steps = data.get("step_logs") or data.get("steps") or data.get("log_steps") or []
@@ -832,7 +989,7 @@ def _read_metrics_from_log(log_path: Optional[str]) -> Dict[str, Any]:
     if not p.exists():
         return {}
     try:
-        data = json.loads(p.read_text())
+        data = json.loads(p.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return {}
     metrics = data.get("run_metrics") or data.get("metrics") or {}
@@ -844,18 +1001,34 @@ def _read_metrics_from_log(log_path: Optional[str]) -> Dict[str, Any]:
         if isinstance(s, dict)
         and "lead" in str(s.get("step_name", s.get("name", ""))).lower()
     ]
+    # M3 执行痕迹：编排层会记一条 "Main Agent | Claim Verification" 步骤
+    claim_steps = [
+        s
+        for s in steps
+        if isinstance(s, dict)
+        and "claim verification" in str(s.get("step_name", s.get("name", ""))).lower()
+    ]
     return {
         "raw": metrics if isinstance(metrics, dict) else {},
         "lead_steps_count": len(lead_steps),
         "lead_steps_sample": lead_steps[:5],
+        "claim_verification_ran": bool(claim_steps),
+        "claim_verification_steps": claim_steps[:5],
         "status": data.get("status"),
         "final_boxed_answer": data.get("final_boxed_answer", ""),
-        "route_traces": _extract_route_traces_from_log(log_path),
+        "token_usage": _read_token_usage_from_log(log_path),
+        "source_inventory": _extract_source_inventory_from_log(log_path),
     }
 
 
 async def run_case(case_id: str, case: Dict[str, Any], out_dir: Path) -> Dict[str, Any]:
-    env_patch = case.get("env") or {}
+    env_patch = dict(case.get("env") or {})
+    # M5：把 profile 名注入检索 env，档位决策才能准确记录 degraded_from。
+    # provider 顺序串无法反推 profile 名（serp-first 与 parallel-trusted 共用同一
+    # 顺序串），所以必须显式传递；case 自己配了的优先。
+    profile_name = (case.get("effective_config") or {}).get("search_profile")
+    if profile_name:
+        env_patch.setdefault("SEARCH_PROFILE", str(profile_name))
     old_env = {k: os.environ.get(k) for k in env_patch}
     try:
         for k, v in env_patch.items():
@@ -922,13 +1095,23 @@ async def run_case(case_id: str, case: Dict[str, Any], out_dir: Path) -> Dict[st
             "has_lead_trail": has_trail,
             "log_file": log_path,
             "metrics": metrics_info.get("raw", {}),
-            "route_traces": metrics_info.get("route_traces", []),
+            "token_usage": metrics_info.get("token_usage", {}),
+            "source_urls": metrics_info.get("source_inventory", []),
+            "source_registry": result.get("source_registry", {}),
             "lead_steps_count": metrics_info.get("lead_steps_count", 0),
+            # M3/Q4 证据：核验是否真的跑过，以及报告里是否落出结论—来源拓扑
+            "claim_verification_ran": metrics_info.get("claim_verification_ran", False),
+            "claim_verification_steps": metrics_info.get(
+                "claim_verification_steps", []
+            ),
+            "has_claim_topology": "```mermaid" in raw_summary
+            and "证据缺口" in raw_summary,
             "gate_evaluation": gate_eval,
             "error": result.get("error"),
         }
         (out_dir / f"case_{case_id}.json").write_text(
-            json.dumps(record, ensure_ascii=False, indent=2, default=str)
+            json.dumps(record, ensure_ascii=False, indent=2, default=str),
+            encoding="utf-8",
         )
         gate_note = ""
         if gate_eval is not None:
@@ -954,10 +1137,11 @@ async def run_case(case_id: str, case: Dict[str, Any], out_dir: Path) -> Dict[st
 
 async def main_async(args: argparse.Namespace) -> int:
     creds = Path(args.credentials)
-    if not creds.exists():
-        print(f"Credentials file not found: {creds}", file=sys.stderr)
+    try:
+        _load_credentials(creds)
+    except (FileNotFoundError, json.JSONDecodeError) as exc:
+        print(str(exc), file=sys.stderr)
         return 2
-    _load_credentials(creds)
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -1007,7 +1191,10 @@ async def main_async(args: argparse.Namespace) -> int:
         }
 
     combined = out_dir / "acceptance_results.json"
-    combined.write_text(json.dumps(results, ensure_ascii=False, indent=2, default=str))
+    combined.write_text(
+        json.dumps(results, ensure_ascii=False, indent=2, default=str),
+        encoding="utf-8",
+    )
     print(f"Wrote {combined}")
     return 0
 

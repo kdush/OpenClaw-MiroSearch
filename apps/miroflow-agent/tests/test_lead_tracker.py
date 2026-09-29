@@ -81,3 +81,57 @@ def test_follow_up_marks_trail_and_stats():
     trail = mgr.get_trail_section()
     assert "followed" in trail
     assert mgr.trail.follow_up_count >= 1
+
+
+class TestLeadChainTrace:
+    """M4：记录搜索/追问/跳转与结果，展示「为什么继续查」。"""
+
+    def test_snapshot_records_why_we_continued(self):
+        mgr = LeadTrackingManager(enabled=True, max_follow_ups=2)
+        mgr.initialize("原始问题")
+        leads = mgr.process_turn_response(
+            "We need to investigate: what bridged A to B?", turn=1
+        )
+        assert leads
+
+        mgr.record_follow_up(
+            leads[0], turn=2, findings="已找到线索", reason="early-stop-not-met"
+        )
+
+        trace = mgr.get_trace()
+        assert trace["original_query"] == "原始问题"
+        assert trace["follow_up_count"] == 1
+        node = trace["leads"][0]
+        assert node["followed_up"] is True
+        assert node["follow_up_turn"] == 2
+        assert node["follow_up_reason"] == "early-stop-not-met"
+        assert node["findings"] == "已找到线索"
+
+    def test_trail_section_surfaces_the_reason(self):
+        mgr = LeadTrackingManager(enabled=True, max_follow_ups=2)
+        mgr.initialize("原始问题")
+        leads = mgr.process_turn_response(
+            "We need to investigate: what bridged A to B?", turn=1
+        )
+        mgr.record_follow_up(leads[0], turn=2, reason="priority")
+
+        assert "为何继续查" in mgr.get_trail_section()
+
+    def test_trace_is_json_serializable(self):
+        import json
+
+        mgr = LeadTrackingManager(enabled=True, max_follow_ups=2)
+        mgr.initialize("原始问题")
+        mgr.process_turn_response(
+            "We need to investigate: what bridged A to B?", turn=1
+        )
+
+        json.dumps(mgr.get_trace())
+
+    def test_disabled_manager_returns_empty_trace(self):
+        mgr = LeadTrackingManager(enabled=False)
+        assert mgr.get_trace() == {
+            "original_query": "",
+            "follow_up_count": 0,
+            "leads": [],
+        }

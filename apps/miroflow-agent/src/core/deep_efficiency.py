@@ -32,6 +32,9 @@ DEFAULT_ONESHOT_FINAL_REPORT_INTENSITIES = ("deep", "standard")
 DEFAULT_DEEP_SUMMARY_KEEP_TOOL_RESULT = 2
 DEFAULT_DEEP_SUMMARY_MAX_TOKENS = 4096
 DEFAULT_STANDARD_SUMMARY_KEEP_TOOL_RESULT = -1  # inherit agent.keep_tool_result
+# M3 claim verification: one extra no-tool adjudication call per run
+DEFAULT_CLAIM_VERIFICATION_MAX_CLAIMS = 6
+MAX_CLAIM_VERIFICATION_CLAIMS = 12
 
 
 def _get(container: Any, key: str, default: Any = None) -> Any:
@@ -114,6 +117,29 @@ def resolve_early_stop_config(cfg: Any) -> Tuple[bool, int]:
         _as_int(min_agree, DEFAULT_DEEP_EARLY_STOP_MIN_AGREEING_SOURCES),
     )
     return enabled, min_agree_int
+
+
+def resolve_claim_verification_config(cfg: Any) -> Tuple[bool, int]:
+    """Return (enabled, max_claims) for M3 claim verification.
+
+    M3 costs one extra no-tool LLM call (and thinking tokens), so it defaults ON
+    only for deep intensity; other tiers opt in explicitly. Roadmap §7 requires
+    proving the quality gain before widening the default.
+    """
+    intensity = resolve_research_intensity(cfg)
+
+    explicit = resolve_agent_value(cfg, "claim_verification")
+    if explicit is None:
+        enabled = intensity == "deep"
+    else:
+        enabled = _as_bool(explicit, intensity == "deep")
+
+    max_claims = resolve_agent_value(cfg, "claim_verification_max_claims")
+    max_claims_int = min(
+        MAX_CLAIM_VERIFICATION_CLAIMS,
+        max(1, _as_int(max_claims, DEFAULT_CLAIM_VERIFICATION_MAX_CLAIMS)),
+    )
+    return enabled, max_claims_int
 
 
 def default_max_lead_follow_ups_for_intensity(intensity: str) -> int:

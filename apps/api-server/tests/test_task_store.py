@@ -6,7 +6,6 @@ import uuid
 from unittest.mock import AsyncMock
 
 import pytest
-
 from services.task_store import TaskMeta, TaskStatus, TaskStore
 from settings import settings
 
@@ -189,12 +188,16 @@ async def test_shared_result_cache_roundtrip_preserves_quality():
         "answer_available": True,
     }
 
-    await store.store_cached_result("cache-key", "# 已缓存结果", quality)
+    source_registry = {"entries": []}
+    await store.store_cached_result(
+        "cache-key", "# 已缓存结果", quality, source_registry=source_registry
+    )
 
     expected_payload = json.dumps(
         {
             "result": "# 已缓存结果",
             "quality": quality,
+            "source_registry": source_registry,
         },
         ensure_ascii=False,
     )
@@ -210,6 +213,7 @@ async def test_shared_result_cache_roundtrip_preserves_quality():
     assert cached == {
         "result": "# 已缓存结果",
         "quality": quality,
+        "source_registry": source_registry,
     }
 
 
@@ -261,7 +265,9 @@ async def test_shared_result_cache_zero_ttl_means_no_expiration(monkeypatch):
         "answer_available": True,
     }
 
-    await store.store_cached_result("no-expiry", "# 结果", quality)
+    await store.store_cached_result(
+        "no-expiry", "# 结果", quality, source_registry={"entries": []}
+    )
 
     redis_client.set.assert_awaited_once()
     assert "ex" not in redis_client.set.await_args.kwargs
@@ -295,11 +301,14 @@ async def test_shared_result_cache_is_visible_across_connections_and_expires(
         "answer_available": True,
     }
     try:
-        await writer.store_cached_result(cache_key, "# 跨连接结果", quality)
+        await writer.store_cached_result(
+            cache_key, "# 跨连接结果", quality, source_registry={"entries": []}
+        )
 
         assert await reader.get_cached_result(cache_key) == {
             "result": "# 跨连接结果",
             "quality": quality,
+            "source_registry": {"entries": []},
         }
         await asyncio.sleep(1.1)
         assert await reader.get_cached_result(cache_key) is None

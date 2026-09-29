@@ -1,12 +1,12 @@
 import importlib.util
 import json
 import os
+import re
 import sys
 import zipfile
 from pathlib import Path
 
 import pytest
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 GRADIO_DEMO_DIR = PROJECT_ROOT / "apps" / "gradio-demo"
@@ -49,6 +49,8 @@ def test_render_markdown_collapses_full_process_after_final_summary():
                                         {
                                             "title": "样例结果",
                                             "link": "https://example.com/result",
+                                            "snippet": "<b>仅摘要</b> & 检索线索",
+                                            "discoveries": [{"provider": "searxng"}],
                                         }
                                     ],
                                     "searchParameters": {
@@ -91,6 +93,9 @@ def test_render_markdown_collapses_full_process_after_final_summary():
     assert '检索: "海拉鲁大陆历史 塞尔达传说"' in markdown
     assert "找到 1 条结果" in markdown
     assert "检索模式: fallback" in markdown
+    assert "&lt;b&gt;仅摘要&lt;/b&gt; &amp; 检索线索" in markdown
+    assert 'rel="noopener noreferrer" class="search-result-item"' in markdown
+    assert demo_main._collect_report_sources(state) == []
     assert '<details class="process-details"' in markdown
     assert "### 研究报告" in markdown
 
@@ -166,6 +171,8 @@ def _state_with_process_and_summary():
                                         {
                                             "title": "样例结果",
                                             "link": "https://example.com/result",
+                                            "snippet": "<b>仅摘要</b> & 检索线索",
+                                            "discoveries": [{"provider": "searxng"}],
                                         }
                                     ],
                                     "searchParameters": {
@@ -227,8 +234,32 @@ def test_linkify_reference_citations_replaces_inline_markers():
         "[11] SpaceX宣布有权以600亿美元收购Cursor. "
         "http://www.sohu.com/a/1012767485_120988576\n"
     )
-
-    linked = demo_main._linkify_reference_citations(summary)
+    registry = {
+        "entries": [
+            {
+                "source_id": source_id,
+                "normalized_url": url,
+                "status": "snippet_only",
+                "discoveries": [{"provider": "searxng"}],
+            }
+            for source_id, url in (
+                (
+                    2,
+                    "https://baijiahao.baidu.com/s?id=1863127511634299122&wfr=spider&for=pc",
+                ),
+                (
+                    5,
+                    "http://app.myzaker.com/news/article.php?pk=69e85e838e9f096c0b135fa2",
+                ),
+                (
+                    9,
+                    "https://baijiahao.baidu.com/s?id=1863144438361763046&wfr=spider&for=pc",
+                ),
+                (11, "http://www.sohu.com/a/1012767485_120988576"),
+            )
+        ]
+    }
+    linked = demo_main._linkify_reference_citations(summary, registry)
 
     # 正文里每一处 [N] 都被替换为指向对应 URL 的 HTML 锚点。
     assert (
@@ -250,8 +281,29 @@ def test_linkify_reference_citations_replaces_inline_markers():
 
 def test_linkify_reference_citations_no_references_section():
     demo_main = _load_demo_main()
-    text = "普通段落里的 [1] 和 [2]，但没有参考文献章节。"
-    assert demo_main._linkify_reference_citations(text) == text
+    text = "普通段落里的 [7] 和 [2]，但没有参考文献章节。"
+    registry = {
+        "entries": [
+            {
+                "source_id": 7,
+                "normalized_url": "https://example.com/registry",
+                "status": "fetched",
+                "discoveries": [],
+            },
+            {
+                "source_id": 2,
+                "normalized_url": "https://example.com/failed",
+                "status": "fetch_failed",
+                "discoveries": [],
+            },
+        ]
+    }
+    linked = demo_main._linkify_reference_citations(text, registry)
+    assert 'href="https://example.com/registry"' in linked
+    assert 'class="ref-citation">[7]</a>' in linked
+    assert 'class="ref-citation-unresolved">[2]' in linked
+    assert "https://example.com/failed" not in linked
+    assert "href=" not in demo_main._linkify_reference_citations(text, {"entries": []})
 
 
 def test_linkify_reference_citations_skips_code_blocks():
@@ -261,13 +313,28 @@ def test_linkify_reference_citations_skips_code_blocks():
         "```\n"
         'print("[1] not a citation")\n'
         "```\n\n"
+        "行内 `[1]` 和 [[1]](https://example.com/existing)。\n\n"
         "## 参考文献\n\n"
-        "[1] 示例. https://example.com/article\n"
+        "- [1] [示例](<https://example.com/article>) — 仅摘要\n"
     )
-    linked = demo_main._linkify_reference_citations(summary)
+    registry = {
+        "entries": [
+            {
+                "source_id": 1,
+                "normalized_url": "https://example.com/registry",
+                "status": "snippet_only",
+                "discoveries": [{"provider": "searxng"}],
+            }
+        ]
+    }
+    linked = demo_main._linkify_reference_citations(summary, registry)
     assert 'class="ref-citation">[1]</a>' in linked
+    assert 'href="https://example.com/registry"' in linked
+    assert 'href="https://example.com/article"' not in linked
     # 代码块内部的 [1] 保持原样，不被替换。
     assert 'print("[1] not a citation")' in linked
+    assert "行内 `[1]` 和 [[1]](https://example.com/existing)" in linked
+    assert demo_main._linkify_reference_citations(linked, registry) == linked
 
 
 def test_humanize_pipeline_fallback_rewrites_format_error():
@@ -394,23 +461,32 @@ def test_render_markdown_deduplicates_sanitized_final_summary_blocks():
 
 def test_format_search_results_shows_structured_search_failure():
     demo_main = _load_demo_main()
-    rendered = demo_main._format_search_results(
-        {"q": "test query"},
+    message = demo_main.filter_message(
         {
-            "result": json.dumps(
-                {
-                    "success": False,
-                    "error": "searxng: timeout",
-                    "organic": [],
-                    "provider_fallback": ["searxng: timeout"],
+            "event": "tool_call",
+            "data": {
+                "tool_name": "google_search",
+                "tool_input": {
+                    "result": {
+                        "success": False,
+                        "error": "searxng: timeout <script>alert(1)</script>",
+                        "organic": [],
+                        "provider_fallback": ['provider "<error>"'],
+                    }
                 },
-                ensure_ascii=False,
-            )
-        },
+            },
+        }
+    )
+    rendered = demo_main._format_search_results(
+        {"q": 'test query "<query>"'}, message["data"]["tool_input"]
     )
 
     assert "检索失败" in rendered
     assert "searxng: timeout" in rendered
+    assert "<script>" not in rendered
+    assert "&lt;script&gt;" in rendered
+    assert "&quot;&lt;query&gt;&quot;" in rendered
+    assert "&quot;&lt;error&gt;&quot;" in rendered
 
 
 def test_default_model_family_uses_qwen_when_env_missing(monkeypatch):
@@ -590,7 +666,7 @@ def test_prepare_export_markdown_keeps_conclusion_and_plainifies_html():
     assert "## 结论" in exported
     assert "置信度：高" in exported
     assert "腾讯魔方工作室聚焦两条产品线。\n下半年仍以流水为纲。" in exported
-    assert "[1](https://example.com/a?x=1&y=2)" in exported
+    assert "[1](<https://example.com/a?x=1&amp;y=2>)" in exported
     assert "## 证据与来源" in exported
     assert "```mermaid" in exported
     assert "## 争议与不确定" in exported
@@ -951,3 +1027,89 @@ def test_normalize_output_detail_level_accepts_cn_labels():
     assert demo_main._normalize_output_detail_level("精简") == "compact"
     assert demo_main._normalize_output_detail_level("适中") == "balanced"
     assert demo_main._normalize_output_detail_level("详细") == "detailed"
+
+
+def test_format_search_results_escapes_malicious_snippet():
+    """Q3：实时返回摘要是外部不可信内容，渲染必须转义。"""
+    demo_main = _load_demo_main()
+    rendered = demo_main._format_search_results(
+        {"q": "test query"},
+        {
+            "result": {
+                "success": True,
+                "provider": "serper",
+                "organic": [
+                    {
+                        "position": 1,
+                        "title": "<img src=x onerror=alert(1)>",
+                        "link": "https://e.com/a",
+                        "snippet": "<script>alert(2)</script>",
+                    }
+                ],
+            }
+        },
+    )
+
+    assert "<img" not in rendered
+    assert "<script>" not in rendered
+    assert "&lt;img" in rendered
+    assert "&lt;script&gt;" in rendered
+
+
+def _parity_registry():
+    return {
+        "entries": [
+            {
+                "source_id": 1,
+                "raw_url": "https://e.com/a",
+                "normalized_url": "https://e.com/a",
+                "domain": "e.com",
+                "title": "A",
+                "snippet": "摘要一",
+                "status": "snippet_only",
+                "modality": "text",
+                "discoveries": [{"provider": "serper", "turn": 1, "position": 1}],
+                "first_seen_turn": 1,
+                "last_seen_turn": 1,
+                "content_ref": None,
+                "aliases": [],
+            },
+            {
+                "source_id": 2,
+                "raw_url": "https://e.com/b",
+                "normalized_url": "https://e.com/b",
+                "domain": "e.com",
+                "title": "B",
+                "snippet": "",
+                "status": "fetched",
+                "modality": "text",
+                "discoveries": [],
+                "first_seen_turn": 1,
+                "last_seen_turn": 1,
+                "content_ref": None,
+                "aliases": [],
+            },
+        ]
+    }
+
+
+def test_references_numbering_matches_core_contract():
+    """M2：API 与 Demo 对同一运行展示相同编号与目标链接。"""
+    demo_main = _load_demo_main()
+    from src.io.report_structure import ReportStructureValidator
+
+    registry = _parity_registry()
+
+    core_refs = ReportStructureValidator.build_source_references(registry)
+    core_map = dict(re.findall(r"- \[(\d+)\] \[[^\]]*\]\(<([^>]+)>\)", core_refs))
+
+    linked = demo_main._linkify_reference_citations("结论 [1] 与 [2]。", registry)
+    demo_map = {
+        num: url
+        for url, num in re.findall(
+            r'href="([^"]+)"[^>]*class="ref-citation">\[(\d+)\]', linked
+        )
+    }
+
+    assert core_map == {"1": "https://e.com/a", "2": "https://e.com/b"}
+    assert demo_map == core_map

@@ -214,3 +214,263 @@ def test_prepare_does_not_use_confidence_as_answer():
         if ln.strip() and not ln.strip().startswith("<!--") and "置信度" not in ln
     ]
     assert any("1+1" in ln for ln in body_lines)
+
+
+class TestClaimTopology:
+    """Q4：只画已验证的结论—来源关系，未知/反驳用不同标记。"""
+
+    @staticmethod
+    def _registry(*entries):
+        return {"entries": list(entries)}
+
+    @staticmethod
+    def _entry(source_id, url, *, status="fetched", domain=None):
+        return {
+            "source_id": source_id,
+            "raw_url": url,
+            "normalized_url": url,
+            "domain": domain or url.split("//", 1)[1].split("/", 1)[0],
+            "title": f"T{source_id}",
+            "snippet": "",
+            "status": status,
+            "modality": "text",
+            "discoveries": [{"provider": "serper", "turn": 1, "position": source_id}],
+            "first_seen_turn": 1,
+            "last_seen_turn": 1,
+            "content_ref": None,
+            "aliases": [],
+        }
+
+    def test_draws_support_refute_and_unknown_edges(self):
+        from src.core.claim_verification import ClaimSupportMap, ClaimVerdict
+
+        registry = self._registry(
+            self._entry(1, "https://a.com/x"),
+            self._entry(2, "https://b.com/y"),
+            self._entry(3, "https://c.com/z"),
+        )
+        claim_map = ClaimSupportMap(
+            claims=[ClaimVerdict(claim="主张一", support=[1], refute=[2], unknown=[3])]
+        )
+
+        out = ensure_content_analysis_and_topology(
+            "## 结论\n\nX 与 Y 存在争议。\n",
+            detail_level="detailed",
+            claim_map=claim_map,
+            source_registry=registry,
+        )
+
+        assert "```mermaid" in out
+        assert "-->|支持|" in out
+        assert "==>|反驳|" in out
+        assert "-.->|未知|" in out
+        assert 'S1["[1] a.com"]' in out
+        assert "主张一" in out
+
+    def test_unverified_claim_points_at_evidence_gap(self):
+        from src.core.claim_verification import ClaimSupportMap, ClaimVerdict
+
+        registry = self._registry(
+            self._entry(1, "https://a.com/x", status="snippet_only")
+        )
+        claim_map = ClaimSupportMap(
+            claims=[ClaimVerdict(claim="仅有摘要的主张", support=[1])]
+        )
+
+        out = ensure_content_analysis_and_topology(
+            "## 结论\n\n有待核实的说法。\n",
+            detail_level="detailed",
+            claim_map=claim_map,
+            source_registry=registry,
+        )
+
+        assert "-.-> G" in out
+        assert "证据缺口" in out
+        assert "未核实" in out
+
+    def test_caption_does_not_imply_fact_checking(self):
+        from src.core.claim_verification import ClaimSupportMap, ClaimVerdict
+
+        registry = self._registry(self._entry(1, "https://a.com/x"))
+        claim_map = ClaimSupportMap(claims=[ClaimVerdict(claim="主张", support=[1])])
+
+        out = ensure_content_analysis_and_topology(
+            "## 结论\n\n正文。\n",
+            detail_level="detailed",
+            claim_map=claim_map,
+            source_registry=registry,
+        )
+
+        assert "不代表事实已核实" in out
+
+    def test_unregistered_source_is_not_drawn(self):
+        from src.core.claim_verification import ClaimSupportMap, ClaimVerdict
+
+        registry = self._registry(self._entry(1, "https://a.com/x"))
+        claim_map = ClaimSupportMap(claims=[ClaimVerdict(claim="主张", support=[1, 9])])
+
+        out = ensure_content_analysis_and_topology(
+            "## 结论\n\n正文。\n",
+            detail_level="detailed",
+            claim_map=claim_map,
+            source_registry=registry,
+        )
+
+        assert 'S1["[1] a.com"]' in out
+        assert "S9[" not in out
+
+    def test_conflict_fallback_still_applies_without_claim_map(self):
+        body = (
+            "## 冲突与不确定 / Conflicts & Uncertainties\n\n"
+            "- 甲方宣称命中能源设施。\n"
+            "- 乙方称拦截成功。\n"
+        )
+
+        out = ensure_content_analysis_and_topology(body, detail_level="detailed")
+
+        assert "```mermaid" in out
+        assert "议题争议" in out
+
+
+class TestClaimVerificationPipeline:
+    """M3×Q4 接线：编排层真实入口必须吃下 claim_map 与 source_registry。"""
+
+    @staticmethod
+    def _entry(source_id, url, *, status="fetched"):
+        return {
+            "source_id": source_id,
+            "raw_url": url,
+            "normalized_url": url,
+            "domain": url.split("//", 1)[1].split("/", 1)[0],
+            "title": f"T{source_id}",
+            "snippet": "",
+            "status": status,
+            "modality": "text",
+            "discoveries": [{"provider": "serper", "turn": 1, "position": source_id}],
+            "first_seen_turn": 1,
+            "last_seen_turn": 1,
+            "content_ref": None,
+            "aliases": [],
+        }
+
+    def test_prepare_threads_claim_map_into_topology(self):
+        from src.core.claim_verification import ClaimSupportMap, ClaimVerdict
+
+        registry = {"entries": [self._entry(1, "https://a.com/x")]}
+        claim_map = ClaimSupportMap(
+            claims=[ClaimVerdict(claim="营收同比增长 12%。", support=[1])]
+        )
+
+        out = prepare_user_facing_report(
+            "## 结论\n\n营收同比增长 12%。\n",
+            detail_level="detailed",
+            claim_map=claim_map,
+            source_registry=registry,
+        )
+
+        assert "```mermaid" in out
+        assert "-->|支持|" in out
+        assert "营收同比增长 12%。" in out
+        assert 'S1["[1] a.com"]' in out
+
+    def test_sanitized_map_draws_no_contradictory_edges(self):
+        """畸形裁决（同一来源既支持又反驳）经净化后只画一种边。"""
+        from src.core.claim_verification import (
+            ClaimSupportMap,
+            ClaimVerdict,
+            sanitize_claim_map,
+        )
+
+        registry = {
+            "entries": [
+                self._entry(1, "https://a.com/x"),
+                self._entry(2, "https://b.com/y"),
+            ]
+        }
+        raw = ClaimSupportMap(
+            claims=[ClaimVerdict(claim="主张", support=[1], refute=[1])]
+        )
+        clean = sanitize_claim_map(raw, ["主张"], registry)
+
+        out = ensure_content_analysis_and_topology(
+            "## 结论\n\n正文。\n",
+            detail_level="detailed",
+            claim_map=clean,
+            source_registry=registry,
+        )
+
+        assert "-->|支持|" not in out
+        assert "==>|反驳|" not in out
+        assert "-.->|未知|" in out
+
+    def test_no_certain_count_when_body_never_adjudicated(self):
+        """正文没进过裁决：即使 status=fetched 也不得写"N 个独立来源支持"。"""
+        from src.core.claim_verification import ClaimSupportMap, ClaimVerdict
+
+        registry = {
+            "entries": [
+                self._entry(1, "https://a.com/x"),
+                self._entry(2, "https://b.com/y"),
+            ]
+        }
+        claim_map = ClaimSupportMap(
+            claims=[ClaimVerdict(claim="主张", support=[1, 2])],
+            bodies_adjudicated=set(),
+        )
+
+        out = ensure_content_analysis_and_topology(
+            "## 结论\n\n正文。\n",
+            detail_level="detailed",
+            claim_map=claim_map,
+            source_registry=registry,
+        )
+
+        assert "独立来源支持" not in out
+        assert "未核实" in out
+        assert "证据缺口" in out
+
+    def test_prepare_without_claim_map_adds_no_claim_edges(self):
+        out = prepare_user_facing_report(
+            "## 结论\n\n营收同比增长 12%。\n", detail_level="detailed"
+        )
+
+        assert "```mermaid" not in out
+        assert "-->|支持|" not in out
+
+    def test_extracted_claims_feed_topology_end_to_end(self):
+        """extract_claims_from_report → claim_map → prepare 的真实链路。"""
+        from src.core.claim_verification import (
+            ClaimSupportMap,
+            ClaimVerdict,
+            extract_claims_from_report,
+        )
+
+        report = "## 结论\n\n- 营收同比增长 12% [1]。\n- 毛利率下滑至 18% [2]。\n"
+        claims = extract_claims_from_report(report, limit=5)
+        assert len(claims) == 2
+
+        registry = {
+            "entries": [
+                self._entry(1, "https://a.com/x"),
+                self._entry(2, "https://b.com/y", status="snippet_only"),
+            ]
+        }
+        claim_map = ClaimSupportMap(
+            claims=[
+                ClaimVerdict(claim=claims[0], support=[1]),
+                ClaimVerdict(claim=claims[1], support=[2]),
+            ]
+        )
+
+        out = prepare_user_facing_report(
+            report,
+            detail_level="detailed",
+            claim_map=claim_map,
+            source_registry=registry,
+        )
+
+        assert "```mermaid" in out
+        assert "营收同比增长 12%" in out
+        assert "毛利率下滑至 18%" in out
+        # 只有摘要的来源必须落进证据缺口
+        assert "证据缺口" in out

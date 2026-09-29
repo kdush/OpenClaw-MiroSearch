@@ -283,6 +283,21 @@ async def run_research_job(
                         exc,
                     )
 
+            source_registry = None
+            if (
+                pipeline_task.done()
+                and not pipeline_task.cancelled()
+                and pipeline_task.exception() is None
+            ):
+                pipeline_result = pipeline_task.result()
+                source_registry = (pipeline_result or {}).get("source_registry")
+                if isinstance(source_registry, dict) and isinstance(
+                    source_registry.get("entries"), list
+                ):
+                    await task_store.store_source_registry(task_id, source_registry)
+                else:
+                    source_registry = None
+
             # 检查结果
             if cancel_task in done:
                 # 取消
@@ -367,12 +382,18 @@ async def run_research_job(
                     await task_store.store_result(task_id, final_summary)
                 await task_store.update_task_status(task_id, TaskStatus.COMPLETED)
                 cache_quality = _validated_cache_quality(result_quality)
-                if final_summary and payload.cache_key and cache_quality is not None:
+                if (
+                    final_summary
+                    and payload.cache_key
+                    and cache_quality is not None
+                    and source_registry is not None
+                ):
                     try:
                         await task_store.store_cached_result(
                             payload.cache_key,
                             final_summary,
                             cache_quality,
+                            source_registry=source_registry,
                         )
                     except Exception as exc:  # noqa: BLE001
                         # 缓存是优化路径，写入失败不能把已完成的研究降级为失败。

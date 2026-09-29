@@ -64,10 +64,12 @@ def _make_generator(
     llm_client.format_token_usage_summary.return_value = ([], "")
     stream = MagicMock()
     stream.update = AsyncMock()
+    task_log = MagicMock()
+    task_log.source_registry.to_dict.return_value = {"entries": []}
     return AnswerGenerator(
         llm_client=llm_client,
         output_formatter=OutputFormatter(),
-        task_log=MagicMock(),
+        task_log=task_log,
         stream_handler=stream,
         cfg=cfg,
         intermediate_boxed_answers=list(intermediate_boxed_answers or []),
@@ -229,7 +231,7 @@ async def test_final_answer_returns_quality_for_displayable_body_fallback():
     assert result_quality["format_valid"] is False
     assert result_quality["fallback_used"] is True
     assert result_quality["answer_available"] is True
-    assert result_quality["issues"] == ["missing_boxed"]
+    assert result_quality["issues"] == ["missing_boxed", "no_citable_sources"]
 
 
 @pytest.mark.asyncio
