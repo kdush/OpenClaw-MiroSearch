@@ -95,6 +95,22 @@ def _count_llm_calls(routes: Any) -> int:
     return total
 
 
+def registry_entry_count(registry: Any) -> Optional[int]:
+    """注册表条目数（§7 的「M1 新增信号」）。
+
+    真实记录里 ``source_registry`` 是 ``{"entries": [...], "next_source_id": N}``
+    （``SourceRegistry.to_dict``），直接 ``len()`` 只会数出字典的键数（恒为 2），
+    把 M1 的收益系统性漏记——而这一列正是用来证明注册表落地的主要量化证据。
+    裸映射（键即条目）这一旧形态仍按键数计。
+    """
+    if not isinstance(registry, dict):
+        return None
+    entries = registry.get("entries")
+    if isinstance(entries, list):
+        return len(entries)
+    return len(registry)
+
+
 def case_metrics(record: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """从单条用例记录抽出 §7 可比指标；记录缺失时返回 None。"""
     if not record:
@@ -104,7 +120,6 @@ def case_metrics(record: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     gate = record.get("gate_evaluation") or {}
     structure = gate.get("structure_metadata") or {}
     issues = gate.get("structure_issues") or []
-    registry = record.get("source_registry") or {}
 
     return {
         "status": record.get("status"),
@@ -117,7 +132,7 @@ def case_metrics(record: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         "input_tokens": tokens.get("total_input_tokens"),
         "output_tokens": tokens.get("total_output_tokens"),
         "sources_discovered": len(record.get("source_urls") or []),
-        "registry_entries": len(registry) if isinstance(registry, dict) else None,
+        "registry_entries": registry_entry_count(record.get("source_registry")),
         "citation_count": structure.get("citation_count"),
         "unsourced_numbers": len(structure.get("unsourced_number_warnings") or []),
         "wrong_citations": sum(
@@ -175,14 +190,22 @@ def _delta(baseline: Any, candidate: Any) -> Optional[float]:
     return None
 
 
+def _case_ids(*runs: Dict[str, Dict[str, Any]]) -> List[str]:
+    """用例 id 集合；跳过 ``_`` 前缀的运行级元数据（如 ``_h5_compare``）。
+
+    元数据键不是用例：混进来会把「用例数」算多、并在逐用例表里多出一行空记录。
+    """
+    ids = {cid for run in runs for cid in run}
+    return sorted(cid for cid in ids if not str(cid).startswith("_"))
+
+
 def compare(
     baseline: Dict[str, Dict[str, Any]],
     candidate: Dict[str, Dict[str, Any]],
 ) -> Dict[str, Any]:
     """生成逐用例与运行级对比结果。"""
-    case_ids = sorted(set(baseline) | set(candidate))
     per_case: Dict[str, Any] = {}
-    for cid in case_ids:
+    for cid in _case_ids(baseline, candidate):
         b = case_metrics(baseline.get(cid))
         c = case_metrics(candidate.get(cid))
         deltas: Dict[str, Any] = {}
@@ -207,14 +230,18 @@ def compare(
     b_agg = aggregate(
         {
             cid: m
-            for cid, m in ((c, case_metrics(baseline.get(c))) for c in baseline)
+            for cid, m in (
+                (c, case_metrics(baseline.get(c))) for c in _case_ids(baseline)
+            )
             if m
         }
     )
     c_agg = aggregate(
         {
             cid: m
-            for cid, m in ((c, case_metrics(candidate.get(c))) for c in candidate)
+            for cid, m in (
+                (c, case_metrics(candidate.get(c))) for c in _case_ids(candidate)
+            )
             if m
         }
     )
@@ -254,6 +281,27 @@ def _verdict(key: str, delta: Optional[float]) -> str:
         return "~"
     improved = (delta < 0) if lower_better else (delta > 0)
     return "改善" if improved else "回归"
+
+
+def incomparable_reason(entry: Dict[str, Any]) -> Optional[str]:
+    """候选与基线不可比的判定；可比时返回 None。
+
+    候选未跑完而基线跑完时，候选侧的数字反映的是**中断状态**而不是代码质量：
+    限流打穿的用例耗时、检索次数、抓取量、来源数都会失真。拿它做方向性判定
+    等于把「环境容量阻塞」算成代码回归——路线图明确禁止。这类用例只列清单，
+    不计入回归判定，等重跑后再评。
+    """
+    baseline = entry.get("baseline")
+    candidate = entry.get("candidate")
+    if not baseline or not candidate:
+        return None  # 仅一侧有记录：本就无 delta，不需要额外标注
+    if baseline.get("status") == "completed" and candidate.get("status") != "completed":
+        return f"候选未完成（{candidate.get('status')}），基线为 completed"
+    return None
+
+
+def _is_comparable(entry: Dict[str, Any]) -> bool:
+    return incomparable_reason(entry) is None
 
 
 def render_markdown(
@@ -345,6 +393,25 @@ def render_markdown(
             )
         lines.append("")
 
+    lines.append("## 不可比用例")
+    lines.append("")
+    incomparable = [
+        (cid, incomparable_reason(e))
+        for cid, e in result["cases"].items()
+        if incomparable_reason(e)
+    ]
+    if incomparable:
+        lines.append(
+            "候选未跑完而基线跑完，数字反映中断状态而非代码质量，"
+            "**不计入方向性判定**，需重跑后再评："
+        )
+        lines.append("")
+        for cid, reason in incomparable:
+            lines.append(f"- `{cid}`：{reason}")
+    else:
+        lines.append("无：两侧用例均跑完。")
+    lines.append("")
+
     lines.append("## 未覆盖维度")
     lines.append("")
     lines.append(
@@ -395,18 +462,28 @@ def main() -> None:
         print(markdown)
 
     # 退出码：出现回归（方向已知且变差）即非零，便于 CI 卡口。
+    # 候选未跑完的用例不参与判定——限流/中断不是代码回归。
     regressions = [
         (cid, key)
         for cid, entry in result["cases"].items()
+        if _is_comparable(entry)
         for key, d in entry["delta"].items()
         if _verdict(key, d) == "回归"
     ]
+    incomparable = [
+        cid for cid, entry in result["cases"].items() if incomparable_reason(entry)
+    ]
+    if incomparable:
+        print(
+            f"\n[incomparable] {len(incomparable)} 个用例候选未完成，"
+            f"不计入回归判定：{', '.join(incomparable)}"
+        )
     if regressions:
         print(f"\n[verdict] REGRESSIONS={len(regressions)}")
         for cid, key in regressions[:20]:
             print(f"  - {cid}: {key}")
         sys.exit(1)
-    print("\n[verdict] PASS（无已知方向性回归）")
+    print("\n[verdict] PASS（可比用例中无已知方向性回归）")
     sys.exit(0)
 
 

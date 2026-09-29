@@ -58,7 +58,13 @@ def _record(
             "total_output_tokens": tokens_out,
         },
         "source_urls": [f"https://example.com/{i}" for i in range(source_urls)],
-        "source_registry": {str(i): {} for i in range(registry)},
+        # 生产形态：SourceRegistry.to_dict() -> {"entries": [...], "next_source_id": N}
+        "source_registry": {
+            "entries": [
+                {"source_id": i, "domain": "example.com"} for i in range(registry)
+            ],
+            "next_source_id": registry + 1,
+        },
         "gate_evaluation": {
             "structure_metadata": {
                 "citation_count": citation_count,
@@ -264,3 +270,94 @@ class TestFrozenBaselineIntegration:
         assert agg["total_input_tokens"] == 276956
         # H1 门禁记录 8 个无依据数字
         assert agg["total_unsourced_numbers"] == 8
+
+
+class TestRegistryEntryCount:
+    """注册表条目数必须按 ``entries`` 计，不能数字典键。"""
+
+    def test_counts_entries_list(self):
+        """回归：``{"entries": [...], "next_source_id": N}`` 直接 len() 恒为 2。"""
+        registry = {
+            "entries": [{"source_id": i} for i in range(28)],
+            "next_source_id": 29,
+        }
+        assert cmp.registry_entry_count(registry) == 28
+
+    def test_accepts_legacy_bare_mapping(self):
+        assert cmp.registry_entry_count({"1": {}, "2": {}}) == 2
+
+    def test_returns_none_for_missing_registry(self):
+        assert cmp.registry_entry_count(None) is None
+        assert cmp.registry_entry_count("nope") is None
+
+    def test_case_metrics_reports_entry_count(self):
+        record = _record(registry=7)
+        assert cmp.case_metrics(record)["registry_entries"] == 7
+
+
+class TestMetadataKeysAreNotCases:
+    """``_`` 前缀键是运行级元数据，不是用例。"""
+
+    def test_metadata_key_excluded_from_case_count(self):
+        """回归：``_h5_compare`` 混进用例集会把用例数算多一行。"""
+        baseline = {"A": _record(), "_h5_compare": {"profiles_differ": True}}
+        candidate = {"A": _record(), "B": _record(), "_h5_compare": {}}
+
+        result = cmp.compare(baseline, candidate)
+
+        assert set(result["cases"]) == {"A", "B"}
+        assert result["baseline_aggregate"]["cases"] == 1
+        assert result["candidate_aggregate"]["cases"] == 2
+
+    def test_metadata_key_absent_from_case_table(self):
+        run = {"A": _record(), "_h5_compare": {"profiles_differ": True}}
+        md = cmp.render_markdown(
+            cmp.compare(run, run), baseline_label="b", candidate_label="c"
+        )
+        assert "_h5_compare" not in md
+
+
+class TestIncomparableCases:
+    """候选未跑完的用例不得计入方向性回归判定。"""
+
+    def test_failed_candidate_is_incomparable(self):
+        baseline = {"B": _record()}
+        candidate = {"B": _record(status="failed")}
+
+        entry = cmp.compare(baseline, candidate)["cases"]["B"]
+
+        assert cmp.incomparable_reason(entry) is not None
+        assert cmp._is_comparable(entry) is False
+
+    def test_both_completed_is_comparable(self):
+        run = {"B": _record()}
+        entry = cmp.compare(run, run)["cases"]["B"]
+
+        assert cmp.incomparable_reason(entry) is None
+        assert cmp._is_comparable(entry) is True
+
+    def test_candidate_only_case_is_not_flagged(self):
+        """只有候选有记录时本就没有 delta，不必额外标注为不可比。"""
+        entry = cmp.compare({}, {"C": _record()})["cases"]["C"]
+
+        assert cmp.incomparable_reason(entry) is None
+
+    def test_markdown_lists_incomparable_cases(self):
+        baseline = {"B": _record(), "A": _record()}
+        candidate = {"B": _record(status="failed"), "A": _record()}
+
+        md = cmp.render_markdown(
+            cmp.compare(baseline, candidate), baseline_label="b", candidate_label="c"
+        )
+
+        assert "## 不可比用例" in md
+        assert "`B`" in md
+
+    def test_markdown_says_none_when_all_comparable(self):
+        run = {"A": _record()}
+        md = cmp.render_markdown(
+            cmp.compare(run, run), baseline_label="b", candidate_label="c"
+        )
+
+        assert "## 不可比用例" in md
+        assert "无：两侧用例均跑完。" in md
