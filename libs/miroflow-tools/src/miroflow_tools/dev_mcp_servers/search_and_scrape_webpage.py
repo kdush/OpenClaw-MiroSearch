@@ -39,7 +39,7 @@ from .providers.searxng import SearxngPrecheckError, SearXNGProvider
 from .providers.serpapi import SerpAPIProvider
 from .providers.serper import SerperProvider
 from .providers.tavily import TavilyProvider
-from .providers.tiering import TIER_SINGLE, resolve_provider_tier
+from .providers.tiering import resolve_provider_tier
 
 # Configure logging
 logger = logging.getLogger("miroflow")
@@ -410,7 +410,16 @@ def _ensure_confidence_evaluated(
     """串行回退/合并模式同样产出置信度，否则该门控只在并发路由下生效。"""
     if search_params.get("confidence") is not None:
         return
-    covered = providers_with_results or {str(search_params.get("provider", "")).strip()}
+    # 合并模式会写明真实产出结果的 provider 列表（多路），回退模式没有该字段，
+    # 退回单个 provider 名；并发分支已自行评估过 confidence，不会走到这里。
+    reported = search_params.get("providers_with_results")
+    if not isinstance(reported, list):
+        reported = []
+    covered = (
+        providers_with_results
+        or {str(name) for name in reported}
+        or {str(search_params.get("provider", "")).strip()}
+    )
     allowed = search_params.get("provider_order")
     if not isinstance(allowed, list):
         allowed = None
@@ -464,34 +473,38 @@ def _recompute_tier_from_health(
     )
 
 
-def _converge_serial_fallback_tier(
+def _converge_tier_to_single_route(
     decision,
-    contributors: List[str],
+    contributor: str,
     *,
     phase: str,
+    detail: str,
 ):
-    """串行回退命中即返回：有效路由只有实际出结果的 provider。
+    """本次实际只有一路 provider 贡献结果：把档位、门槛与有效路由收敛到那一路。
 
-    ``_recompute_tier_from_health`` 只在有 provider 失败时降档；但回退模式第一路
-    正常返回时没有任何失败，后面的 provider 根本没被调用，而预先算出的
-    ``multi-provider`` 档仍要求两路覆盖——置信门槛对本次路由结构性不可达，
-    正常成功的检索也会被判 ``passed=false``。这里按"实际贡献了结果的 provider"
-    收敛档位与覆盖门槛；已经收敛过（门槛 ≤ 1）或确实有多路出结果时不改动。
+    ``_recompute_tier_from_health`` 只在有 provider 失败时降档；但有两条路径
+    **没有任何失败**、却让预先算出的 ``multi-provider`` 档结构性不可达：
+    串行回退第一路正常返回就结束（后面的 provider 根本没被调用），以及聚合检索
+    只有一路产出结果。此时门槛仍要求两路覆盖，正常成功的检索也会被判
+    ``passed=false``。这里把生效档位、profile、覆盖门槛与有效路由一并收敛到实际
+    出结果的 provider；已经收敛过（门槛 ≤ 1）时不改动。
     """
-    effective = [name for name in decision.effective_order if name in contributors]
-    if not effective:
-        effective = list(contributors)
-    if len(effective) >= 2 or decision.min_provider_coverage <= 1:
+    if decision.min_provider_coverage <= 1:
         return decision
+    # 档位、profile 与 strict 口径都交回 tiering 决定，这里不维护第二份
+    # provider → profile 对照：严格路由保持配置的 profile，自动路由才落单路 profile。
+    converged = resolve_provider_tier(
+        SEARCH_PROFILE,
+        [contributor],
+        requested_order=SEARCH_PROVIDER_ORDER,
+        strict=decision.strict,
+    )
     return replace(
-        decision,
-        tier=TIER_SINGLE,
-        min_provider_coverage=1,
-        effective_order=effective,
+        converged,
         degraded_from=decision.tier,
         reason=(
-            f"{phase}命中即返回，本次仅 {', '.join(effective)} 出结果，"
-            f"档位收敛为单路（原 {decision.tier}）"
+            f"{phase}{detail}，档位收敛为单路"
+            f"（本次仅 {contributor} 出结果，原 {decision.tier}）"
         ),
     )
 
@@ -877,7 +890,13 @@ async def google_search(
                         merged_results = _merge_provider_results(
                             providers, provider_results_map, result_num
                         )
-                        if len(merged_results) >= result_num:
+                        # 聚合的卖点是交叉验真：结果够了也要先凑齐覆盖门槛再停，
+                        # 否则 multi-route 会退化成"只调一路"，门槛结构性不可达。
+                        if (
+                            len(merged_results) >= result_num
+                            and len(provider_results_map)
+                            >= tier_decision.min_provider_coverage
+                        ):
                             break
                     except Exception as exc:
                         merge_failed.add(provider)
@@ -888,10 +907,19 @@ async def google_search(
                             str(exc),
                         )
 
+                contributors = sorted(provider_results_map)
                 # M5: 聚合路径同样按运行中健康情况降档，门槛不落后于实际路由。
                 tier_decision = _recompute_tier_from_health(
                     tier_decision, providers, merge_failed, phase="聚合检索"
                 )
+                # 另一路失败或无结果，实际只有一路贡献 → 覆盖门槛不可达，收敛为单路。
+                if len(contributors) == 1:
+                    tier_decision = _converge_tier_to_single_route(
+                        tier_decision,
+                        contributors[0],
+                        phase="聚合检索",
+                        detail="只有一路产出结果",
+                    )
                 provider_tier = tier_decision.to_dict()
 
                 return (
@@ -905,6 +933,7 @@ async def google_search(
                         "provider": "multi-route",
                         "provider_mode": "merge",
                         "provider_order": providers,
+                        "providers_with_results": contributors,
                         "provider_tier": provider_tier,
                         "searxng_only_downgraded": searxng_only_downgraded,
                         "searxng_only_downgrade_added": searxng_only_downgrade_added,
@@ -929,10 +958,11 @@ async def google_search(
                         )
                         # 命中即返回：本次只走到这一路，multi-provider 的两路覆盖
                         # 门槛不可达，须把有效档位收敛为单路。
-                        tier_decision = _converge_serial_fallback_tier(
+                        tier_decision = _converge_tier_to_single_route(
                             tier_decision,
-                            [provider],
+                            provider,
                             phase="串行回退",
+                            detail="命中即返回",
                         )
                         search_params["provider_mode"] = "fallback"
                         search_params["provider_order"] = providers

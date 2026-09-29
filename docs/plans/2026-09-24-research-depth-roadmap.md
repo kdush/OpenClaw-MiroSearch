@@ -269,15 +269,15 @@ deep/hotspot 用例会被限流打穿。
 | Q4 拓扑丰富 | `report_presentation.ensure_content_analysis_and_topology` | `test_report_presentation.py`（22 例）：支持/反驳/未知边、证据缺口、未登记来源不画、无 claim_map 时不加边、抽取主张端到端入图；**v3 新增**净化后的映射不再画互相矛盾的两种边、正文未参与裁决时不写确定支持数 |
 | Q1 渲染器 | `apps/gradio-demo/static/js/mermaid_render.js` | `test_static_assets.py::test_mermaid_renderer_is_strict_and_keeps_plaintext_fallback`（strict + 纯文本回退） |
 | M4 线索链 | `lead_tracker.snapshot()` / `get_trace()`；`orchestrator` 日志元数据 `lead_trace` | `test_lead_tracker.py`（11 例）：快照/reason/序列化 |
-| M5 分档 | `providers/tiering.py`，`search_and_scrape_webpage.perform_search` 消费档位与门槛；`_recompute_tier_from_health` 运行中重算；`_converge_serial_fallback_tier` 串行回退收敛 | `test_provider_tiering.py`（9 例）：单 Serper、单 SearXNG、多 provider 升档、无凭据、中途超时降档、严格路由不静默扩档、每档门槛可达；**`test_search_runtime_tier_downgrade.py`（4 例）**：google_search 级一路超时后档位降为单 provider、门槛降为 1、`degraded_from`/原因可归因，两路健康时不降档，串行回退路径同样降档，**v4 新增**串行回退第一路正常成功、第二路未调用时收敛为单路且 `confidence.passed is True`；§9.1 真机证据 |
+| M5 分档 | `providers/tiering.py`，`search_and_scrape_webpage.perform_search` 消费档位与门槛；`_recompute_tier_from_health` 运行中重算；`_converge_tier_to_single_route` 串行回退 / 聚合收敛 | `test_provider_tiering.py`（9 例）：单 Serper、单 SearXNG、多 provider 升档、无凭据、中途超时降档、严格路由不静默扩档、每档门槛可达；**`test_search_runtime_tier_downgrade.py`（8 例）**：google_search 级一路超时后档位降为单 provider、门槛降为 1、`degraded_from`/原因可归因，两路健康时不降档，串行回退路径同样降档，**v4 新增**串行回退第一路正常成功、第二路未调用时收敛为单路且 `confidence.passed is True`，严格路由下收敛只降门槛、`strict` 与配置 profile 保持自洽，**v5 新增**聚合模式先补齐覆盖门槛再停、真实写出 `providers_with_results`，另一路失败或空结果时收敛为单路；§9.1 真机证据 |
 
 **本轮额外修复（提供商中立）：** summary/fast 阶段的「关闭思考」参数由**无条件下发**改为
 **能力自适应**——先尝试下发，被 `400` 拒绝即剥离该可选参数重试一次且**不消耗
 `max_retries`**；判定只看状态码，不匹配任何模型名或提供商文案。此前用模型名前缀黑名单
 的做法已废弃（违背「系统不绑定特定 LLM 提供商」的架构约束）。
 
-**测试与 lint 状态（2026-09-29 v4 复核）：** `apps/miroflow-agent` 374 passed / 7 skipped；
-`libs/miroflow-tools` 133 passed；`apps/gradio-demo` 132 passed；
+**测试与 lint 状态（2026-09-29 v5 复核）：** `apps/miroflow-agent` 374 passed / 7 skipped；
+`libs/miroflow-tools` 137 passed；`apps/gradio-demo` 132 passed；
 `apps/api-server` 203 passed / 13 skipped；`ruff check .` 全绿、`format --check` 干净。
 
 **CI 现状（v3 修复）：** `.github/workflows/run-tests.yml` 与 `run-ruff.yml` 原先带
@@ -346,11 +346,38 @@ python scripts/compare_acceptance_runs.py \
 | # | 问题（复现） | 修复 | 回归测试 |
 |---|---|---|---|
 | 1 | **M3 只截正文前 600 字，仍可能把"摘要支持、正文反驳"报成确定支持**：`adjudication_source_view` 把任何非空的前 600 字片段记为 `bodies_adjudicated`，`independent_support` 随后允许输出精确来源数，却**没有要求 support 的依据片段出现在这段正文里**。复现：两条来源摘要称 X 成立，正文开头是无关背景、600 字之后明确反驳 X；反驳部分没进 prompt，裁决据摘要返回 `support=[1,2]` 后仍输出"2 个独立来源支持" | 新增 `_evidence_grounded`：判为 `support`/`refute` 的来源必须在 `evidence` 里给出**可在该来源实际传入的 `body_excerpt` 中逐字核对**的片段；核对不上（依据其实来自 `snippet`，或反证落在截取边界之外）一律不给确定数。`ClaimSupportMap` 新增 `body_excerpts`（来源编号 → 实际传入的片段文本），`adjudication_source_view` / `_prompt_and_bodies` 改为返回该映射，`independent_support` 新增 `body_excerpts` 参数。裁决 prompt 增补规则 6，要求逐字复制依据、依据只来自摘要时改判 `unknown` | `test_claim_verification.py`：`test_refutation_beyond_excerpt_boundary_gives_no_certain_count`（真实裁决输入 + 计数路径，断言反驳句不在 prompt 里、摘要进了 prompt、仍不输出确定数）、`test_evidence_outside_passed_excerpt_is_not_grounded`（依据落在片段外 vs 落在片段内）；`test_readable_body_keeps_two_source_support_certain` 改为带可核对依据的正例 |
-| 2 | **M5 两 provider 均可用时，正常串行回退的置信门槛不可达**：`SEARCH_PROVIDER_MODE=fallback` 配 `first`/`second` 时，`first` 正常返回即结束，`second` 根本不会被调用（没有任何"失败"，`_recompute_tier_from_health` 不降档），而预先算出的 `provider_tier` 仍是 `multi-provider`、`min_provider_coverage=2` → 复现 `called=['first']`、覆盖门槛 2、`passed=false` | 新增 `_converge_serial_fallback_tier`：串行回退命中即返回时按"实际出结果的 provider"把本次有效档位与覆盖门槛收敛为单路（`degraded_from` 记原档位）；已收敛过或确实多路出结果时不改动。回退"命中即返回"的语义保持不变 | `test_search_runtime_tier_downgrade.py::test_serial_fallback_success_converges_to_single_route`：断言 `called == ["first"]`（第二路未调用）、档位 `single-provider`、门槛 1、`degraded_from=multi-provider`、`confidence.passed is True` |
+| 2 | **M5 两 provider 均可用时，正常串行回退的置信门槛不可达**：`SEARCH_PROVIDER_MODE=fallback` 配 `first`/`second` 时，`first` 正常返回即结束，`second` 根本不会被调用（没有任何"失败"，`_recompute_tier_from_health` 不降档），而预先算出的 `provider_tier` 仍是 `multi-provider`、`min_provider_coverage=2` → 复现 `called=['first']`、覆盖门槛 2、`passed=false` | 新增 `_converge_serial_fallback_tier`（v5 已泛化并改名为 `_converge_tier_to_single_route`，见 §9.7）：串行回退命中即返回时把本次生效档位、profile、覆盖门槛与有效路由一并收敛到实际出结果的那一路（`degraded_from` 记原档位；档位 / profile / strict 口径统一交回 `resolve_provider_tier` 决定，严格路由保持配置的 profile）；已收敛过时不改动。回退"命中即返回"的语义保持不变 | `test_search_runtime_tier_downgrade.py`：`test_serial_fallback_success_converges_to_single_route`（断言 `called == ["first"]`、第二路未调用、档位 `single-provider`、profile 收敛为 `serp-first`、门槛 1、`degraded_from=multi-provider`、`confidence.passed is True`）、`test_strict_serial_fallback_converges_without_rewriting_profile`（严格路由下收敛只降门槛，`strict` 与配置 profile 保持自洽） |
 | 3 | **合并后的编号在序列化往返后会复用**：搜索先产生 ID 1、2，重定向合并后只留 ID 1；同进程注册新来源得 ID 3，但 `to_dict()` → `SourceRegistry(**snapshot)` 后注册同一新来源得 ID 2（`_next_source_id` 是私有属性，不进快照），`TaskLog.from_dict` 确有这条恢复路径 → 旧引用 `[2]` 会错指新来源 | 编号计数器改为 **dataclass 字段** `next_source_id`（`TaskLog.to_dict/to_json` 走 `dataclasses.asdict`，只认字段，私有属性不会被序列化）；`__post_init__` 取「快照计数器」与「条目 `max(source_id)+1`」的较大值，`_ensure_entry` 直接递增该字段 | `test_source_registry_contract.py::TestRedirectCanonicalIdentity::test_merged_ids_survive_serialization_round_trip`：合并 → 快照（`next_source_id == 3`）→ 恢复 → 注册新来源得 ID 3、二次往返仍单调递增 |
 
 **本轮测试规模：** `apps/miroflow-agent` 由 371 增至 374 passed / 7 skipped；
-`libs/miroflow-tools` 由 132 增至 133 passed；`gradio-demo` 132 passed；
+`libs/miroflow-tools` 由 132 增至 134 passed；`gradio-demo` 132 passed；
 `api-server` 203 passed / 13 skipped；`ruff check`、`ruff format --check` 全绿。
 三项修复对应的回归测试均已在**回退到修复前源码**时确认失败（非空转断言）。
 
+
+### 9.7 聚合（merge）模式置信门槛必然失败（2026-09-29 自查，评审未点名）
+
+三轮评审未覆盖聚合路径。自查复现后发现它是**必然触发**（非概率）的结果正确性问题：
+`SEARCH_PROVIDER_MODE=merge` + ≥2 个可用 provider 时，confidence **100% 判 `passed=false`**。
+
+| # | 问题（复现） | 修复 | 回归测试 |
+|---|---|---|---|
+| 1 | **覆盖率恒为 1**：`merge` 分支返回的 `search_params` 只硬编码 `provider="multi-route"`，**从不写 `providers_with_results`**；而 `_ensure_confidence_evaluated` 的兜底是 `{search_params["provider"]}` → `provider_coverage` 恒为 1，**即使两路都调用了**（实测 `called=['first','second']` 时覆盖率仍是 1）。对照：并发分支会传 `providers_with_results` | `merge` 分支写出真实产出结果的 provider 列表 `providers_with_results`；`_ensure_confidence_evaluated` 的兜底链改为「显式参数 → `search_params["providers_with_results"]` → `provider`」 | `test_merge_mode_fills_coverage_floor_before_stopping`：断言两路都被调用、`providers_with_results == ["first","second"]`、覆盖率 2、门槛 2、`passed is True` |
+| 2 | **提前 break 让门槛不可达**：`len(merged_results) >= result_num: break` 使第一路返回够数即停，`second` 根本不调用；此时没有任何“失败”，`_recompute_tier_from_health` 不降档 → 档位仍是 `multi-provider`、门槛 2 → 正常成功的聚合检索被判 `passed=false`。而聚合的卖点正是交叉验真，**结果既没交叉、又被判置信不足** | break 条件补上覆盖门槛：`len(merged_results) >= result_num and len(provider_results_map) >= tier_decision.min_provider_coverage`（结果够了也要先凑齐门槛再停） | 同上（`first_count > num` 时仍须调用第二路） |
+| 3 | **只有一路贡献时档位不收敛**：另一路失败（进 `merge_failed`）或返回空结果（不进 `merge_failed`）时实际只有一路贡献，档位却可能仍停在 `multi-provider`（门槛 2）→ `passed=false` | `_converge_serial_fallback_tier` 泛化为 `_converge_tier_to_single_route`（`reason` 由 `detail` 参数化，串行回退传“命中即返回”、聚合传“只有一路产出结果”）；`merge` 分支在 `len(contributors) == 1` 时收敛档位与门槛 | `test_merge_mode_single_contributor_converges_to_single_route`（参数化 `raise` / `empty`）：断言档位收敛为 `single-provider`、门槛 1、覆盖率 1、`passed is True` |
+
+**影响链（为什么必须修）**：`multi-route` profile 在 `apps/api-server/services/profile_resolver.py` 与
+`apps/gradio-demo/main.py` 中都映射到 `SEARCH_PROVIDER_MODE=merge`，且 `tiering._MULTI_PROFILE`
+就是 `multi-route`——即**自动升档到多 provider 时选用的正是它**。`confidence.passed=false` 会让
+`orchestrator._record_retrieval_confidence` 不置位 `retrieval_confidence_passed`，进而
+`_should_early_stop_deep` 的置信早停分支不可达、`_verification_requirements_met` 退回
+“高置信来源数”判定 → deep 档多跑检索轮次、验证阶段反复追加检索，白烧 token 与时间。
+
+**语义取舍**：本轮把“结果够了就停”改为“满足覆盖门槛才停”，代价是聚合至少调用两路；
+换来 `multi-route` 名副其实（真的交叉验真），且 `provider_coverage` 与 `min_provider_coverage` 自然对齐。
+另一路确实失败/空结果时仍收敛为单路，不硬撑门槛。
+
+**本轮测试规模：** `libs/miroflow-tools` 由 134 增至 137 passed（新增 1 例 + 1 例参数化 2 项）；
+`apps/miroflow-agent` 374 passed / 7 skipped 不变；`ruff check`、`ruff format --check` 全绿。
+三个新回归测试均已在**回退到修复前源码**时确认失败，且失败点各自指向对应根因
+（`called` 只有一路 / 档位仍为 `multi-provider` / 缺 `providers_with_results`）。

@@ -293,9 +293,188 @@ async def test_serial_fallback_success_converges_to_single_route(monkeypatch):
     assert tier["min_provider_coverage"] == 1
     assert tier["effective_order"] == ["first"]
     assert tier["degraded_from"] == "multi-provider"
+    # profile 也随生效档位收敛，不能留着 multi-route（记录须与实际路由自洽）
+    assert tier["profile"] == "serp-first"
     assert "first" in tier["reason"]
 
     # 门槛随有效档位收敛，正常成功的检索不再被判失败
     assert params["confidence"]["constraints"]["min_provider_coverage"] == 1
     assert params["confidence"]["metrics"]["provider_coverage"] == 1
     assert params["confidence"]["passed"] is True
+
+
+def test_strict_serial_fallback_converges_without_rewriting_profile(monkeypatch):
+    """严格路由下收敛只降覆盖门槛，不得把配置的 profile 换成单路 profile。"""
+    from dataclasses import replace
+
+    from miroflow_tools.dev_mcp_servers.providers.tiering import resolve_provider_tier
+
+    search_mod = _reload(monkeypatch)
+    monkeypatch.setattr(search_mod, "SEARCH_PROFILE", "searxng-only")
+    monkeypatch.setattr(search_mod, "SEARCH_PROVIDER_ORDER", "first,second")
+
+    decision = replace(
+        resolve_provider_tier(
+            "searxng-only",
+            ["first", "second"],
+            requested_order="first,second",
+            strict=True,
+        ),
+        effective_order=["first", "second"],
+    )
+    assert decision.min_provider_coverage == 2
+
+    converged = search_mod._converge_tier_to_single_route(
+        decision, "first", phase="串行回退", detail="命中即返回"
+    )
+    assert converged.tier == "single-provider"
+    assert converged.min_provider_coverage == 1
+    assert converged.effective_order == ["first"]
+    # strict 与 profile 必须自洽：严格路由保持配置的 profile
+    assert converged.strict is True
+    assert converged.profile == "searxng-only"
+
+
+def _merge_registry(*, first_count: int = 5, second_behavior: str = "ok"):
+    """构造聚合场景的注册表：first 返回 ``first_count`` 条，second 行为可控。
+
+    ``first_count > num`` 用来验证"第一路结果已够 result_num，也必须补齐覆盖门槛
+    再停"；``first_count < num`` 则让 first 不足以触发提前停止，从而把"另一路
+    失败/空结果"单独隔离成自变量。
+    """
+    from miroflow_tools.dev_mcp_servers.providers.base import SearchResult
+    from miroflow_tools.dev_mcp_servers.providers.registry import ProviderRegistry
+
+    called: list[str] = []
+
+    def _hits(name, domain, count):
+        return [
+            SearchResult(
+                position=i,
+                title=f"{name}-{i}",
+                link=f"https://{domain}/article/{i}",
+                snippet="s",
+            )
+            for i in range(1, count + 1)
+        ]
+
+    class _First:
+        @property
+        def name(self):
+            return "first"
+
+        def is_available(self):
+            return True
+
+        async def search(self, _params):
+            called.append("first")
+            return (
+                _hits("first", "www.reuters.com", first_count),
+                {"provider": "first"},
+            )
+
+    class _Second:
+        @property
+        def name(self):
+            return "second"
+
+        def is_available(self):
+            return True
+
+        async def search(self, _params):
+            called.append("second")
+            if second_behavior == "raise":
+                raise RuntimeError("second unavailable")
+            if second_behavior == "empty":
+                return ([], {"provider": "second"})
+            return (_hits("second", "apnews.com", 5), {"provider": "second"})
+
+    registry = ProviderRegistry()
+    registry.register(_First())
+    registry.register(_Second())
+    return registry, called
+
+
+def _reload_for_merge(
+    monkeypatch, *, first_count: int = 5, second_behavior: str = "ok"
+):
+    search_mod = _reload(monkeypatch)
+    monkeypatch.setenv("SEARCH_PROVIDER_ORDER", "first,second")
+    monkeypatch.setenv("SEARCH_PROVIDER_MODE", "merge")
+    monkeypatch.setenv("SEARCH_PROFILE", "multi-route")
+    sys.modules.pop(_MODULE, None)
+    search_mod = importlib.import_module(_MODULE)
+
+    registry, called = _merge_registry(
+        first_count=first_count, second_behavior=second_behavior
+    )
+    monkeypatch.setattr(search_mod, "_registry", registry)
+    monkeypatch.setattr(search_mod, "SEARCH_PROVIDER_ORDER", "first,second")
+    monkeypatch.setattr(search_mod, "SEARCH_PROVIDER_MODE", "merge")
+    monkeypatch.setattr(search_mod, "SEARCH_PROFILE", "multi-route")
+    return search_mod, called
+
+
+@pytest.mark.asyncio
+async def test_merge_mode_fills_coverage_floor_before_stopping(monkeypatch):
+    """聚合模式的卖点是交叉验真：第一路结果够了也必须补齐覆盖门槛再停。
+
+    回归：``merge`` 分支原先「结果够 result_num 就 break」，第一路返回够数即停、
+    second 从未被调用；且返回的 ``search_params`` 只硬编码 ``provider="multi-route"``、
+    不写 ``providers_with_results`` → 置信覆盖率恒为 1，而档位仍是 ``multi-provider``
+    门槛 2 → 正常成功的聚合检索被判 ``passed=false``（实测必然触发，与只调一路无关）。
+    """
+    search_mod, called = _reload_for_merge(monkeypatch)
+
+    payload = json.loads(await search_mod.google_search("test query", num=3))
+    params = payload["searchParameters"]
+
+    # 第一路已够 result_num，但覆盖门槛未满足 → 必须继续调第二路
+    assert called == ["first", "second"]
+    assert params["providers_with_results"] == ["first", "second"]
+
+    tier = params["provider_tier"]
+    assert tier["tier"] == "multi-provider"
+    assert tier["min_provider_coverage"] == 2
+
+    confidence = params["confidence"]
+    assert confidence["metrics"]["provider_coverage"] == 2
+    assert confidence["constraints"]["min_provider_coverage"] == 2
+    assert confidence["passed"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("second_behavior", ["raise", "empty"])
+async def test_merge_mode_single_contributor_converges_to_single_route(
+    monkeypatch, second_behavior
+):
+    """聚合时只有一路真正产出结果：覆盖门槛不可达 → 收敛为单路。
+
+    回归：first 只返回 1 条（不足以提前停止），第二路失败（``raise``，进
+    ``merge_failed``）或返回空结果（``empty``，不进 ``merge_failed``）时实际只有
+    一路贡献。``empty`` 分支修复前档位不会降档（无失败），门槛仍为 2 而覆盖率只有
+    1 → 正常成功的聚合检索被判 ``passed=false``；``raise`` 分支虽能靠
+    ``_recompute_tier_from_health`` 降档，但返回里没有真实的 ``providers_with_results``，
+    覆盖率只能拿 ``provider="multi-route"`` 兜底，记录与实际路由并不自洽。
+    """
+    search_mod, called = _reload_for_merge(
+        monkeypatch, first_count=1, second_behavior=second_behavior
+    )
+
+    payload = json.loads(await search_mod.google_search("test query", num=3))
+    params = payload["searchParameters"]
+
+    assert called == ["first", "second"]
+
+    tier = params["provider_tier"]
+    assert tier["tier"] == "single-provider"
+    assert tier["min_provider_coverage"] == 1
+    assert tier["degraded_from"] == "multi-provider"
+
+    confidence = params["confidence"]
+    assert confidence["metrics"]["provider_coverage"] == 1
+    assert confidence["constraints"]["min_provider_coverage"] == 1
+    assert confidence["passed"] is True
+
+    # 记录必须写明真实产出结果的 provider，而不是让覆盖率退回 provider="multi-route"
+    assert params["providers_with_results"] == ["first"]
