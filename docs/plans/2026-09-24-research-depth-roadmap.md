@@ -1,9 +1,10 @@
 # 谛听研究深度与证据可信度优化方案（评审回填版）
 
 - **日期：** 2026-09-24（v2，回填外部评审意见）
-- **状态：** §0 已提交（0334af2），失败/空抓取不计证据与中性撤销提示已合入；阶段 A 基线与契约已冻结；M1 已完成离线验收；M2 + Q2/Q3 代码接线已接通；阶段 B 验收清单 fixture 已补齐（见 §阶段 B）；M3/Q4/Q1/M4/M5 的**代码、测试与主流程接线均已落地并逐项核验**（核验记录见 §9.3）。**真实 LLM 验收的欠费阻塞已解除**（§9.2，改用免费模型 `glm-4.7-flash`），M3 端到端与「一份可查看的真实报告」已达成；**但免费档容量有限**——§7 三件套复跑中 light 用例忠实通过，deep / hotspot 用例被 `429 code 1305` 限流打穿（§9.2.1），故全量 16 个用例仅 A、H5B 通过；另有主动暂缓的 P1/D1–D3。实现层无欠账。
+- **状态：** §0 已提交（0334af2），失败/空抓取不计证据与中性撤销提示已合入；阶段 A 基线与契约已冻结；M1 已完成离线验收；M2 + Q2/Q3 代码接线已接通；阶段 B 验收清单 fixture 已补齐（见 §阶段 B）；M3/Q4/Q1/M4/M5 的**代码、测试与主流程接线均已落地并逐项核验**（核验记录见 §9.3）。**真实 LLM 验收的欠费阻塞已解除**（§9.2，改用免费模型 `glm-4.7-flash`），M3 端到端与「一份可查看的真实报告」已达成；**但免费档容量有限**——§7 三件套复跑中 light 用例忠实通过，deep / hotspot 用例被 `429 code 1305` 限流打穿（§9.2.1），故全量 16 个用例仅 A、H5B 通过；另有主动暂缓的 P1/D1–D3。**v3 已修复二轮评审的 4 项阻塞（§9.5）：M3 裁决输入/计数口径对齐、空抓取与重定向身份、裁决校验进入出稿路径、M5 运行中降档接入实际检索路径；CI 守卫已修复，检查会真实执行。**
 - **分支：** `feat/diting-research-quality-ui`
 - **v2 变更说明：** 按评审修正两处过期事实（provider 覆盖门槛、API 报告模式）；新增本 PR 合并门槛（§0）、数据契约（阶段 A）、统一完成标准（§7）；Q2/Q3 移出快赢批次改为与 M2 同批交付；移除未实测的工期估计；M3 计数口径、M5 范围按评审裁决收窄。
+- **v3 变更说明（2026-09-29，二轮评审阻塞项）：** 修正 4 处「把未核实展示成已有独立来源支持」的边界——裁决只喂摘要却按 `status=fetched` 精确计数、空抓取被标成已抓取全文、重定向两端各留一个已抓取 `source_id`、裁决结果未经校验直接出稿；并把 M5 运行中降档从纯函数接进真实检索路径（此前完成声明超前于实现）。
 - **关联文档：** [2026-09-24-jev-search-borrowing.md](./2026-09-24-jev-search-borrowing.md)（对标评审，已同步更正两处事实错误）；[2026-09-24-phase-a-baseline-and-source-contract.md](./2026-09-24-phase-a-baseline-and-source-contract.md)（阶段 A 设计稿：A-1 基线协议 + A-2~A-5 数据契约，代码事实已核实）
 
 ---
@@ -117,6 +118,8 @@
 
 - **M3 结论核验：** 先产出结构化映射「结论/关键主张 → source_id → 支持/反驳/未知 → 依据片段」，**再**计算独立支持数。计数单位 = 能明确支持该主张的**独立原始来源**——provider 数、检索命中数、域名数都不能直接代替。转载/同一原文合并计数；互相矛盾的可信来源在报告中显式保留。证据不足或独立性无法判定时写「未核实/来源不足」，**不让 prompt 猜一个精确 N**。`report_structure.py` 承担可机械验证的结构检查；语义支持判断需明确的裁决结果与失败回退，**不把结构门称作事实核验**。
 - **M3 fixture：** 同 URL 两引擎命中、跨域转载、两来源支持同一主张、两个可信来源互相反驳、摘要与全文冲突、无依据结论。
+- **M3 裁决输入与计数口径必须一致（v3）：** 裁决 prompt 通过来源的 `content_ref` 取回**有来源定位、长度受控（≤600 字）**的正文片段；计数只认"正文确实进过 prompt"的来源集合（`bodies_adjudicated`），**不再**凭 `status=fetched` 推断"已读全文"。正文读不到时该来源的支持判定一律保持"未核实"。
+- **M3 裁决结果先校验再出稿（v3）：** `sanitize_claim_map` 在使用前收敛模型输出——主张必须来自本次输入（表外结论丢弃、重复主张只留第一条）、来源编号必须可引用、支持/反驳/未知三个集合互斥（自相矛盾的来源降为 `unknown`）；`validate_claim_map` 的畸形项留 warning 审计。
 - **Q4 拓扑丰富：** 只画**已验证的**结论—来源关系；未知/反驳边用不同标记；不把「可点击」误呈现为「已证实」。节点从「议题 + ≤4 冲突点」扩展到结论/证据缺口（`report_presentation.py:ensure_content_analysis_and_topology`，prompt/模板层工作）。
 
 ### 并行小轨道（各自独立小 PR，按依赖排期）
@@ -124,6 +127,7 @@
 - **Q1 渲染器：** Mermaid 安全渲染 + 纯文本回退。它只是展示，**不赋予图中关系真实性**。
 - **M4 线索链：** 记录搜索、追问、跳转与结果的 trace/event，展示「为什么继续查」；与「什么证实了结论」（M3）职责分离，不混用。数据基础：`lead_tracker.py` 的 question/source/turn/priority/followed。
 - **M5 基础配置自适应（范围收窄）：** 本期只覆盖检索 provider 与 profile 选择。显式严格路由（如 searxng-only）保持严格；自动模式按**实际可用且健康的** provider 选档，记录生效档位、原因与降级路径；明确超时/缺凭据的回退规则。测试矩阵：单 Serper、单 SearXNG、多 provider、无凭据、运行中一路超时；各档置信门槛可达且带搜索次数上限。LLM 网关、视觉能力、复杂多源排序**留待后续独立设计**。立项依据：按实际可用/健康 provider、查询质量与降级行为论证（覆盖门槛钳制已存在，不再以「结构性不可达」为由）。
+- **M5 运行中降档必须在检索路径内生效（v3）：** "运行中一路超时"不只是 `resolve_provider_tier` 的纯函数用例——`google_search` 的并发/聚合/串行回退三条路径都要在 provider 超时或报错后**传入健康集合重算档位、置信门槛与降级原因**（`_recompute_tier_from_health`，只降不升）。否则一路超时后 `provider_tier` 仍记为 `multi-provider`，门槛仍按两路覆盖判定。
 
 ### 规划项 P1（本期不实施）
 
@@ -184,7 +188,7 @@
 | Q4 拓扑丰富 | ✅ `report_presentation.ensure_content_analysis_and_topology` | ✅ 支持/反驳/未知边、证据缺口、未登记来源不画 + 真实入口链路 | ✅ 随 M3 接线生效（`claim_map`/`source_registry` 由编排层传入） |
 | Q1 渲染器 | ✅ `static/js/mermaid_render.js` | ✅ strict + 回退契约 | ✅ |
 | M4 线索链 | ✅ `lead_tracker.snapshot()/get_trace()` + `lead_trace` 日志元数据 | ✅ 快照/reason/序列化 | ✅ |
-| M5 分档 | ✅ `providers/tiering.py` | ✅ 单 Serper / 单 SearXNG / 多 provider / 无凭据 / 中途超时 + 门槛消费 | ✅ `search_and_scrape_webpage.perform_search` 解析档位并写入 `searchParameters.provider_tier`，`min_provider_coverage` 作为 confidence 门槛（串行回退路径同样消费） |
+| M5 分档 | ✅ `providers/tiering.py` + `search_and_scrape_webpage._recompute_tier_from_health` | ✅ 单 Serper / 单 SearXNG / 多 provider / 无凭据 / 中途超时 + 门槛消费 + **google_search 级一路超时降档（v3）** | ✅ `search_and_scrape_webpage.perform_search` 解析档位并写入 `searchParameters.provider_tier`，`min_provider_coverage` 作为 confidence 门槛；**并发 / 聚合 / 串行回退三条路径都在 provider 超时或报错后按健康集合重算档位与门槛（v3）** |
 
 **阶段 B 交付物现状：** 字段契约文档 = `2026-09-24-phase-a-baseline-and-source-contract.md` §3.2（已与实现一致）；单元/集成测试 = 本轮补齐；"一份可查看的真实报告" 仍需凭据跑 `run_acceptance_live.py`（离线不可完成）。
 
@@ -257,22 +261,30 @@ deep/hotspot 用例会被限流打穿。
 |---|---|---|
 | §0 证据版本绑定与旧 AGREE 撤销 | `orchestrator._bump_evidence_revision` / `_revoke_stale_early_stop_countdown` / `_classify_scrape_result` | `test_deep_early_stop_exit.py`（26 例）：新搜索反证、仅抓取反证、冲突解除重新起算、支持性新证据可再 AGREE、裁决失败 fail-closed、无新证据不重裁、3 次上限；`test_parallel_scrape_budget.py`（2 例） |
 | A-1 基线冻结 | `docs/acceptance/baseline-2026-09-24/`（A/B/H1 三组） | `BASELINE.md`；§9.4 工具控制组可复现其全部数字 |
-| A-3 / M1 来源注册表 | `src/core/source_registry.py` | `test_source_registry_contract.py`（16 例）：同 URL 多 provider 合并、重定向别名、抓取失败不覆盖成功、序列化往返（= 历史压缩后引用仍可用） |
+| A-3 / M1 来源注册表 | `src/core/source_registry.py` | `test_source_registry_contract.py`（23 例）：同 URL 多 provider 合并、重定向别名、抓取失败不覆盖成功、序列化往返（= 历史压缩后引用仍可用）；**v3 新增**空抓取不得取得 `fetched`、重定向两端各自先登记时收敛为单一规范身份且编号不回收 |
 | A-4 URL 规范化（保守） | 同上 | 同文件：scheme/host 小写、去 fragment 与跟踪参数、**路径大小写保留**、保留可能区分内容的查询参数 |
 | A-5 / M2 / Q2 / Q3 引用与展示契约 | `report_structure.enforce_citations`、`build_source_references` | `test_report_citations_contract.py`（13 例）：仅摘要可引用、未登记引用降级、无来源不造 URL、恶意摘要不注入 HTML；`apps/gradio-demo/tests/test_render_markdown.py::test_references_numbering_matches_core_contract`（API↔Demo 同编号同链接） |
-| M3 结论核验 | `src/core/claim_verification.py`，`orchestrator._adjudicate_report_claims` 接线 | `test_claim_verification.py`（25 例）：6 项 fixture（同 URL 两引擎、跨域转载、两来源支持、两可信来源互驳、仅摘要不确定、无依据）+ 抽取上限 + 解析回退；`test_claim_verification_wiring.py`（7 例）钉住编排层调用与 fail-closed |
-| Q4 拓扑丰富 | `report_presentation.ensure_content_analysis_and_topology` | `test_report_presentation.py`（20 例）：支持/反驳/未知边、证据缺口、未登记来源不画、无 claim_map 时不加边、抽取主张端到端入图 |
+| M3 结论核验 | `src/core/claim_verification.py`，`orchestrator._adjudicate_report_claims` 接线 | `test_claim_verification.py`（40 例）：6 项 fixture（同 URL 两引擎、跨域转载、两来源支持、两可信来源互驳、仅摘要不确定、无依据）+ 抽取上限 + 解析回退；**v3 新增**正文经 `content_ref` 进入裁决且长度受控、`fetched` 但正文未参与裁决不给确定数、摘要支持/正文反驳、正文不可读取、`sanitize_claim_map` 四类畸形收敛；`test_claim_verification_wiring.py`（9 例）钉住编排层调用、净化与 fail-closed；`test_scrape_source_state.py`（7 例）覆盖抓取结果落库与两种重定向登记顺序 |
+| Q4 拓扑丰富 | `report_presentation.ensure_content_analysis_and_topology` | `test_report_presentation.py`（22 例）：支持/反驳/未知边、证据缺口、未登记来源不画、无 claim_map 时不加边、抽取主张端到端入图；**v3 新增**净化后的映射不再画互相矛盾的两种边、正文未参与裁决时不写确定支持数 |
 | Q1 渲染器 | `apps/gradio-demo/static/js/mermaid_render.js` | `test_static_assets.py::test_mermaid_renderer_is_strict_and_keeps_plaintext_fallback`（strict + 纯文本回退） |
 | M4 线索链 | `lead_tracker.snapshot()` / `get_trace()`；`orchestrator` 日志元数据 `lead_trace` | `test_lead_tracker.py`（11 例）：快照/reason/序列化 |
-| M5 分档 | `providers/tiering.py`，`search_and_scrape_webpage.perform_search` 消费档位与门槛 | `test_provider_tiering.py`（9 例）：单 Serper、单 SearXNG、多 provider 升档、无凭据、中途超时降档、严格路由不静默扩档、每档门槛可达；§9.1 真机证据 |
+| M5 分档 | `providers/tiering.py`，`search_and_scrape_webpage.perform_search` 消费档位与门槛；`_recompute_tier_from_health` 运行中重算 | `test_provider_tiering.py`（9 例）：单 Serper、单 SearXNG、多 provider 升档、无凭据、中途超时降档、严格路由不静默扩档、每档门槛可达；**`test_search_runtime_tier_downgrade.py`（3 例）**：google_search 级一路超时后档位降为单 provider、门槛降为 1、`degraded_from`/原因可归因，两路健康时不降档，串行回退路径同样降档；§9.1 真机证据 |
 
 **本轮额外修复（提供商中立）：** summary/fast 阶段的「关闭思考」参数由**无条件下发**改为
 **能力自适应**——先尝试下发，被 `400` 拒绝即剥离该可选参数重试一次且**不消耗
 `max_retries`**；判定只看状态码，不匹配任何模型名或提供商文案。此前用模型名前缀黑名单
 的做法已废弃（违背「系统不绑定特定 LLM 提供商」的架构约束）。
 
-**测试与 lint 状态：** `apps/miroflow-agent` 338 passed / 7 skipped；
-`libs/miroflow-tools` 129 passed；`ruff check apps libs` 全绿、`format --check` 干净。
+**测试与 lint 状态（2026-09-29 复核）：** `apps/miroflow-agent` 371 passed / 7 skipped；
+`libs/miroflow-tools` 132 passed；`apps/gradio-demo` 132 passed；
+`apps/api-server` 203 passed / 13 skipped；`ruff check apps libs` 全绿、`format --check` 干净。
+
+**CI 现状（v3 修复）：** `.github/workflows/run-tests.yml` 与 `run-ruff.yml` 原先带
+`if: github.repository_owner == 'MiroMindAI'` 守卫，在 `kdush/OpenClaw-MiroSearch`
+上一律不成立，导致 4 项检查全部 SKIPPED——"检查通过"从未真实发生过。守卫已移除，
+并补上 `libs/miroflow-tools` 作业（此前 M5 测试根本没有 CI 作业），
+定向测试集覆盖来源注册表 / 引用契约 / M3 / §0 / M5。CI 统一用 `-o addopts=""`
+中和本地开发用的 addopts（coverage html / xdist），避免插件差异造成假失败。
 
 **仍未完成（仅此两类）：**
 
@@ -309,3 +321,19 @@ python scripts/compare_acceptance_runs.py \
   作为 M1/M3/Q4 接线后的可观察证据；
 - 出现**方向性回归**时退出码非零，可直接作 CI 卡口；
 - 测试：`tests/test_compare_acceptance_runs.py`（24 例，含用真实冻结基线做控制组的集成用例）。
+
+### 9.5 二轮评审阻塞项修复（2026-09-29）
+
+评审判定：整体方向与路线图一致，但新增的来源与结论契约有 4 处边界会把"未核实"
+展示成"已有独立来源支持"，建议本轮修复后再合并。逐项处理如下。
+
+| # | 问题（复现） | 修复 | 回归测试 |
+|---|---|---|---|
+| 1 | **M3 裁决输入与支持计数不一致**：`build_claim_support_prompt` 只给 snippet+status，不解析 `content_ref` 的抓取正文；`independent_support` 却凭 `status=fetched` 精确计数 → "摘要支持、正文反驳"仍写出"N 个独立来源支持" | `adjudication_source_view` 按 `content_ref` 取回**有来源定位、长度受控（≤600 字）**的正文片段并入 prompt；计数只认 `bodies_adjudicated`（正文确实进过 prompt 的来源），`fetched` 不再等价于"已读全文"。正文不可读时支持判定保持"未核实" | `test_claim_verification.py::TestBodyAwareAdjudication`（6 例）：prompt 含正文且截断、正文不可读无 excerpt、指针畸形/越界拒绝、"摘要支持+正文反驳"不输出确定数、正文不可读保持未核实、正文可读时仍能给出确定数 |
+| 2 | **来源状态与重定向身份**：`_record_scrape_source_state` 把 `empty_success` 也交给 `mark_fetched`（`success=true, content=""` → fetched，展示"已抓取全文"并取得引用/计数资格）；重定向两端各自先登记时 `mark_fetched(original, final_url=target)` 留下两个 `source_id` 且都标已抓取 | 新增 `STATUS_FETCH_EMPTY` 与 `mark_fetch_empty`：只在确有正文时设 `fetched`（`mark_fetched(body_text="")` 亦转空抓取）；只有搜索摘要的来源保持 `snippet_only`。`mark_fetched` 把重定向两端已登记的条目**并入编号最小的规范条目**（其余编号不重排、不回收，`_next_source_id` 单调递增），`find()`/别名/发现记录全部指向规范条目 | `test_scrape_source_state.py`（7 例）+ `test_source_registry_contract.py::TestEmptyFetchContract`（4 例）/`TestRedirectCanonicalIdentity`（3 例）：两种登记顺序各一例、编号不复用、References 只列一条、空抓取不取得引用资格 |
+| 3 | **裁决校验未进入出稿路径**：`validate_claim_map` 只在测试里被调用，展示层直接使用模型 JSON → 表外结论被写进报告、同一来源同时画支持与反驳两种边 | 新增 `sanitize_claim_map`：主张必须来自本次输入（表外丢弃、重复只留第一条）、来源编号必须可引用、支持/反驳/未知三集合互斥（自相矛盾的来源降为 `unknown`）、`evidence`/`origin_groups` 只留可引用编号。`_adjudicate_report_claims` 先 `validate_claim_map` 留 warning 审计，再 `sanitize_claim_map` 后出稿；净化后无可核验结论则返回 `None` | `test_claim_verification.py::TestSanitizeClaimMap`（7 例）+ `test_claim_verification_wiring.py`（2 例，主流程回归）+ `test_report_presentation.py`（2 例：净化后只画一种边、不写确定支持数） |
+| 4 | **M5 运行中降档未接入**：`google_search` 只在发起检索前调用一次 `resolve_provider_tier`，一路超时后 `provider_tier` 仍记为 `multi-provider`、门槛仍按两路覆盖判定（原"超时降档"测试只测纯函数） | 新增 `_recompute_tier_from_health`：并发 / 聚合 / 串行回退三条路径都在 provider 超时或报错后传入健康集合重算档位、`min_provider_coverage` 与降级原因（只降不升，`degraded_from` 记录原档位） | `test_search_runtime_tier_downgrade.py`（3 例）：一路超时后降为单 provider、门槛降为 1、原因可归因；两路健康时不降档；串行回退同样降档 |
+| 5 | **CI 从未真实执行**：4 项检查因 `if: github.repository_owner == 'MiroMindAI'` 守卫全部 SKIPPED | 移除守卫；新增 `libs/miroflow-tools` 作业（此前 M5 测试无 CI 作业）；定向测试集覆盖来源注册表 / 引用契约 / M3 / §0 / M5；统一 `-o addopts=""` 消除插件差异 | 见 §9.3「CI 现状」 |
+
+**本轮新增测试：** `apps/miroflow-agent` 由 338 增至 371 passed；
+`libs/miroflow-tools` 由 129 增至 132 passed。
