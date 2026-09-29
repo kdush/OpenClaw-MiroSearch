@@ -373,6 +373,62 @@ class TestClaimVerificationPipeline:
         assert "营收同比增长 12%。" in out
         assert 'S1["[1] a.com"]' in out
 
+    def test_sanitized_map_draws_no_contradictory_edges(self):
+        """畸形裁决（同一来源既支持又反驳）经净化后只画一种边。"""
+        from src.core.claim_verification import (
+            ClaimSupportMap,
+            ClaimVerdict,
+            sanitize_claim_map,
+        )
+
+        registry = {
+            "entries": [
+                self._entry(1, "https://a.com/x"),
+                self._entry(2, "https://b.com/y"),
+            ]
+        }
+        raw = ClaimSupportMap(
+            claims=[ClaimVerdict(claim="主张", support=[1], refute=[1])]
+        )
+        clean = sanitize_claim_map(raw, ["主张"], registry)
+
+        out = ensure_content_analysis_and_topology(
+            "## 结论\n\n正文。\n",
+            detail_level="detailed",
+            claim_map=clean,
+            source_registry=registry,
+        )
+
+        assert "-->|支持|" not in out
+        assert "==>|反驳|" not in out
+        assert "-.->|未知|" in out
+
+    def test_no_certain_count_when_body_never_adjudicated(self):
+        """正文没进过裁决：即使 status=fetched 也不得写"N 个独立来源支持"。"""
+        from src.core.claim_verification import ClaimSupportMap, ClaimVerdict
+
+        registry = {
+            "entries": [
+                self._entry(1, "https://a.com/x"),
+                self._entry(2, "https://b.com/y"),
+            ]
+        }
+        claim_map = ClaimSupportMap(
+            claims=[ClaimVerdict(claim="主张", support=[1, 2])],
+            bodies_adjudicated=set(),
+        )
+
+        out = ensure_content_analysis_and_topology(
+            "## 结论\n\n正文。\n",
+            detail_level="detailed",
+            claim_map=claim_map,
+            source_registry=registry,
+        )
+
+        assert "独立来源支持" not in out
+        assert "未核实" in out
+        assert "证据缺口" in out
+
     def test_prepare_without_claim_map_adds_no_claim_edges(self):
         out = prepare_user_facing_report(
             "## 结论\n\n营收同比增长 12%。\n", detail_level="detailed"

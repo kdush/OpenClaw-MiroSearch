@@ -16,6 +16,7 @@ from src.core.source_registry import (  # noqa: E402
     SourceRegistry,
     normalize_source_url,
 )
+from src.io.report_structure import ReportStructureValidator  # noqa: E402
 
 
 class TestUrlNormalization:
@@ -196,3 +197,105 @@ class TestRegistryContract:
             turn=1,
         )
         assert len(registry.entries) == 1
+
+
+class TestEmptyFetchContract:
+    """空抓取（HTTP 成功但无正文）不得取得 fetched 状态。"""
+
+    def test_mark_fetch_empty_keeps_discovered_source_as_snippet_only(self):
+        registry = SourceRegistry()
+        registry.register_search_hits(
+            {"provider": "serper", "organic": [{"link": "https://e.com/a"}]}, turn=1
+        )
+
+        registry.mark_fetch_empty("https://e.com/a", turn=2)
+
+        entry = registry.entries[0]
+        assert entry.status == "snippet_only"
+        # 摘要仍可引用，但不能显示成已抓取全文
+        assert entry.source_id in {
+            source["source_id"]
+            for source in ReportStructureValidator.citable_sources(registry.to_dict())
+        }
+        assert "已抓取全文" not in ReportStructureValidator.build_source_references(
+            registry.to_dict()
+        )
+
+    def test_mark_fetch_empty_on_unseen_url_is_not_citable(self):
+        registry = SourceRegistry()
+
+        registry.mark_fetch_empty("https://e.com/new", turn=1)
+
+        assert registry.entries[0].status == "fetch_empty"
+        assert ReportStructureValidator.citable_sources(registry.to_dict()) == []
+
+    def test_mark_fetch_empty_does_not_downgrade_fetched(self):
+        registry = SourceRegistry()
+        registry.mark_fetched("https://e.com/a", turn=1)
+
+        registry.mark_fetch_empty("https://e.com/a", turn=2)
+
+        assert registry.entries[0].status == "fetched"
+
+    def test_mark_fetched_with_blank_body_delegates_to_empty_state(self):
+        """显式告知"没有正文"时，注册表自己也不得给出 fetched。"""
+        registry = SourceRegistry()
+        registry.register_search_hits(
+            {"provider": "serper", "organic": [{"link": "https://e.com/a"}]}, turn=1
+        )
+
+        registry.mark_fetched("https://e.com/a", body_text="   ", turn=2)
+
+        assert registry.entries[0].status == "snippet_only"
+
+
+class TestRedirectCanonicalIdentity:
+    """重定向两端各自先登记：必须收敛成同一原始来源的单一规范身份。"""
+
+    @staticmethod
+    def _register_pair(registry, first, second):
+        for turn, url in enumerate((first, second), 1):
+            registry.register_search_hits(
+                {"provider": "serper", "organic": [{"link": url}]}, turn=turn
+            )
+
+    def test_original_registered_first_merges(self):
+        registry = SourceRegistry()
+        self._register_pair(registry, "https://e.com/a", "https://e.com/b")
+        assert len(registry.entries) == 2
+
+        registry.mark_fetched("https://e.com/a", final_url="https://e.com/b", turn=3)
+
+        assert len(registry.entries) == 1
+        entry = registry.entries[0]
+        assert entry.source_id == 1
+        assert entry.status == "fetched"
+        assert registry.find("https://e.com/a") is entry
+        assert registry.find("https://e.com/b") is entry
+        assert len(entry.discoveries) == 2
+
+    def test_target_registered_first_merges(self):
+        registry = SourceRegistry()
+        self._register_pair(registry, "https://e.com/b", "https://e.com/a")
+
+        registry.mark_fetched("https://e.com/a", final_url="https://e.com/b", turn=3)
+
+        assert len(registry.entries) == 1
+        entry = registry.entries[0]
+        # 编号取最早发布的那条，其余编号不重排
+        assert entry.source_id == 1
+        assert registry.find("https://e.com/a") is entry
+        assert registry.find("https://e.com/b") is entry
+        assert len(entry.discoveries) == 2
+
+    def test_merged_ids_are_not_reused(self):
+        """并入后释放的编号不得被新来源复用，否则旧引用会指向错来源。"""
+        registry = SourceRegistry()
+        self._register_pair(registry, "https://e.com/a", "https://e.com/b")
+        registry.mark_fetched("https://e.com/a", final_url="https://e.com/b", turn=3)
+
+        registry.register_search_hits(
+            {"provider": "serper", "organic": [{"link": "https://e.com/c"}]}, turn=4
+        )
+
+        assert [entry.source_id for entry in registry.entries] == [1, 3]

@@ -50,6 +50,7 @@ from .deep_efficiency import (
     resolve_summary_keep_tool_result,
     resolve_summary_max_tokens_cap,
 )
+from .source_registry import resolve_content_ref
 from .stream_handler import StreamHandler
 
 logger = logging.getLogger(__name__)
@@ -703,6 +704,12 @@ class AnswerGenerator:
         )
         return parse_agreement_verdict(check_text or "")
 
+    def _resolve_source_body(self, content_ref: str) -> str:
+        """把来源的 ``content_ref`` 解析成抓取正文，供裁决与计数共用同一口径。"""
+        return resolve_content_ref(
+            content_ref, getattr(self.task_log, "step_logs", None)
+        )
+
     async def generate_claim_support_map(
         self,
         system_prompt: str,
@@ -714,6 +721,9 @@ class AnswerGenerator:
 
         调用失败、输出不可解析或无可引用来源时返回空映射；调用方据此跳过拓扑
         丰富化，绝不因核验失败而阻断报告输出。
+
+        裁决输入包含来源的抓取正文片段（经 ``content_ref`` 解析），返回值带上
+        ``bodies_adjudicated``——计数只认正文确实进过 prompt 的来源。
         """
         registry = self.task_log.source_registry.to_dict()
         if not claims or not registry.get("entries"):
@@ -739,7 +749,10 @@ class AnswerGenerator:
             agent_name="main",
         )
         return await adjudicate_claim_support(
-            _call_llm, claims=claims, source_registry=registry
+            _call_llm,
+            claims=claims,
+            source_registry=registry,
+            body_resolver=self._resolve_source_body,
         )
 
     async def handle_llm_call(

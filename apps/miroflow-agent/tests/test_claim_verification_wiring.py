@@ -22,7 +22,23 @@ from src.core.orchestrator import Orchestrator  # noqa: E402
 
 pytestmark = pytest.mark.asyncio
 
-REGISTRY = {"entries": [{"source_id": 1, "normalized_url": "https://a.com/x"}]}
+
+def _entry(source_id, url, *, status="fetched", discoveries=None):
+    return {
+        "source_id": source_id,
+        "normalized_url": url,
+        "domain": url.split("//", 1)[1].split("/", 1)[0],
+        "status": status,
+        "discoveries": (
+            discoveries
+            if discoveries is not None
+            else [{"provider": "serper", "turn": 1, "position": source_id}]
+        ),
+        "aliases": [],
+    }
+
+
+REGISTRY = {"entries": [_entry(1, "https://a.com/x")]}
 REPORT = "## 结论\n\n- 营收同比增长 12%。\n"
 
 
@@ -122,7 +138,10 @@ class TestAdjudicateReportClaims:
 
         out = await _adjudicate(fake)
 
-        assert out is claim_map
+        # 出稿用的是净化后的副本，不再直接使用模型返回的对象
+        assert out is not claim_map
+        assert [verdict.claim for verdict in out.claims] == ["营收同比增长 12%。"]
+        assert out.claims[0].support == [1]
         assert len(gen.calls) == 1
         assert gen.calls[0]["claims"] == ["营收同比增长 12%。"]
         assert gen.calls[0]["turn_count"] == 3
@@ -156,6 +175,39 @@ class TestAdjudicateReportClaims:
         assert await _adjudicate(fake) is None
         assert gen.calls == []
         assert fake.task_log.last["level"] == "warning"
+
+    async def test_malformed_verdicts_are_contained_before_presentation(self):
+        """主流程回归：模型返回表外结论 + 同一来源同时支持/反驳。
+
+        出稿路径必须把表外结论丢掉、把自相矛盾的来源降为 unknown，
+        不能让它进入对外支持度与拓扑。
+        """
+        registry = {
+            "entries": [_entry(1, "https://a.com/x"), _entry(2, "https://b.com/y")]
+        }
+        raw = ClaimSupportMap(
+            claims=[
+                ClaimVerdict(claim="营收同比增长 12%。", support=[1], refute=[1]),
+                ClaimVerdict(claim="模型自己加的结论", support=[1, 2]),
+            ]
+        )
+        fake = _fake_self(answer_generator=_FakeAnswerGenerator(result=raw))
+
+        out = await _adjudicate(fake, registry=registry)
+
+        assert [verdict.claim for verdict in out.claims] == ["营收同比增长 12%。"]
+        assert out.claims[0].support == []
+        assert out.claims[0].refute == []
+        assert out.claims[0].unknown == [1]
+        # 畸形项必须留下可审计的 warning，而不是静默吞掉
+        assert any(step["level"] == "warning" for step in fake.task_log.steps)
+
+    async def test_all_claims_dropped_returns_none(self):
+        """表外主张被清空后没有可核验结论 → 不返回空壳映射。"""
+        raw = ClaimSupportMap(claims=[ClaimVerdict(claim="表外结论", support=[1])])
+        fake = _fake_self(answer_generator=_FakeAnswerGenerator(result=raw))
+
+        assert await _adjudicate(fake) is None
 
     async def test_max_claims_cap_is_respected(self):
         gen = _FakeAnswerGenerator(result=ClaimSupportMap())

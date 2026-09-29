@@ -3,13 +3,16 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass, field
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 from urllib.parse import urlparse, urlsplit
 
 STATUS_SNIPPET_ONLY = "snippet_only"
 STATUS_FETCHED = "fetched"
 STATUS_FETCH_FAILED = "fetch_failed"
+# 抓取到达了页面但没有正文：既不是失败（HTTP 成功）也不是可引用的全文来源。
+STATUS_FETCH_EMPTY = "fetch_empty"
 _TRACKING_PARAMS = {"gclid", "fbclid", "msclkid", "igshid", "mc_cid", "mc_eid"}
 
 
@@ -52,6 +55,48 @@ def normalize_source_url(url: str) -> str:
     return normalized
 
 
+# 抓取正文提取：与 SourceEntry.content_ref 指向的存储位置配套使用。
+_BODY_TEXT_KEYS = ("content", "extracted_info", "text", "markdown")
+_CONTENT_REF_RE = re.compile(r"^/step_logs/(\d+)/metadata/result$")
+
+
+def extract_scrape_body_text(payload: Any) -> str:
+    """从抓取工具返回的 JSON 载荷里取出正文文本（取不到就返回空串）。"""
+    if not isinstance(payload, dict):
+        return ""
+    for key in _BODY_TEXT_KEYS:
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def resolve_content_ref(content_ref: Any, step_logs: Any) -> str:
+    """把 ``/step_logs/<i>/metadata/result`` 指针解析回抓取正文文本。
+
+    ``step_logs`` 可以是 ``StepLog`` 对象序列，也可以是等价的 dict 序列；指针
+    越界、格式不符或载荷里没有正文时一律返回空串——调用方据此判定"正文不可读"，
+    不能把读不到的正文当成已裁决过的证据。
+    """
+    if not isinstance(content_ref, str):
+        return ""
+    match = _CONTENT_REF_RE.match(content_ref.strip())
+    if match is None or not isinstance(step_logs, Sequence):
+        return ""
+    index = int(match.group(1))
+    if index < 0 or index >= len(step_logs):
+        return ""
+    step_log = step_logs[index]
+    metadata = (
+        step_log.get("metadata")
+        if isinstance(step_log, dict)
+        else getattr(step_log, "metadata", None)
+    )
+    if not isinstance(metadata, dict):
+        return ""
+    return extract_scrape_body_text(metadata.get("result"))
+
+
 def normalize_domain(url: str) -> str:
     if not url:
         return ""
@@ -92,6 +137,10 @@ class SourceRegistry:
         for entry in self.entries:
             for alias in entry.aliases:
                 self._index.setdefault(alias, entry)
+        # 编号单调递增且永不回收：并入/移除条目后，新来源不得复用已发布过的编号。
+        self._next_source_id = 1
+        for entry in self.entries:
+            self._next_source_id = max(self._next_source_id, entry.source_id + 1)
 
     def find(self, url: str) -> Optional[SourceEntry]:
         return self._index.get(normalize_source_url(url))
@@ -154,7 +203,18 @@ class SourceRegistry:
         turn: int = 0,
         redirect_chain: Optional[list[str]] = None,
         title: str = "",
+        body_text: Optional[str] = None,
     ) -> None:
+        """登记一次「确实抓到正文」的抓取。
+
+        ``body_text`` 显式给出且为空时按空抓取处理（见 ``mark_fetch_empty``）：
+        ``fetched`` 表示"有全文可读"，空结果不得取得该状态——否则会被展示成
+        「已抓取全文」并取得引用/独立计数资格。
+        """
+        if body_text is not None and not str(body_text).strip():
+            self.mark_fetch_empty(url, turn=turn)
+            return
+
         urls = [url, *(redirect_chain or []), final_url]
         normalized_urls = list(
             dict.fromkeys(
@@ -180,26 +240,60 @@ class SourceRegistry:
             for value in [entry.normalized_url, *entry.aliases]:
                 if value not in normalized_urls:
                     normalized_urls.append(value)
-        # 已发布的编号不重排；已登记的重定向两端互为别名并共享抓取状态。
+        # 重定向两端可能已被各自登记成两条条目；同一原始来源只能有一个规范身份，
+        # 否则 References 与 M3 独立来源计数都会重复。规范条目取编号最小的那条
+        # （最早发现），其余编号不重排、不回收。
+        canonical = min(related, key=lambda entry: entry.source_id)
         for entry in related:
-            entry.aliases = [
-                value for value in normalized_urls if value != entry.normalized_url
-            ]
-            entry.status = STATUS_FETCHED
-            entry.last_seen_turn = max(entry.last_seen_turn, turn)
-            if content_ref and not entry.content_ref:
-                entry.content_ref = content_ref
-            if not entry.title and isinstance(title, str):
-                entry.title = title
-        primary_urls = {entry.normalized_url for entry in related}
+            if entry is not canonical:
+                self._fold_into(entry, canonical)
+        canonical.aliases = [
+            value for value in normalized_urls if value != canonical.normalized_url
+        ]
+        canonical.status = STATUS_FETCHED
+        canonical.last_seen_turn = max(canonical.last_seen_turn, turn)
+        if content_ref and not canonical.content_ref:
+            canonical.content_ref = content_ref
+        if not canonical.title and isinstance(title, str):
+            canonical.title = title
         for value in normalized_urls:
-            if value not in primary_urls:
-                self._index[value] = related[0]
+            if value != canonical.normalized_url:
+                self._index[value] = canonical
+
+    def mark_fetch_empty(self, url: str, *, turn: int = 0) -> None:
+        """抓取到达页面但没有正文：不得升级为 ``fetched``。
+
+        原本只有搜索摘要的来源保持 ``snippet_only``（摘要仍可引用、但只能算
+        "仅摘要"）；从未登记过的 URL 记为明确的 ``fetch_empty``——既不可引用，
+        也不计入独立来源。
+        """
+        entry = self._ensure_entry(url, turn)
+        if entry is None or entry.status == STATUS_FETCHED:
+            return
+        entry.last_seen_turn = max(entry.last_seen_turn, turn)
+        if entry.status == STATUS_SNIPPET_ONLY and entry.discoveries:
+            return
+        entry.status = STATUS_FETCH_EMPTY
 
     def mark_fetch_failed(self, url: str, *, turn: int = 0) -> None:
         entry = self._ensure_entry(url, turn)
         if entry is not None and entry.status != STATUS_FETCHED:
             entry.status = STATUS_FETCH_FAILED
+
+    def _fold_into(self, duplicate: "SourceEntry", canonical: "SourceEntry") -> None:
+        """把重复条目并入规范条目，并让旧 URL/别名继续解析到规范条目。"""
+        for discovery in duplicate.discoveries:
+            if discovery not in canonical.discoveries:
+                canonical.discoveries.append(discovery)
+        for name in ("title", "snippet"):
+            if not getattr(canonical, name) and getattr(duplicate, name):
+                setattr(canonical, name, getattr(duplicate, name))
+        if duplicate.content_ref and not canonical.content_ref:
+            canonical.content_ref = duplicate.content_ref
+        for value in [duplicate.normalized_url, *duplicate.aliases]:
+            self._index[value] = canonical
+        # 按身份移除：dataclass 的 __eq__ 逐字段比较，用 remove() 可能误删同值条目。
+        self.entries = [entry for entry in self.entries if entry is not duplicate]
 
     def _ensure_entry(self, url: str, turn: int) -> Optional[SourceEntry]:
         normalized = normalize_source_url(url)
@@ -208,13 +302,14 @@ class SourceRegistry:
         entry = self._index.get(normalized)
         if entry is None:
             entry = SourceEntry(
-                source_id=len(self.entries) + 1,
+                source_id=self._next_source_id,
                 raw_url=url,
                 normalized_url=normalized,
                 domain=normalize_domain(url),
                 first_seen_turn=turn,
                 last_seen_turn=turn,
             )
+            self._next_source_id += 1
             self.entries.append(entry)
             self._index[normalized] = entry
         else:

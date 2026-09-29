@@ -424,6 +424,45 @@ def _ensure_confidence_evaluated(
     )
 
 
+def _recompute_tier_from_health(
+    decision,
+    attempted: List[str],
+    failed: set[str],
+    *,
+    phase: str,
+):
+    """M5 运行中降档：按实际健康情况重算档位、门槛与降级原因。
+
+    超时/失败的 provider 退出健康集合后必须重算，否则一路超时仍按
+    ``multi-provider`` 要求两路覆盖，置信门槛结构性不可达。重算只在
+    ``attempted`` 的子集内进行，因此只会降档、不会升档。
+    """
+    healthy = [name for name in attempted if name not in failed]
+    if not failed or len(healthy) == len(attempted):
+        return decision
+    recomputed = resolve_provider_tier(
+        SEARCH_PROFILE,
+        list(attempted),
+        requested_order=SEARCH_PROVIDER_ORDER,
+        strict=SEARCH_PROVIDER_ORDER_STRICT,
+        healthy=set(healthy),
+    )
+    if (
+        recomputed.tier == decision.tier
+        and recomputed.min_provider_coverage == decision.min_provider_coverage
+    ):
+        return decision
+    return replace(
+        recomputed,
+        effective_order=healthy,
+        degraded_from=decision.tier,
+        reason=(
+            f"{phase}后 {', '.join(sorted(failed))} 不健康，"
+            f"按剩余 {len(healthy)} 个 provider 重算档位（{recomputed.reason}）"
+        ),
+    )
+
+
 def _confidence_verdict_line(search_params: dict[str, Any]) -> str:
     """一行质量结论。工具结果按字符数截断，JSON 尾部的 confidence 模型看不到，故前置。"""
     confidence = search_params.get("confidence")
@@ -642,6 +681,21 @@ async def google_search(
                             str(exc),
                         )
 
+                # M5: 运行中降档——并发阶段超时/报错的 provider 退出健康集合，
+                # 档位与置信门槛按剩余健康 provider 重算后再评估 confidence。
+                failed_providers = {
+                    str(entry.get("provider"))
+                    for entry in route_trace
+                    if entry.get("status") in {"timeout", "error"}
+                }
+                tier_decision = _recompute_tier_from_health(
+                    tier_decision,
+                    providers,
+                    failed_providers,
+                    phase="并发检索",
+                )
+                provider_tier = tier_decision.to_dict()
+
                 merged_results = _merge_provider_results(
                     providers, provider_results_map, result_num
                 )
@@ -775,6 +829,7 @@ async def google_search(
             if configured_mode == "merge":
                 merged_results: list[dict] = []
                 provider_results_map = {}
+                merge_failed: set[str] = set()
                 for provider in providers:
                     search_provider = provider
                     try:
@@ -792,12 +847,19 @@ async def google_search(
                         if len(merged_results) >= result_num:
                             break
                     except Exception as exc:
+                        merge_failed.add(provider)
                         provider_errors.append(_format_provider_error(provider, exc))
                         logger.warning(
                             "Search provider failed in merge mode | provider=%s | err=%s",
                             provider,
                             str(exc),
                         )
+
+                # M5: 聚合路径同样按运行中健康情况降档，门槛不落后于实际路由。
+                tier_decision = _recompute_tier_from_health(
+                    tier_decision, providers, merge_failed, phase="聚合检索"
+                )
+                provider_tier = tier_decision.to_dict()
 
                 return (
                     merged_results[:result_num],
@@ -817,6 +879,7 @@ async def google_search(
                     provider_errors,
                 )
 
+            fallback_failed: set[str] = set()
             for provider in providers:
                 search_provider = provider
                 try:
@@ -824,9 +887,16 @@ async def google_search(
                         provider, search_query, result_num, result_page
                     )
                     if organic_results:
+                        # M5: 串行回退时前面的 provider 可能已超时，档位要跟着降。
+                        tier_decision = _recompute_tier_from_health(
+                            tier_decision,
+                            providers,
+                            fallback_failed,
+                            phase="串行回退",
+                        )
                         search_params["provider_mode"] = "fallback"
                         search_params["provider_order"] = providers
-                        search_params["provider_tier"] = provider_tier
+                        search_params["provider_tier"] = tier_decision.to_dict()
                         search_params["searxng_only_downgraded"] = (
                             searxng_only_downgraded
                         )
@@ -838,6 +908,7 @@ async def google_search(
                     provider_errors.append(f"{provider}: empty organic results")
 
                 except Exception as exc:
+                    fallback_failed.add(provider)
                     provider_errors.append(_format_provider_error(provider, exc))
                     logger.warning(
                         "Search provider failed, fallback to next provider | provider=%s | err=%s",
@@ -845,6 +916,9 @@ async def google_search(
                         str(exc),
                     )
 
+            tier_decision = _recompute_tier_from_health(
+                tier_decision, providers, fallback_failed, phase="串行回退"
+            )
             return (
                 [],
                 {
@@ -856,7 +930,7 @@ async def google_search(
                     "provider": search_provider,
                     "provider_mode": "fallback",
                     "provider_order": providers,
-                    "provider_tier": provider_tier,
+                    "provider_tier": tier_decision.to_dict(),
                     "searxng_only_downgraded": searxng_only_downgraded,
                     "searxng_only_downgrade_added": searxng_only_downgrade_added,
                     "fallback_errors": provider_errors,

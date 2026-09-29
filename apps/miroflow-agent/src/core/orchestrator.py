@@ -38,7 +38,11 @@ from ..utils.prompt_utils import (
     refusal_keywords,
 )
 from .answer_generator import AnswerGenerator
-from .claim_verification import extract_claims_from_report
+from .claim_verification import (
+    extract_claims_from_report,
+    sanitize_claim_map,
+    validate_claim_map,
+)
 from .deep_efficiency import (
     resolve_claim_verification_config,
     resolve_early_stop_config,
@@ -48,7 +52,11 @@ from .deep_efficiency import (
     scrape_skip_message,
 )
 from .lead_tracker import LeadTrackingManager, resolve_lead_tracking_config
-from .source_registry import normalize_domain, normalize_source_url
+from .source_registry import (
+    extract_scrape_body_text,
+    normalize_domain,
+    normalize_source_url,
+)
 from .stream_handler import StreamHandler
 from .tool_executor import ToolExecutor
 
@@ -491,12 +499,12 @@ class Orchestrator:
         return self._parse_tool_result_payload(tool_result) or {}
 
     def _scrape_body_text(self, parsed: dict) -> str:
-        """Extract primary body text from a scrape-tool JSON payload."""
-        for key in ("content", "extracted_info", "text", "markdown"):
-            value = parsed.get(key)
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-        return ""
+        """Extract primary body text from a scrape-tool JSON payload.
+
+        与来源注册表 / M3 裁决共用同一提取口径（``extract_scrape_body_text``），
+        否则"算不算有正文"会出现两套判断。
+        """
+        return extract_scrape_body_text(parsed)
 
     def _classify_scrape_result(self, tool_result: dict) -> str:
         """Classify scrape tool output for budget + evidence accounting.
@@ -731,7 +739,12 @@ class Orchestrator:
             if kind == "failure":
                 registry.mark_fetch_failed(url, turn=turn_count)
                 return
-            # evidence / empty_success: fetch reached the page; store payload ref
+            body_text = self._scrape_body_text(parsed)
+            if not body_text:
+                # 空抓取：HTTP 成功但没有正文，不得取得 fetched（否则会被展示成
+                # 「已抓取全文」并拿到引用/独立计数资格）。
+                registry.mark_fetch_empty(url, turn=turn_count)
+                return
             step_index = len(self.task_log.step_logs)
             self.task_log.log_step(
                 "debug",
@@ -750,6 +763,7 @@ class Orchestrator:
                 turn=turn_count,
                 redirect_chain=parsed.get("redirect_chain"),
                 title=parsed.get("title", ""),
+                body_text=body_text,
             )
         except Exception:
             logger.warning("Source scrape state update skipped", exc_info=True)
@@ -1922,6 +1936,10 @@ class Orchestrator:
         fail-closed：未开启、抽不到主张、调用失败都返回 ``None``，绝不阻断出稿。
         M3 成本是一次无工具 LLM 调用，故由 ``resolve_claim_verification_config``
         控制开关（deep 档默认开，其余档显式 opt-in）。
+
+        裁决结果在出稿前必须过 ``sanitize_claim_map``：模型可能返回表外主张、
+        不可引用的来源编号，或把同一来源同时判为支持与反驳——这些畸形项不得
+        进入对外支持度与拓扑。
         """
         try:
             enabled, max_claims = resolve_claim_verification_config(self.cfg)
@@ -1930,18 +1948,30 @@ class Orchestrator:
             claims = extract_claims_from_report(final_summary, limit=max_claims)
             if not claims:
                 return None
-            claim_map = await self.answer_generator.generate_claim_support_map(
+            raw_map = await self.answer_generator.generate_claim_support_map(
                 system_prompt=system_prompt,
                 message_history=message_history,
                 turn_count=turn_count,
                 claims=claims,
             )
+            issues = validate_claim_map(raw_map, registry, claims=claims)
+            claim_map = sanitize_claim_map(raw_map, claims, registry)
             self.task_log.log_step(
                 "info",
                 "Main Agent | Claim Verification",
                 f"Adjudicated {len(claim_map.claims)}/{len(claims)} claims "
-                f"against {len(registry.get('entries', []))} registered sources",
+                f"against {len(registry.get('entries', []))} registered sources"
+                + (f"；已剔除 {len(issues)} 项畸形判定" if issues else ""),
             )
+            if issues:
+                self.task_log.log_step(
+                    "warning",
+                    "Main Agent | Claim Verification",
+                    "畸形裁决已降级/丢弃：" + "; ".join(issues[:12]),
+                    metadata={"claim_map_issues": issues},
+                )
+            if not claim_map.claims:
+                return None
             return claim_map
         except Exception as exc:  # never block final emit on claim verification
             self.task_log.log_step(
