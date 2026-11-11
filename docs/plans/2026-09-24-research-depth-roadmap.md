@@ -493,3 +493,20 @@ Q4 信号取自注入前正文、分批结果被覆盖、注册表条目数恒�
 （新增 harness 信号 10 例 + 对比工具 11 例）；`libs/miroflow-tools` 140、
 `apps/gradio-demo` 132、`apps/api-server` 203 / 13 skipped 不变；
 `ruff check .` 全绿、`format --check` 干净。
+
+### 9.10 真实验收复跑（2026-11-11，RivoAPI `glm-5.3-flash` + Serper）
+
+产物：`docs/acceptance/live-20261111/`（`CONDITIONS.md` / `RESULTS.md` / `COMPARISON.md` /
+`acceptance_results.json` / 16× `case_*_summary.md`）。原始日志仍在 gitignore 的
+`docs/acceptance/artifacts/live-20261111/`。
+
+**条件摘要：** 代码 HEAD `fb2e99f`（未改产品代码）；LLM `glm-5.3-flash` @
+`https://api.rivoapi.com/v1`；检索 Serper 单路；SearXNG 未起；容量探测 12/12 带工具调用。
+
+**结果摘要：** 16/16 跑过；**完成 14 / 失败 2（H5A、L1）**；**LLM 429 = 0**。
+§9.9 中被限流打断的 B/E2/H1/H5B **本轮均完成**。门禁：H1/H3/H4/H5B/L2 通过；
+H2/L3 结构门禁未过；L1 失败且门禁未过。H5A 仍因 SearXNG 不可达失败；D1 仅证明降级路径。
+
+**§7：** 与阶段 A 基线对比工具报 13 项方向性差异（集中在 A/B/H1 的耗时与 token/检索量）。
+模型名与基线同为 `glm-5.3-flash`，但网关不同（RivoAPI vs 智谱直连），**仍不可单独归因于代码**。
+M3 默认启用范围维持 deep-only。
