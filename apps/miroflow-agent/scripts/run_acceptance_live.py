@@ -1021,6 +1021,75 @@ def _read_metrics_from_log(log_path: Optional[str]) -> Dict[str, Any]:
     }
 
 
+def _has_mermaid(text: str) -> bool:
+    return "```mermaid" in (text or "")
+
+
+def _evidence_signals(presented_summary: str, raw_summary: str) -> Dict[str, bool]:
+    """M3/Q4 可观察信号：区分「交付给用户的报告」与「模型自己写的正文」。
+
+    ``has_claim_topology`` 判**交付物**。Q4 的关系拓扑（含证据缺口节点）由
+    ``prepare_user_facing_report`` 注入，只可能出现在 presented 文本里；此前拿
+    ``raw_summary`` 判，而 raw 是注入前的正文，于是本字段在每次运行里都恒为
+    False（实测 16 个用例全为 False，而 presented 文本明明带 mermaid）——
+    等于把 Q4 的落地证据系统性漏记。
+
+    ``has_claim_topology_raw`` 单独保留「模型自己写了 mermaid」这一事实；
+    两者含义不同，不可互相替代（模型自发的图里没有 Q4 专属的「证据缺口」节点）。
+    """
+    return {
+        "has_claim_topology": _has_mermaid(presented_summary),
+        "has_claim_gap_node": "证据缺口" in (presented_summary or ""),
+        "has_claim_topology_raw": _has_mermaid(raw_summary),
+    }
+
+
+def _merge_results_with_existing(
+    out_dir: Path, results: Dict[str, Any]
+) -> Dict[str, Any]:
+    """把本次结果与已落盘的 per-case 记录合并，避免分批运行互相覆盖。
+
+    ``case_<ID>.json`` 是逐用例写出的权威记录，而汇总文件此前只写本次调用的
+    用例。deep/hotspot 用例单个就要 3–7 分钟，实际使用中必然分批跑；分批时
+    先跑的用例会从汇总里消失，而 ``compare_acceptance_runs.py`` 正是读这个
+    汇总文件，于是对比表会静默丢掉用例。
+    """
+    merged: Dict[str, Any] = {}
+    for path in sorted(out_dir.glob("case_*.json")):
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        case_id = record.get("case_id") if isinstance(record, dict) else None
+        if isinstance(case_id, str) and case_id:
+            merged[case_id] = record
+    for key, value in results.items():
+        merged[key] = value  # 本次运行的用例覆盖同名旧记录
+    return merged
+
+
+def _h5_pair_note(results: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """H5A/H5B 成对对比注记；两者不齐时不产出（也不保留旧注记）。"""
+    if "H5A" not in results or "H5B" not in results:
+        return None
+    a_hits = (results["H5A"].get("metrics") or {}).get("search_provider_hits") or {}
+    b_hits = (results["H5B"].get("metrics") or {}).get("search_provider_hits") or {}
+    a_prof = (results["H5A"].get("effective_config") or {}).get("search_profile")
+    b_prof = (results["H5B"].get("effective_config") or {}).get("search_profile")
+    return {
+        "profiles_differ": a_prof != b_prof,
+        "h5a_profile": a_prof,
+        "h5b_profile": b_prof,
+        "h5a_provider_hits": a_hits,
+        "h5b_provider_hits": b_hits,
+        "provider_sets_differ": set(a_hits) != set(b_hits),
+        "searxng_note": (
+            "SearXNG expected unreachable in this VM without docker; "
+            "document honestly if H5A hits only failed searxng attempts."
+        ),
+    }
+
+
 async def run_case(case_id: str, case: Dict[str, Any], out_dir: Path) -> Dict[str, Any]:
     env_patch = dict(case.get("env") or {})
     # M5：把 profile 名注入检索 env，档位决策才能准确记录 degraded_from。
@@ -1104,11 +1173,10 @@ async def run_case(case_id: str, case: Dict[str, Any], out_dir: Path) -> Dict[st
             "claim_verification_steps": metrics_info.get(
                 "claim_verification_steps", []
             ),
-            "has_claim_topology": "```mermaid" in raw_summary
-            and "证据缺口" in raw_summary,
             "gate_evaluation": gate_eval,
             "error": result.get("error"),
         }
+        record.update(_evidence_signals(summary, raw_summary))
         (out_dir / f"case_{case_id}.json").write_text(
             json.dumps(record, ensure_ascii=False, indent=2, default=str),
             encoding="utf-8",
@@ -1171,28 +1239,17 @@ async def main_async(args: argparse.Namespace) -> int:
             return 2
         results[case_id] = await run_case(case_id, CASES[case_id], out_dir)
 
-    # H5 pair divergence note
-    if "H5A" in results and "H5B" in results:
-        a_hits = (results["H5A"].get("metrics") or {}).get("search_provider_hits") or {}
-        b_hits = (results["H5B"].get("metrics") or {}).get("search_provider_hits") or {}
-        a_prof = (results["H5A"].get("effective_config") or {}).get("search_profile")
-        b_prof = (results["H5B"].get("effective_config") or {}).get("search_profile")
-        results["_h5_compare"] = {
-            "profiles_differ": a_prof != b_prof,
-            "h5a_profile": a_prof,
-            "h5b_profile": b_prof,
-            "h5a_provider_hits": a_hits,
-            "h5b_provider_hits": b_hits,
-            "provider_sets_differ": set(a_hits) != set(b_hits),
-            "searxng_note": (
-                "SearXNG expected unreachable in this VM without docker; "
-                "document honestly if H5A hits only failed searxng attempts."
-            ),
-        }
+    merged = _merge_results_with_existing(out_dir, results)
+    # H5 成对注记从合并后的记录重算：分批跑时 H5A/H5B 可能不在一批里。
+    pair_note = _h5_pair_note(merged)
+    if pair_note is None:
+        merged.pop("_h5_compare", None)
+    else:
+        merged["_h5_compare"] = pair_note
 
     combined = out_dir / "acceptance_results.json"
     combined.write_text(
-        json.dumps(results, ensure_ascii=False, indent=2, default=str),
+        json.dumps(merged, ensure_ascii=False, indent=2, default=str),
         encoding="utf-8",
     )
     print(f"Wrote {combined}")

@@ -276,9 +276,10 @@ deep/hotspot 用例会被限流打穿。
 `max_retries`**；判定只看状态码，不匹配任何模型名或提供商文案。此前用模型名前缀黑名单
 的做法已废弃（违背「系统不绑定特定 LLM 提供商」的架构约束）。
 
-**测试与 lint 状态（2026-09-29 v7 复核）：** `apps/miroflow-agent` 374 passed / 7 skipped；
-`libs/miroflow-tools` 140 passed；`apps/gradio-demo` 132 passed；
-`apps/api-server` 203 passed / 13 skipped；`ruff check .` 全绿、`format --check` 干净。
+**测试与 lint 状态（2026-09-29 v8 复核，见 §9.9）：** `apps/miroflow-agent`
+**395 passed / 7 skipped**（v7 为 374，本轮验收工具新增 21 例）；`libs/miroflow-tools` 140 passed；
+`apps/gradio-demo` 132 passed；`apps/api-server` 203 passed / 13 skipped；
+`ruff check .` 全绿、`format --check` 干净。
 
 **CI 现状（v3 修复）：** `.github/workflows/run-tests.yml` 与 `run-ruff.yml` 原先带
 `if: github.repository_owner == 'MiroMindAI'` 守卫，在 `kdush/OpenClaw-MiroSearch`
@@ -287,13 +288,16 @@ deep/hotspot 用例会被限流打穿。
 定向测试集覆盖来源注册表 / 引用契约 / M3 / §0 / M5。CI 统一用 `-o addopts=""`
 中和本地开发用的 addopts（coverage html / xdist），避免插件差异造成假失败。
 
-**仍未完成（仅此两类）：**
+**仍未完成（2026-09-28 时点快照，已被 §9.9 取代，保留以便追溯）：**
 
 1. **真实 LLM 验收的覆盖度**：欠费阻塞已解除（§9.2，改用免费模型 `glm-4.7-flash`），
    M3 端到端与「一份可查看的真实报告」**已达成**（H5B 实测）。但**免费档容量不足以
    支撑 deep/hotspot 用例**：§7 三件套复跑中 A 通过、B 与 H1 被限流打穿（§9.2.1）。
    全量 16 个用例中 4 个已跑（A、H5B 通过；B、H1 限流失败），其余 12 个未跑；
    §7 的正式对比仍需付费额度或低峰时段。
+   → **2026-09-29 更新：16 个用例已全部跑过（§9.9）**；免费档改用 `glm-4.5-flash`
+   （`glm-4.7-flash` 本时段 0/12 不可用）。达标 10（真正质量通过 7）/ 容量阻塞 4 /
+   内容审核拦截 1 / 门禁失败 1；§7 对比因**模型与用例集不同**仍不可归因。
 2. **主动暂缓**：P1 图像证据管线（前置条件未齐备）、D1–D3（维持评审裁决）。
 
 ### 9.4 §7 基线对比工具（本轮补齐）
@@ -418,3 +422,91 @@ python scripts/compare_acceptance_runs.py \
 只有名字滞后）；同时删除 `_ensure_confidence_evaluated` 第三个形参
 `providers_with_results: Optional[set[str]] = None`——全部调用点都只传两个位置参数，
 该分支恒为 `None`，属死接口。两处均为纯改名 / 删死参，行为不变（全套测试数不变）。
+
+### 9.9 真实验收与基线对比（2026-09-29，16 用例全跑）
+
+本轮把 §9.2.1 遗留的「16 用例只跑 4 个」补齐，并按用户要求固定可复现条件、分类失败、
+做可归因性判定。**产物全部入库、可审阅**：`docs/acceptance/live-20260929/`
+（`CONDITIONS.md` / `RESULTS.md` / `COMPARISON.md` / `acceptance_results.json` / 16 个 `case_*_summary.md`）。
+原始日志与未脱敏记录留在 gitignore 的 `docs/acceptance/artifacts/live-20260929/`。
+
+**固定条件（详见 `CONDITIONS.md`）：** 代码提交 `8f91db9`（#2 合并提交，本轮**未改产品代码**）；
+模型 `glm-4.5-flash` @ `https://open.bigmodel.cn/api/paas/v4`（免费档）；
+检索 `serper` 单路 `fallback`；密钥只经环境变量注入，不进提交、不进产物、不打印。
+
+**开跑前的容量前置检查**（用户要求「先确保深度用例容量稳定」）：定点探测 12 次带 tool schema 的调用——
+`glm-4.7-flash` **0/12**（全 `429 code 1305`，此前记录的首选免费模型本时段完全不可用）；
+`glm-4.5-flash` **12/12 且每次真的发起工具调用**（选用）；
+`glm-4-flash` 12/12 但 **0 次工具调用**（会伪造「通过」，不可用于验收，已排除）。
+
+**结果：达标 10 / 环境容量阻塞 4 / 内容审核拦截 1 / 门禁失败 1。**
+
+| 分类 | 用例 | 说明 |
+|---|---|---|
+| 达标（无 429 且跑完） | A、C、D1、D2、E1、H2、H3、H4→门禁失败另列、H5A、L1、L3 | 其中 **A / D1 / H5A 需限定**：A 未触发检索（light 档直接作答）；D1 指向不可达 SearXNG（`strict` 下 12 次尝试 0 轮成功，只证明诚实降级）；H5A 的 `profile_compare` 门禁只记录不判定，且其配对 H5B 本轮限流失败 |
+| **真正的质量通过（7 个）** | **C、D2、E1、H2、H3、L1、L3** | 其中 **H2/H3/L1/L3** 跑 `hotspot_detailed` 硬门禁且**全过** |
+| 环境容量阻塞 | B、E2、H1、H5B | 均 `429 code 1305`，保留错误与调用计数，**不计质量通过、不计代码回归**，需重跑 |
+| 内容审核拦截 | L2 | `429=0`、`timeout=0`，真实原因是提供商侧 `400 code 1301 contentFilter`（连续 21 次后触发 LLM 失败守卫）。与代码无关 |
+| 门禁失败 | H4 | `compact_missing_uncertainty_hedge`。**非限流、非代码缺陷——门禁按设计正常工作**：模型给的正文仅 129 字符、无任何不确定性措辞，却对争议话题标「置信度：高」，正是该门禁要拦的形态。该用例无基线 |
+
+**M1 / M3 / Q4 可观察证据（首次全量给出）：** M1 注册表在跑通检索的用例里全部有值
+（L1 49、L3 37、H3 32、E1 31、C 30、H2 30、H5B 29、B 28…）；M3 结论核验在
+**C、E1、H2、H3、H5A、L1、L3** 7 个用例确证已执行；Q4 结论—来源拓扑在
+**C、H2、H3、L1、L3** 5 个用例的**交付报告**中确证存在。
+
+**§7 对比：本轮不足以支撑「代码改动带来提升」。** 对比对象是阶段 A 冻结基线
+（**3 个用例** A/B/H1）。汇总：候选 p50 233.9 / p95 440.1；LLM 调用 175；
+token in 1081011 / out 32706；检索 124 / 抓取 35；无依据数字 28 / 错误引用 0。
+**不可归因的四个硬理由**（详见 `RESULTS.md` §6）：① 模型不同（基线 `glm-5.3-flash` 付费
+vs 候选 `glm-4.5-flash` 免费，本账号付费额度已耗尽，**无法同模型复跑基线**）；
+② 用例集不同（3 vs 16，运行级汇总不可比）；③「无依据 8→28」是用例集变化的产物
+（基线 8 全来自 H1，候选 H1 限流计 0，28 来自基线从未跑的用例），**不是回归**；
+④ `无依据结论数`/`错误引用数` 取自门禁的 `structure_metadata`，对非 hotspot 用例是
+**「未测量」而非 0**；供应商费用按约定人工回填、工具不估算（本轮未回填）。
+工具在排除不可比用例后报出 **2 项方向性回归，都在用例 A**（input_tokens +194、
+output_tokens +67），属「模型差异 + #2 新增配置」共同造成的轻微成本上升，**不可单独归因于代码**。
+
+**本轮发现并修复 5 处验收工具链缺陷（未改产品代码）：**
+
+| # | 位置 | 缺陷 | 修复 |
+|---|---|---|---|
+| 1 | `run_acceptance_live.py` | `has_claim_topology` 用**注入前**的 `raw_summary` 判定，且与「证据缺口」相与 | 改判**交付文本**；拆出 `has_claim_gap_node` / `has_claim_topology_raw`。此前 16/16 用例全被判 `False`（Q4 落地证据被系统性漏记） |
+| 2 | `run_acceptance_live.py` | 汇总文件只写**本次调用**的用例 | deep 用例单个 3–7 分钟必然分批跑；改为与已落盘的 `case_*.json` **合并**，避免先跑的用例从汇总消失 |
+| 3 | `compare_acceptance_runs.py` | `registry_entries` 直接 `len(source_registry)` | 真实形态是 `{"entries": [...], "next_source_id": N}` → **每例都报 2**；改为读 `entries`。测试夹具已同步为生产形态（此前夹具是另一种形态，故单测未暴露） |
+| 4 | `compare_acceptance_runs.py` | 把 `_h5_compare` 元数据键当成用例 | 用例数报成 17（实为 16）；`_case_ids` 跳过 `_` 前缀键 |
+| 5 | `compare_acceptance_runs.py` | 回归判定不区分「候选未跑完」 | 把限流打穿的 B/H1 共 8 项算成**代码回归**，与「不要把限流算成代码回归」直接冲突；新增 `incomparable_reason`，单列「不可比用例」并排除出判定 |
+
+新增 / 扩测：`tests/test_run_acceptance_signals.py`（10 例）、
+`tests/test_compare_acceptance_runs.py`（24 → 35 例）。全部断言已在**回退到修复前源码**上
+确认失败（非空转：harness **10/10 全失败**、对比工具 **12/35 失败**，失败点分别指向
+Q4 信号取自注入前正文、分批结果被覆盖、注册表条目数恒为 2、元数据键混入用例集、
+限流用例被计为回归）。
+
+**未覆盖 / 受限（如实列出）：** ① 归因结论缺失（见上）；② B/E2/H1/H5B 需重跑；
+③ H5A/H5B 成对对比不完整（H5B 限流）；④ 依赖 SearXNG 的 D1/H5A 路径未真正验证（本机无 docker）；
+⑤ 供应商费用未回填；⑥ 内容审核拦截无法只从产物判出（`run_metrics` 不统计该类拒绝），
+**故意未按提供商文案加计数器**（违反「不绑定特定 LLM 提供商」约束），建议后续用
+提供商中立口径（「400 且非 context-length」）单独立项；⑦ P1 与 D1–D3（**与验收用例 D1/D2 同名但无关**）继续暂缓；
+⑧ **M3 默认启用范围维持现状（只在 deep 档默认开启）**——在质量与成本边界有数据前不扩大。
+
+**本轮测试规模（v8 复核）：** `apps/miroflow-agent` 由 374 增至 **395 passed / 7 skipped**
+（新增 harness 信号 10 例 + 对比工具 11 例）；`libs/miroflow-tools` 140、
+`apps/gradio-demo` 132、`apps/api-server` 203 / 13 skipped 不变；
+`ruff check .` 全绿、`format --check` 干净。
+
+### 9.10 真实验收复跑（2026-11-11，RivoAPI `glm-5.3-flash` + Serper）
+
+产物：`docs/acceptance/live-20261111/`（`CONDITIONS.md` / `RESULTS.md` / `COMPARISON.md` /
+`acceptance_results.json` / 16× `case_*_summary.md`）。原始日志仍在 gitignore 的
+`docs/acceptance/artifacts/live-20261111/`。
+
+**条件摘要：** 代码 HEAD `fb2e99f`（未改产品代码）；LLM `glm-5.3-flash` @
+`https://api.rivoapi.com/v1`；检索 Serper 单路；SearXNG 未起；容量探测 12/12 带工具调用。
+
+**结果摘要：** 16/16 跑过；**完成 14 / 失败 2（H5A、L1）**；**LLM 429 = 0**。
+§9.9 中被限流打断的 B/E2/H1/H5B **本轮均完成**。门禁：H1/H3/H4/H5B/L2 通过；
+H2/L3 结构门禁未过；L1 失败且门禁未过。H5A 仍因 SearXNG 不可达失败；D1 仅证明降级路径。
+
+**§7：** 与阶段 A 基线对比工具报 13 项方向性差异（集中在 A/B/H1 的耗时与 token/检索量）。
+模型名与基线同为 `glm-5.3-flash`，但网关不同（RivoAPI vs 智谱直连），**仍不可单独归因于代码**。
+M3 默认启用范围维持 deep-only。
